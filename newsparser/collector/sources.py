@@ -11,8 +11,12 @@ class Source:
 
 
 def load_sources(path: str = "sources.md") -> list[Source]:
+    try:
+        text = Path(path).read_text(encoding="utf-8")
+    except FileNotFoundError:
+        raise FileNotFoundError(f"sources file not found: {path!r}") from None
     sources = []
-    for line in Path(path).read_text(encoding="utf-8").splitlines():
+    for line in text.splitlines():
         if not line.startswith("|"):
             continue
         parts = [p.strip() for p in line.split("|") if p.strip()]
