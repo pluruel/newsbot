@@ -2,6 +2,7 @@
 import logging
 import os
 import time
+from collections import defaultdict
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -35,7 +36,7 @@ def run() -> None:
         clusters = detect_convergence(recent)
         for cluster in clusters:
             titles = " / ".join(a["title"][:40] for a in cluster[:3])
-            sources_str = ", ".join({a["source"] for a in cluster})
+            sources_str = ", ".join(sorted({a["source"] for a in cluster}))
             msg = f"⚡ Breaking ({sources_str})\n{titles}"
             logger.warning("Breaking detected: %s", titles)
             send_message(msg)
@@ -46,6 +47,16 @@ def run() -> None:
             msg = f"📈 Volume spike: {source}"
             logger.warning("Spike: %s", source)
             send_message(msg)
+
+        # BASELINE 업데이트 (지수 이동 평균, α=0.3)
+        counts: dict[str, float] = defaultdict(float)
+        for a in recent:
+            counts[a["source"]] += 1
+        for source, count in counts.items():
+            if source in BASELINE:
+                BASELINE[source] = BASELINE[source] * 0.7 + count * 0.3
+            else:
+                BASELINE[source] = count
 
         time.sleep(POLL_INTERVAL)
 
