@@ -11,7 +11,7 @@ dependencies = [
     "trafilatura>=1.9",
     "python-telegram-bot>=20.0",
     "python-dotenv>=1.0",
-    "apscheduler>=3.10",
+    "apscheduler>=3.10,<4",
 ]
 
 [project.optional-dependencies]

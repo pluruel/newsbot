@@ -6,3 +6,5 @@ __pycache__/
 workspace/newsparser.db
 .worktrees/
 worktrees/
+.pytest_cache/
+dist/
