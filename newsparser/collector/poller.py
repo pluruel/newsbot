@@ -20,18 +20,19 @@ def poll_source(source: Source) -> list[dict]:
 
     new_articles = []
     for entry in feed.entries:
-        guid = entry.get("id") or entry.get("link")
+        guid = getattr(entry, "id", None) or getattr(entry, "link", None)
         if not guid or is_seen(guid):
             continue
 
-        title = entry.get("title", "")
-        url = entry.get("link", "")
-        published = entry.get("published", datetime.utcnow().isoformat())
+        title = getattr(entry, "title", "")
+        url = getattr(entry, "link", "")
+        published = getattr(entry, "published", datetime.utcnow().isoformat())
+        summary = getattr(entry, "summary", "")
 
         if source.paywall:
-            body = entry.get("summary", "")
+            body = summary
         else:
-            body = fetch_body(url) or entry.get("summary", "")
+            body = fetch_body(url) or summary
 
         insert_article(guid, source.name, title, url, published, body)
         mark_seen(guid)
