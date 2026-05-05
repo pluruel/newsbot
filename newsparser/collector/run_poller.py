@@ -14,6 +14,9 @@ from newsparser.collector.alert import detect_convergence, detect_spike
 from newsparser.bot.sender import send_message
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+# python-telegram-bot이 HTTP 요청 URL(토큰 포함)을 INFO로 출력하므로 억제
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("telegram").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL_SECONDS", "600"))
