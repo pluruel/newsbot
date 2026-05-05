@@ -1,6 +1,6 @@
 import pytest
 from datetime import datetime, timedelta
-from newsparser.collector.alert import detect_convergence, detect_spike, _jaccard
+from newsparser.collector.alert import detect_convergence, detect_spike, _jaccard, _tokenize
 
 def test_jaccard_overlap():
     assert _jaccard({"fed", "rate", "cut"}, {"fed", "rate", "hike"}) == pytest.approx(0.5)
@@ -10,6 +10,14 @@ def test_jaccard_no_overlap():
 
 def test_jaccard_empty():
     assert _jaccard(set(), {"fed"}) == 0.0
+
+def test_tokenize_lowercases_and_filters_short():
+    tokens = _tokenize("Fed cuts rates NOW")
+    assert "fed" in tokens
+    assert "cuts" in tokens
+    assert "rates" in tokens
+    assert "now" in tokens  # len==3 — included
+    assert "to" not in tokens  # len==2 — excluded
 
 def test_detect_convergence_finds_cluster():
     now = datetime.utcnow()
@@ -45,7 +53,7 @@ def test_detect_convergence_ignores_old_articles():
 def test_detect_spike_triggers_on_burst():
     now = datetime.utcnow()
     articles = [
-        {"source": "Reuters", "fetched_at": (now - timedelta(minutes=i)).isoformat()}
+        {"source": "Reuters", "title": f"Article {i}", "fetched_at": (now - timedelta(minutes=i)).isoformat()}
         for i in range(20)  # 20 articles in last hour
     ]
     baseline = {"Reuters": 5.0}  # avg 5/hour
@@ -55,7 +63,7 @@ def test_detect_spike_triggers_on_burst():
 def test_detect_spike_no_trigger_normal_volume():
     now = datetime.utcnow()
     articles = [
-        {"source": "Reuters", "fetched_at": (now - timedelta(minutes=i*10)).isoformat()}
+        {"source": "Reuters", "title": f"Article {i}", "fetched_at": (now - timedelta(minutes=i*10)).isoformat()}
         for i in range(4)  # 4 articles in last hour
     ]
     baseline = {"Reuters": 5.0}
