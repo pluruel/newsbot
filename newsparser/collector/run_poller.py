@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from newsparser.store.sqlite import init_db, get_recent
+from newsparser.store.sqlite import init_db, get_recent, mark_alerted
 from newsparser.collector.sources import load_sources
 from newsparser.collector.poller import poll_all
 from newsparser.collector.alert import detect_convergence, detect_spike
@@ -18,6 +18,13 @@ logger = logging.getLogger(__name__)
 
 POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL_SECONDS", "600"))
 BASELINE: dict[str, float] = {}  # accumulated at runtime
+
+
+def _send(msg: str) -> None:
+    try:
+        send_message(msg)
+    except Exception as exc:
+        logger.error("Telegram send failed: %s", exc)
 
 
 def run() -> None:
@@ -32,21 +39,24 @@ def run() -> None:
 
         recent = get_recent(minutes=60)
 
-        # 크로스소스 수렴 감지
-        clusters = detect_convergence(recent)
+        # 크로스소스 수렴 감지 (이미 알림 발송한 기사 제외)
+        unalerted = [a for a in recent if not a["alerted"]]
+        clusters = detect_convergence(unalerted)
         for cluster in clusters:
             titles = " / ".join(a["title"][:40] for a in cluster[:3])
             sources_str = ", ".join(sorted({a["source"] for a in cluster}))
             msg = f"⚡ Breaking ({sources_str})\n{titles}"
             logger.warning("Breaking detected: %s", titles)
-            send_message(msg)
+            _send(msg)
+            for a in cluster:
+                mark_alerted(a["guid"])
 
         # 볼륨 스파이크 감지
         spiking = detect_spike(recent, BASELINE)
         for source in spiking:
             msg = f"📈 Volume spike: {source}"
             logger.warning("Spike: %s", source)
-            send_message(msg)
+            _send(msg)
 
         # BASELINE 업데이트 (지수 이동 평균, α=0.3)
         counts: dict[str, float] = defaultdict(float)

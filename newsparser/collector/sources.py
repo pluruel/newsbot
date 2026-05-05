@@ -1,5 +1,8 @@
+import logging
 from dataclasses import dataclass
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -24,6 +27,7 @@ def load_sources(path: str = "sources.md") -> list[Source]:
             continue
         name, rss_url, tier, paywall_str = parts[0], parts[1], parts[2], parts[3]
         if not rss_url.startswith("http"):
+            logger.warning("Skipping source row with non-HTTP URL: %r", rss_url)
             continue
         sources.append(Source(
             name=name,
