@@ -61,3 +61,25 @@ def test_run_tracker_logs_interest_event():
         run_tracker(chat_id="chat123", query="반도체 섹터 동향")
     events = (workspace / "me" / "interest-events.jsonl").read_text()
     assert "query" in events
+
+def test_log_interest_event_includes_graph_entities():
+    workspace = Path(os.environ["WORKSPACE_DIR"])
+    with patch("newsparser.bot.tracker.get_context", return_value=[
+            {"name": "삼성전자", "label": "Company", "mentions": 5},
+            {"name": "TSMC", "label": "Company", "mentions": 3},
+         ]), \
+         patch("newsparser.bot.tracker.get_influence_chain", return_value=[]), \
+         patch("newsparser.bot.tracker.run_claude", return_value="답변"):
+        run_tracker(chat_id="chat123", query="반도체 업황")
+    events_path = workspace / "me" / "interest-events.jsonl"
+    event = json.loads(events_path.read_text().strip().splitlines()[-1])
+    assert "삼성전자" in event["entities"]
+    assert "TSMC" in event["entities"]
+
+def test_log_interest_event_empty_entities_on_graph_failure():
+    workspace = Path(os.environ["WORKSPACE_DIR"])
+    with patch("newsparser.bot.tracker.get_context", side_effect=RuntimeError("DB down")), \
+         patch("newsparser.bot.tracker.run_claude", return_value="답변"):
+        run_tracker(chat_id="chat123", query="반도체 업황")
+    event = json.loads((workspace / "me" / "interest-events.jsonl").read_text().strip().splitlines()[-1])
+    assert event["entities"] == []

@@ -30,11 +30,11 @@ def save_history(chat_id: str, turns: list[dict]) -> None:
     path.write_text("\n".join(json.dumps(t, ensure_ascii=False) for t in turns))
 
 
-def _log_interest_event(query: str) -> None:
+def _log_interest_event(query: str, entities: list[str]) -> None:
     event = {
         "ts": datetime.utcnow().isoformat() + "Z",
         "type": "query",
-        "entities": [],
+        "entities": entities,
         "themes": [query[:50]],
         "depth": "shallow",
     }
@@ -49,6 +49,7 @@ def run_tracker(chat_id: str, query: str) -> str:
 
     # Graph traversal — use first noun-like word as entity hint
     entity_hint = query.split()[0] if query.split() else query
+    neighbors = []
     try:
         neighbors = get_context(entity_hint, days=7)
         chains = get_influence_chain(entity_hint)
@@ -81,5 +82,6 @@ def run_tracker(chat_id: str, query: str) -> str:
     ]
     save_history(chat_id, new_turns)
 
-    _log_interest_event(query)
+    hit_entities = [n["name"] for n in neighbors]
+    _log_interest_event(query, hit_entities)
     return answer
