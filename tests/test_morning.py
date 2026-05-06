@@ -47,3 +47,23 @@ def test_run_morning_retries_on_send_failure():
          patch("newsparser.scheduler.morning.send_message", side_effect=flaky_send):
         run_morning("2026-05-05")  # succeeds on 3rd attempt
     assert call_count["n"] == 3
+
+def test_run_morning_calls_interests_rollup_before_brief():
+    call_order = []
+    def fake_rollup():
+        call_order.append("rollup")
+    def fake_claude(prompt):
+        call_order.append("claude")
+        return SAMPLE_BRIEF
+    with patch("newsparser.scheduler.morning.interests_rollup", side_effect=fake_rollup), \
+         patch("newsparser.scheduler.morning.run_claude", side_effect=fake_claude), \
+         patch("newsparser.scheduler.morning.send_message"):
+        run_morning("2026-05-05")
+    assert call_order == ["rollup", "claude"]
+
+def test_run_morning_continues_if_rollup_fails():
+    with patch("newsparser.scheduler.morning.interests_rollup", side_effect=RuntimeError("rollup error")), \
+         patch("newsparser.scheduler.morning.run_claude", return_value=SAMPLE_BRIEF) as mock_claude, \
+         patch("newsparser.scheduler.morning.send_message"):
+        run_morning("2026-05-05")  # must not raise
+    mock_claude.assert_called_once()

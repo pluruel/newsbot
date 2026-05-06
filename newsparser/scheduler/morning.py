@@ -4,6 +4,7 @@ from pathlib import Path
 
 from newsparser.bot.sender import send_message
 from newsparser.claude.runner import run_claude
+from newsparser.scheduler.interests import interests_rollup
 from newsparser.scheduler.workspace import ensure_workspace
 
 logger = logging.getLogger(__name__)
@@ -13,6 +14,11 @@ MAX_RETRIES = 3
 
 def run_morning(date_str: str) -> None:
     """Compose and send the daily brief."""
+    try:
+        interests_rollup()
+    except Exception:
+        logger.warning("Interest rollup failed — proceeding with existing interests.md")
+
     workspace = ensure_workspace()
 
     # Collect 4 most recent cycle files
