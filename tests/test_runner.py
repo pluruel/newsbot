@@ -37,7 +37,8 @@ def test_run_claude_includes_mcp_config_when_given():
         run_claude("query", mcp_config="mcp.json")
     cmd = mock_run.call_args[0][0]
     assert "--mcp-config" in cmd
-    assert "mcp.json" in cmd
+    idx = cmd.index("--mcp-config")
+    assert cmd[idx + 1] == "mcp.json"
 
 def test_run_claude_omits_mcp_config_by_default():
     mock_result = MagicMock(returncode=0, stdout="ok", stderr="")
