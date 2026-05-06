@@ -28,32 +28,8 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
-  scheduler:
-    build: .
-    command: .venv/bin/python -m newsparser.scheduler.cron
-    env_file: .env
-    environment:
-      NEO4J_URI: bolt://neo4j:7687
-    volumes:
-      - ./workspace:/app/workspace
-    depends_on:
-      neo4j:
-        condition: service_healthy
-    restart: unless-stopped
-
-  # bot runs on the host (not this container) so claude CLI can reach mcp-server via localhost:8766
-  bot:
-    build: .
-    command: .venv/bin/python -m newsparser.bot.telegram_bot
-    env_file: .env
-    environment:
-      NEO4J_URI: bolt://neo4j:7687
-    volumes:
-      - ./workspace:/app/workspace
-    depends_on:
-      neo4j:
-        condition: service_healthy
-    restart: unless-stopped
+  # scheduler and bot run on the host (not in containers) because they invoke
+  # the `claude` CLI via subprocess. The CLI lives on the host.
 
   mcp-server:
     build: .
