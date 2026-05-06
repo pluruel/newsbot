@@ -55,7 +55,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await update.message.reply_text("⚙️ /reflect — 미구현 (Plan 5)")
 
     else:
-        answer = await asyncio.to_thread(run_tracker, chat_id=chat_id, query=text)
+        await update.message.reply_text("🔍 분석 중...")
+        try:
+            answer = await asyncio.to_thread(run_tracker, chat_id=chat_id, query=text)
+        except Exception as e:
+            logger.exception("Tracker failed for query: %s", text[:60])
+            await update.message.reply_text(f"❌ 오류: {e}")
+            return
         await update.message.reply_text(answer[:4096])
 
 

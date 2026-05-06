@@ -8,3 +8,8 @@
 | Reuters | https://feeds.reuters.com/reuters/businessNews | international | no |
 | Financial Times | https://www.ft.com/rss/home | international | yes |
 | Federal Reserve | https://www.federalreserve.gov/feeds/press_all.xml | international | no |
+| Hacker News | https://news.ycombinator.com/rss | tech | no |
+| Ars Technica | https://feeds.arstechnica.com/arstechnica/index | tech | no |
+| VentureBeat AI | https://venturebeat.com/category/ai/feed | tech | no |
+| Reuters Technology | https://feeds.reuters.com/reuters/technologyNews | tech | no |
+| MIT Technology Review | https://feeds.technologyreview.com/technologyreview/ | tech | no |

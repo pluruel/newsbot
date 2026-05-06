@@ -49,9 +49,13 @@ def run_tracker(chat_id: str, query: str) -> str:
 
     # Graph traversal — use first noun-like word as entity hint
     entity_hint = query.split()[0] if query.split() else query
-    neighbors = get_context(entity_hint, days=7)
-    chains = get_influence_chain(entity_hint)
-    graph_ctx = format_context_for_claude(entity_hint, neighbors, chains)
+    try:
+        neighbors = get_context(entity_hint, days=7)
+        chains = get_influence_chain(entity_hint)
+        graph_ctx = format_context_for_claude(entity_hint, neighbors, chains)
+    except Exception:
+        logger.warning("Graph traversal failed for %r — proceeding without context", entity_hint)
+        graph_ctx = ""
 
     # Build history block
     history_block = ""

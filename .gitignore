@@ -8,3 +8,13 @@ workspace/newsparser.db
 worktrees/
 .pytest_cache/
 dist/
+
+# Runtime workspace data
+workspace/cycles/
+workspace/input/
+workspace/logs/
+workspace/sessions/
+workspace/me/*.jsonl
+
+# Claude Code local settings
+.claude/settings.local.json
