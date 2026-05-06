@@ -3,6 +3,7 @@ import logging
 import os
 import time
 from collections import defaultdict
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -20,7 +21,9 @@ logging.getLogger("telegram").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL_SECONDS", "600"))
+SPIKE_COOLDOWN_HOURS = 1
 BASELINE: dict[str, float] = {}  # accumulated at runtime
+_spike_alerted_at: dict[str, datetime] = {}
 
 
 def _send(msg: str) -> None:
@@ -56,10 +59,15 @@ def run() -> None:
 
         # 볼륨 스파이크 감지
         spiking = detect_spike(recent, BASELINE)
+        cooldown = timedelta(hours=SPIKE_COOLDOWN_HOURS)
+        now = datetime.utcnow()
         for source in spiking:
+            if now - _spike_alerted_at.get(source, datetime.min) < cooldown:
+                continue
             msg = f"📈 Volume spike: {source}"
             logger.warning("Spike: %s", source)
             _send(msg)
+            _spike_alerted_at[source] = now
 
         # BASELINE 업데이트 (지수 이동 평균, α=0.3)
         counts: dict[str, float] = defaultdict(float)
