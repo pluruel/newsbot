@@ -12,6 +12,7 @@ dependencies = [
     "python-telegram-bot>=20.0",
     "python-dotenv>=1.0",
     "apscheduler>=3.10,<4",
+    "neo4j>=6.2.0",
 ]
 
 [project.optional-dependencies]
