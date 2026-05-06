@@ -37,5 +37,17 @@ def graph_query(entity: str, days: int = 7) -> str:
     return format_context_for_claude(entity, neighbors, chains)
 
 
+@mcp.tool()
+def read_cycle_reports(n: int = 4) -> str:
+    """Read the N most recent cycle reports."""
+    cycles_dir = _workspace() / "cycles"
+    if not cycles_dir.exists():
+        return "No cycle reports found."
+    files = sorted(cycles_dir.glob("*.md"), reverse=True)[:n]
+    if not files:
+        return "No cycle reports found."
+    return "\n\n---\n\n".join(f.read_text() for f in reversed(files))
+
+
 if __name__ == "__main__":
     mcp.run(transport="sse", host="0.0.0.0", port=8766)
