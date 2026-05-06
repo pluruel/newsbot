@@ -2,6 +2,9 @@ import logging
 import os
 from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
+
+_KST = ZoneInfo("Asia/Seoul")
 
 from newsparser.claude.input_builder import build_input_file
 from newsparser.claude.output_parser import parse_graph_updates
@@ -50,7 +53,7 @@ def run_cycle(slot: str) -> None:
         log_path = workspace / "logs" / f"{slot[:10]}.log"
         with log_path.open("a") as f:
             f.write(
-                f"{datetime.utcnow().isoformat()} cycle {slot} OK "
+                f"{datetime.now(_KST).isoformat()} cycle {slot} OK "
                 f"articles={len(unprocessed)} entities={len(entities)} relations={len(relations)}\n"
             )
 

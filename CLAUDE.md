@@ -17,7 +17,7 @@ Python handles all I/O, scheduling, and DB operations. Your job is cognitive wor
    - Causal threading: link to prior cycles ("third update on Story X")
    - Importance scoring: 0.0–1.0, objective only (no personalization)
      - Reserve 0.8+ for genuine market-moving events
-4. Write cycle report to `workspace/cycles/YYYY-MM-DD-HH.md`
+4. Output the full cycle report to stdout only. Python handles writing it to file.
 5. Extract entities and relations in the exact format below
 
 **Cycle report format:**

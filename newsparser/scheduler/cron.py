@@ -2,6 +2,7 @@
 import logging
 import os
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -17,16 +18,17 @@ logger = logging.getLogger(__name__)
 
 # KST = UTC+9
 TIMEZONE = "Asia/Seoul"
+KST = ZoneInfo(TIMEZONE)
 
 
 def _cycle_job() -> None:
-    slot = datetime.now().strftime("%Y-%m-%d-%H")
+    slot = datetime.now(KST).strftime("%Y-%m-%d-%H")
     logger.info("Starting cycle: %s", slot)
     run_cycle(slot)
 
 
 def _morning_job() -> None:
-    date_str = datetime.now().strftime("%Y-%m-%d")
+    date_str = datetime.now(KST).strftime("%Y-%m-%d")
     logger.info("Starting morning brief: %s", date_str)
     run_morning(date_str)
 
