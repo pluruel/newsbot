@@ -29,7 +29,7 @@ def interests_rollup() -> None:
                 ts = datetime.fromisoformat(e["ts"].replace("Z", "+00:00"))
                 if ts >= cutoff:
                     events.append(e)
-            except Exception:
+            except (json.JSONDecodeError, KeyError, ValueError):
                 continue
 
     if not events:
