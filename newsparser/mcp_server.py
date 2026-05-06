@@ -59,5 +59,14 @@ def read_conversation_history(chat_id: str, n: int = 10) -> str:
     return "\n".join(f"{t['role'].upper()}: {t['content']}" for t in history)
 
 
+@mcp.tool()
+def read_interests() -> str:
+    """Read the user's interest profile."""
+    path = _workspace() / "me" / "interests.md"
+    if not path.exists():
+        return "No interests file found."
+    return path.read_text()
+
+
 if __name__ == "__main__":
     mcp.run(transport="sse", host="0.0.0.0", port=8766)

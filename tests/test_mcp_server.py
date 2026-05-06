@@ -3,7 +3,7 @@ import pytest
 from pathlib import Path
 from unittest.mock import patch
 
-from newsparser.mcp_server import graph_query, read_cycle_reports, read_conversation_history
+from newsparser.mcp_server import graph_query, read_cycle_reports, read_conversation_history, read_interests
 from newsparser.bot.tracker import save_history
 
 
@@ -64,3 +64,14 @@ def test_read_conversation_history_returns_formatted_turns(tmp_path):
 def test_read_conversation_history_empty():
     result = read_conversation_history("nonexistent_chat")
     assert "No conversation history" in result
+
+
+def test_read_interests_returns_content(tmp_path):
+    (tmp_path / "workspace" / "me" / "interests.md").write_text("## 관심 분야\n- 반도체")
+    result = read_interests()
+    assert "반도체" in result
+
+
+def test_read_interests_missing_file():
+    result = read_interests()
+    assert "No interests file found" in result
