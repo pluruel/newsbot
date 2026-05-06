@@ -82,6 +82,6 @@ def run_tracker(chat_id: str, query: str) -> str:
     ]
     save_history(chat_id, new_turns)
 
-    hit_entities = [n["name"] for n in neighbors]
+    hit_entities = [n["name"] for n in neighbors if n.get("name") is not None]
     _log_interest_event(query, hit_entities)
     return answer
