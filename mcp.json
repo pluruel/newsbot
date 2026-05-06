@@ -1,6 +1,7 @@
 {
   "mcpServers": {
     "newsparser": {
+      "type": "sse",
       "url": "http://localhost:8766/sse"
     }
   }

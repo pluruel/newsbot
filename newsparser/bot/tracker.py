@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 
 HISTORY_MAX_TURNS = 10
 
-_MCP_CONFIG = Path(__file__).parent.parent / "mcp.json"
+_MCP_CONFIG = Path(__file__).parent.parent.parent / "mcp.json"
 
 
 def _workspace() -> Path:
