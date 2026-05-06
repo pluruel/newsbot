@@ -5,6 +5,8 @@
 | 매일경제 | https://www.mk.co.kr/rss/30000001/ | domestic | no |
 | 한국경제 | https://www.hankyung.com/feed/all-news | domestic | no |
 | 연합인포맥스 | https://news.einfomax.co.kr/rss/allnews.xml | domestic | no |
+| 중앙일보 | https://rss.joins.com/joins_news_list.xml | domestic | no |
+| 한겨레 | https://www.hani.co.kr/rss/ | domestic | no |
 | AP | https://feeds.apnews.com/rss/apf-business | international | no |
 | Financial Times | https://www.ft.com/rss/home | international | yes |
 | Federal Reserve | https://www.federalreserve.gov/feeds/press_all.xml | international | no |
