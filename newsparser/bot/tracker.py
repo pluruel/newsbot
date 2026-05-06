@@ -1,7 +1,7 @@
 import json
 import logging
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from newsparser.claude.runner import run_claude
@@ -45,7 +45,7 @@ def run_tracker(chat_id: str, query: str) -> str:
 
     answer = run_claude(prompt, mcp_config=str(_MCP_CONFIG))
 
-    now = datetime.utcnow().isoformat()
+    now = datetime.now(timezone.utc).isoformat()
     new_turns = history + [
         {"role": "user", "content": query, "ts": now},
         {"role": "assistant", "content": answer, "ts": now},

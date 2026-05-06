@@ -41,6 +41,7 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  # bot runs on the host (not this container) so claude CLI can reach mcp-server via localhost:8766
   bot:
     build: .
     command: .venv/bin/python -m newsparser.bot.telegram_bot
