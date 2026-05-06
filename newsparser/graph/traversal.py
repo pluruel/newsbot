@@ -2,14 +2,14 @@ from newsparser.graph.neo4j_client import get_driver
 
 
 def get_context(entity_name: str, days: int = 7) -> list[dict]:
-    """Return 2-hop neighbors updated within last N days."""
+    """Return 3-hop neighbors updated within last N days."""
     with get_driver().session() as session:
         result = session.run(
-            "MATCH (e {canonical_name: $name})-[*1..2]-(related) "
+            "MATCH (e {canonical_name: $name})-[*1..3]-(related) "
             "WHERE related.last_seen >= datetime() - duration({days: $days}) "
             "RETURN DISTINCT related.canonical_name AS name, "
             "  labels(related)[0] AS label, related.mention_count AS mentions "
-            "ORDER BY related.mention_count DESC LIMIT 20",
+            "ORDER BY related.mention_count DESC LIMIT 40",
             name=entity_name, days=days,
         )
         return [dict(r) for r in result]
@@ -51,7 +51,7 @@ def format_context_for_claude(
     """Format graph context as markdown for Claude prompt."""
     lines = [f"## Graph context for: {entity_name}", ""]
     if neighbors:
-        lines.append("### Related entities (2-hop, recent)")
+        lines.append("### Related entities (3-hop, recent)")
         for n in neighbors:
             lines.append(f"- {n['label']}: {n['name']} (mentions: {n['mentions']})")
     if chains:

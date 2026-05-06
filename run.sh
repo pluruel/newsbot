@@ -27,6 +27,7 @@ echo "Neo4j ready."
 
 # Host services connect to neo4j and mcp-server via localhost (ports published)
 export NEO4J_URI="bolt://localhost:7687"
+export IS_SANDBOX="1"
 
 echo "Starting scheduler (host)..."
 $PYTHON -m newsparser.scheduler.cron &

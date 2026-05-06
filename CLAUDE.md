@@ -99,6 +99,7 @@ Prompt includes: user query + graph context (2-hop neighbors) + recent conversat
 - Python runtime: `.venv/` created by `uv`. Always use `.venv/bin/python` and `.venv/bin/pytest`.
 - Never use `uv run python` or `uv run pytest` — invoke the venv binaries directly.
 - Example: `.venv/bin/pytest tests/ -v`
+- Claude is invoked via CLI subprocess (`claude -p ...`). Do not suggest switching to the Anthropic API directly.
 
 ---
 
