@@ -16,8 +16,8 @@ def run_morning(date_str: str) -> None:
     """Compose and send the daily brief."""
     try:
         interests_rollup()
-    except Exception:
-        logger.warning("Interest rollup failed — proceeding with existing interests.md")
+    except Exception as e:
+        logger.warning("Interest rollup failed (%s: %s) — brief will use current interests.md", type(e).__name__, e)
 
     workspace = ensure_workspace()
 
