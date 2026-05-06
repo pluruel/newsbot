@@ -94,6 +94,14 @@ Prompt includes: user query + graph context (2-hop neighbors) + recent conversat
 
 ---
 
+## Development Environment
+
+- Python runtime: `.venv/` created by `uv`. Always use `.venv/bin/python` and `.venv/bin/pytest`.
+- Never use `uv run python` or `uv run pytest` — invoke the venv binaries directly.
+- Example: `.venv/bin/pytest tests/ -v`
+
+---
+
 ## Style
 - Korean for Korean-origin content, English for English-origin
 - No honorifics. Casual peer tone.
