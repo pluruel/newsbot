@@ -64,7 +64,9 @@ def run() -> None:
         for source in spiking:
             if now - _spike_alerted_at.get(source, datetime.min) < cooldown:
                 continue
-            msg = f"📈 Volume spike: {source}"
+            source_articles = [a for a in recent if a["source"] == source]
+            titles = "\n".join(f"· {a['title'][:60]}" for a in source_articles[:3])
+            msg = f"📈 Volume spike: {source}\n{titles}"
             logger.warning("Spike: %s", source)
             _send(msg)
             _spike_alerted_at[source] = now
