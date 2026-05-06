@@ -49,5 +49,15 @@ def read_cycle_reports(n: int = 4) -> str:
     return "\n\n---\n\n".join(f.read_text() for f in reversed(files))
 
 
+@mcp.tool()
+def read_conversation_history(chat_id: str, n: int = 10) -> str:
+    """Read recent conversation turns for a given chat."""
+    from newsparser.bot.tracker import load_history
+    history = load_history(chat_id)[-n:]
+    if not history:
+        return "No conversation history."
+    return "\n".join(f"{t['role'].upper()}: {t['content']}" for t in history)
+
+
 if __name__ == "__main__":
     mcp.run(transport="sse", host="0.0.0.0", port=8766)

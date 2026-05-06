@@ -3,7 +3,8 @@ import pytest
 from pathlib import Path
 from unittest.mock import patch
 
-from newsparser.mcp_server import graph_query, read_cycle_reports
+from newsparser.mcp_server import graph_query, read_cycle_reports, read_conversation_history
+from newsparser.bot.tracker import save_history
 
 
 @pytest.fixture(autouse=True)
@@ -48,3 +49,18 @@ def test_read_cycle_reports_returns_n_most_recent(tmp_path):
 def test_read_cycle_reports_empty_dir():
     result = read_cycle_reports()
     assert "No cycle reports found" in result
+
+
+def test_read_conversation_history_returns_formatted_turns(tmp_path):
+    save_history("chat99", [
+        {"role": "user", "content": "안녕", "ts": "2026-05-05T00:00:00"},
+        {"role": "assistant", "content": "안녕하세요", "ts": "2026-05-05T00:00:01"},
+    ])
+    result = read_conversation_history("chat99")
+    assert "USER: 안녕" in result
+    assert "ASSISTANT: 안녕하세요" in result
+
+
+def test_read_conversation_history_empty():
+    result = read_conversation_history("nonexistent_chat")
+    assert "No conversation history" in result
