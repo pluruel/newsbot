@@ -1,0 +1,40 @@
+import json
+import os
+from datetime import datetime, timezone
+from pathlib import Path
+
+from mcp.server.fastmcp import FastMCP
+
+from newsparser.graph.traversal import get_context, get_influence_chain, format_context_for_claude
+
+mcp = FastMCP("newsparser")
+
+
+def _workspace() -> Path:
+    return Path(os.environ.get("WORKSPACE_DIR", "workspace"))
+
+
+def _log_interest_event(entity: str) -> None:
+    event = {
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "type": "query",
+        "entities": [entity],
+        "themes": [entity],
+        "depth": "shallow",
+    }
+    path = _workspace() / "me" / "interest-events.jsonl"
+    with path.open("a") as f:
+        f.write(json.dumps(event, ensure_ascii=False) + "\n")
+
+
+@mcp.tool()
+def graph_query(entity: str, days: int = 7) -> str:
+    """Query the knowledge graph for context about an entity."""
+    neighbors = get_context(entity, days)
+    chains = get_influence_chain(entity)
+    _log_interest_event(entity)
+    return format_context_for_claude(entity, neighbors, chains)
+
+
+if __name__ == "__main__":
+    mcp.run(transport="sse", host="0.0.0.0", port=8766)

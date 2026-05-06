@@ -13,6 +13,7 @@ dependencies = [
     "python-dotenv>=1.0",
     "apscheduler>=3.10,<4",
     "neo4j>=6.2.0",
+    "fastmcp>=2.0",
 ]
 
 [project.optional-dependencies]
