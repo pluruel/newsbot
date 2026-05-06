@@ -23,6 +23,7 @@ def _log_interest_event(entity: str) -> None:
         "depth": "shallow",
     }
     path = _workspace() / "me" / "interest-events.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a") as f:
         f.write(json.dumps(event, ensure_ascii=False) + "\n")
 
