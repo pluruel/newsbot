@@ -7,6 +7,7 @@ from pathlib import Path
 from mcp.server.fastmcp import FastMCP
 
 from newsparser.graph.traversal import get_context, get_influence_chain, format_context_for_claude
+from newsparser.classifier import classify_query as _classify_query_impl
 
 mcp = FastMCP("newsparser", host="0.0.0.0", port=8766)
 
@@ -30,23 +31,24 @@ def _log_interest_event(entity: str) -> None:
 
 
 @mcp.tool()
-def graph_query(entity: str, days: int = 7) -> str:
-    """Query the knowledge graph for context about an entity."""
-    neighbors = get_context(entity, days)
-    chains = get_influence_chain(entity)
+def graph_query(entity: str, category: str | None = None, days: int = 7) -> str:
+    """Query the knowledge graph for context about an entity.
+    Pass `category='tech'` or `category='markets'` to restrict traversal."""
+    neighbors = get_context(entity, days, category=category)
+    chains = get_influence_chain(entity, category=category)
     _log_interest_event(entity)
     return format_context_for_claude(entity, neighbors, chains)
 
 
 @mcp.tool()
-def read_cycle_reports(n: int = 4) -> str:
-    """Read the N most recent cycle reports."""
-    cycles_dir = _workspace() / "cycles"
+def read_cycle_reports(category: str, n: int = 4) -> str:
+    """Read the N most recent cycle reports for the given category ('tech' or 'markets')."""
+    cycles_dir = _workspace() / "cycles" / category
     if not cycles_dir.exists():
-        return "No cycle reports found."
+        return f"No cycle reports found for category={category}."
     files = sorted(cycles_dir.glob("*.md"), reverse=True)[:n]
     if not files:
-        return "No cycle reports found."
+        return f"No cycle reports found for category={category}."
     return "\n\n---\n\n".join(f.read_text() for f in reversed(files))
 
 
@@ -61,12 +63,11 @@ def read_conversation_history(chat_id: str, n: int = 10) -> str:
 
 
 @mcp.tool()
-def get_interest_weights(days: int = 14) -> str:
-    """Compare actual interest weights vs estimated weights from recent tracker queries."""
-    interests_path = _workspace() / "me" / "interests.md"
+def get_interest_weights(category: str, days: int = 14) -> str:
+    """Compare actual vs estimated weights for a category's interest profile."""
+    interests_path = _workspace() / "me" / f"interests_{category}.md"
     events_path = _workspace() / "me" / "interest-events.jsonl"
 
-    # Parse actual weights from interests.md
     actual: dict[str, dict] = {}
     if interests_path.exists():
         for line in interests_path.read_text().splitlines():
@@ -83,7 +84,6 @@ def get_interest_weights(days: int = 14) -> str:
             except ValueError:
                 continue
 
-    # Estimate weights from recent events
     estimated: dict[str, float] = {}
     if events_path.exists():
         cutoff = datetime.now(timezone.utc) - timedelta(days=days)
@@ -100,17 +100,16 @@ def get_interest_weights(days: int = 14) -> str:
                     counts[theme] += 1
             except (json.JSONDecodeError, KeyError, ValueError):
                 continue
-
         if counts:
             max_count = max(counts.values())
             for theme, count in counts.items():
                 estimated[theme] = round(count / max_count, 2)
 
     if not actual and not estimated:
-        return "No data found."
+        return f"No data found for category={category}."
 
     all_themes = sorted(set(actual) | set(estimated))
-    lines = [f"Interest weight comparison (estimated from last {days} days of queries)\n"]
+    lines = [f"Interest weight comparison for category={category} (last {days} days)\n"]
     lines.append(f"{'Theme':<30} {'actual':>8} {'estimated':>10} {'diff':>6}")
     lines.append("-" * 58)
     for theme in all_themes:
@@ -118,13 +117,8 @@ def get_interest_weights(days: int = 14) -> str:
         e = estimated.get(theme, None)
         a_str = f"{a:.2f}" if a is not None else "  —  "
         e_str = f"{e:.2f}" if e is not None else "  —  "
-        if a is not None and e is not None:
-            diff = e - a
-            diff_str = f"{diff:+.2f}"
-        else:
-            diff_str = "  —  "
+        diff_str = f"{(e - a):+.2f}" if (a is not None and e is not None) else "  —  "
         lines.append(f"{theme:<30} {a_str:>8} {e_str:>10} {diff_str:>6}")
-
     return "\n".join(lines)
 
 
@@ -151,21 +145,21 @@ def clear_conversation_history() -> str:
 
 
 @mcp.tool()
-def read_interests() -> str:
-    """Read the user's interest profile."""
-    path = _workspace() / "me" / "interests.md"
+def read_interests(category: str) -> str:
+    """Read the per-category interest profile."""
+    path = _workspace() / "me" / f"interests_{category}.md"
     if not path.exists():
-        return "No interests file found."
+        return f"No interests file found for category={category}."
     return path.read_text()
 
 
 @mcp.tool()
-def write_interests(content: str) -> str:
-    """Overwrite the user's interests.md. Preserve ## User overrides section."""
-    path = _workspace() / "me" / "interests.md"
+def write_interests(category: str, content: str) -> str:
+    """Overwrite a per-category interests file."""
+    path = _workspace() / "me" / f"interests_{category}.md"
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(content, ensure_ascii=False)
-    return "interests.md updated."
+    path.write_text(content, encoding="utf-8")
+    return f"interests_{category}.md updated."
 
 
 @mcp.tool()
@@ -184,6 +178,12 @@ def write_manifesto(content: str) -> str:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, ensure_ascii=False)
     return "manifesto.md updated."
+
+
+@mcp.tool()
+def classify_query(query: str) -> str:
+    """Return the category the query is most likely about: 'tech', 'markets', or 'both'."""
+    return _classify_query_impl(query)
 
 
 if __name__ == "__main__":

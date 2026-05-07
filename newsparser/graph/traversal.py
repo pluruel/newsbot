@@ -1,30 +1,42 @@
 from newsparser.graph.neo4j_client import get_driver
 
 
-def get_context(entity_name: str, days: int = 7) -> list[dict]:
-    """Return 3-hop neighbors updated within last N days."""
+def get_context(entity_name: str, days: int = 7, category: str | None = None) -> list[dict]:
+    """Return 3-hop neighbors updated within last N days. If category is set, only neighbors in that category."""
+    cypher = (
+        "MATCH (e {canonical_name: $name})-[*1..3]-(related) "
+        "WHERE related.last_seen >= datetime() - duration({days: $days}) "
+    )
+    params: dict = {"name": entity_name, "days": days}
+    if category is not None:
+        cypher += "AND related.category = $category "
+        params["category"] = category
+    cypher += (
+        "RETURN DISTINCT related.canonical_name AS name, "
+        "  labels(related)[0] AS label, related.mention_count AS mentions "
+        "ORDER BY related.mention_count DESC LIMIT 40"
+    )
     with get_driver().session() as session:
-        result = session.run(
-            "MATCH (e {canonical_name: $name})-[*1..3]-(related) "
-            "WHERE related.last_seen >= datetime() - duration({days: $days}) "
-            "RETURN DISTINCT related.canonical_name AS name, "
-            "  labels(related)[0] AS label, related.mention_count AS mentions "
-            "ORDER BY related.mention_count DESC LIMIT 40",
-            name=entity_name, days=days,
-        )
+        result = session.run(cypher, **params)
         return [dict(r) for r in result]
 
 
-def get_influence_chain(entity_name: str) -> list[dict]:
-    """Return influence chain up to 3 hops."""
+def get_influence_chain(entity_name: str, category: str | None = None) -> list[dict]:
+    """Return influence chain up to 3 hops. If category is set, every hop must match."""
+    cypher = (
+        "MATCH path = (e {canonical_name: $name})"
+        "-[:IMPACTS|INFLUENCES*1..3]->(target) "
+    )
+    params: dict = {"name": entity_name}
+    if category is not None:
+        cypher += "WHERE all(n IN nodes(path) WHERE n.category = $category) "
+        params["category"] = category
+    cypher += (
+        "RETURN [n IN nodes(path) | n.canonical_name] AS chain, length(path) AS depth "
+        "ORDER BY depth LIMIT 10"
+    )
     with get_driver().session() as session:
-        result = session.run(
-            "MATCH path = (e {canonical_name: $name})"
-            "-[:IMPACTS|INFLUENCES*1..3]->(target) "
-            "RETURN [n IN nodes(path) | n.canonical_name] AS chain, length(path) AS depth "
-            "ORDER BY depth LIMIT 10",
-            name=entity_name,
-        )
+        result = session.run(cypher, **params)
         return [dict(r) for r in result]
 
 
