@@ -11,6 +11,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from newsparser.scheduler.cycle import run_cycle
+from newsparser.store.sqlite import init_db
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -27,6 +28,7 @@ def _cycle_job() -> None:
 
 
 def start() -> None:
+    init_db()
     scheduler = BlockingScheduler(timezone=TIMEZONE)
 
     # 00:00, 06:00, 12:00, 18:00 KST

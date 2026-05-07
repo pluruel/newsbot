@@ -51,6 +51,12 @@ def init_db() -> None:
                 seen_at TEXT NOT NULL
             );
         """)
+        # Idempotent column addition. SQLite raises OperationalError if column exists.
+        try:
+            conn.execute("ALTER TABLE pending_articles ADD COLUMN category TEXT")
+            conn.commit()
+        except sqlite3.OperationalError:
+            pass
     finally:
         conn.close()
 
@@ -71,22 +77,28 @@ def mark_seen(guid: str) -> None:
 
 
 def insert_article(
-    guid: str, source: str, title: str, url: str, published: str | None, body: str | None
+    guid: str, source: str, title: str, url: str,
+    published: str | None, body: str | None, category: str | None = None,
 ) -> None:
     with _connection() as conn:
         conn.execute(
             """INSERT OR IGNORE INTO pending_articles
-               (guid, source, title, url, published, body, fetched_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (guid, source, title, url, published, body, datetime.utcnow().isoformat()),
+               (guid, source, title, url, published, body, fetched_at, category)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (guid, source, title, url, published, body,
+             datetime.utcnow().isoformat(), category),
         )
 
 
-def get_unprocessed() -> list[dict]:
+def get_unprocessed(category: str | None = None) -> list[dict]:
+    sql = "SELECT * FROM pending_articles WHERE processed = 0"
+    params: tuple = ()
+    if category is not None:
+        sql += " AND category = ?"
+        params = (category,)
+    sql += " ORDER BY COALESCE(published, fetched_at)"
     with _connection() as conn:
-        rows = conn.execute(
-            "SELECT * FROM pending_articles WHERE processed = 0 ORDER BY COALESCE(published, fetched_at)"
-        ).fetchall()
+        rows = conn.execute(sql, params).fetchall()
         return [dict(r) for r in rows]
 
 
@@ -113,4 +125,22 @@ def mark_alerted(guid: str) -> None:
     with _connection() as conn:
         conn.execute(
             "UPDATE pending_articles SET alerted = 1 WHERE guid = ?", (guid,)
+        )
+
+
+def get_unclassified() -> list[dict]:
+    """Return unprocessed rows with NULL category — input for haiku classification."""
+    with _connection() as conn:
+        rows = conn.execute(
+            "SELECT * FROM pending_articles WHERE processed = 0 AND category IS NULL "
+            "ORDER BY COALESCE(published, fetched_at)"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def update_category(guid: str, category: str) -> None:
+    with _connection() as conn:
+        conn.execute(
+            "UPDATE pending_articles SET category = ? WHERE guid = ?",
+            (category, guid),
         )

@@ -14,6 +14,7 @@ load_dotenv()
 from newsparser.bot.dispatcher import classify_message, MessageType
 from newsparser.bot.tracker import run_tracker
 from newsparser.scheduler.cycle import run_cycle
+from newsparser.store.sqlite import init_db
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +61,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 
 def start() -> None:
+    init_db()
     token = os.environ["TELEGRAM_BOT_TOKEN"]
     app = Application.builder().token(token).build()
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))

@@ -15,6 +15,7 @@ workspace/input/
 workspace/logs/
 workspace/sessions/
 workspace/me/*.jsonl
+workspace/me/*.md
 
 # Claude Code local settings
 .claude/settings.local.json

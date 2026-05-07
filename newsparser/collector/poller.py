@@ -34,7 +34,8 @@ def poll_source(source: Source) -> list[dict]:
         else:
             body = fetch_body(url) or summary
 
-        insert_article(guid, source.name, title, url, published, body)
+        insert_article(guid, source.name, title, url, published, body,
+                       category=source.category)
         mark_seen(guid)
         new_articles.append({"guid": guid, "source": source.name, "title": title, "fetched_at": datetime.utcnow().isoformat()})
         logger.info("New article: [%s] %s", source.name, title)

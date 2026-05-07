@@ -59,3 +59,35 @@ def test_upsert_relation_ema_update():
         ).single()
     expected = 0.85 * 0.80 + 0.15 * 1.0
     assert row["impact"] == pytest.approx(expected, abs=0.01)
+
+def test_upsert_entity_sets_category():
+    entity = EntityUpdate(op="NEW", label="Company", name="OpenAI", aliases=[])
+    apply_graph_updates([entity], [], "tech-2026-05-07-12", category="tech")
+    with get_driver().session() as s:
+        row = s.run("MATCH (e:Company {canonical_name: 'OpenAI'}) RETURN e.category AS c").single()
+    assert row["c"] == "tech"
+
+
+def test_upsert_entity_does_not_overwrite_existing_category():
+    entity = EntityUpdate(op="NEW", label="Company", name="OpenAI", aliases=[])
+    apply_graph_updates([entity], [], "tech-2026-05-07-12", category="tech")
+    apply_graph_updates([entity], [], "markets-2026-05-07-12", category="markets")
+    with get_driver().session() as s:
+        row = s.run("MATCH (e:Company {canonical_name: 'OpenAI'}) RETURN e.category AS c").single()
+    # First-set wins (coalesce semantics)
+    assert row["c"] == "tech"
+
+
+def test_upsert_relation_sets_category():
+    entities = [
+        EntityUpdate(op="NEW", label="Company", name="OpenAI", aliases=[]),
+        EntityUpdate(op="NEW", label="Company", name="Microsoft", aliases=[]),
+    ]
+    rel = RelationUpdate(op="NEW", subject="OpenAI", predicate="INFLUENCES",
+                         obj="Microsoft", confidence=0.7, impact_score=0.6)
+    apply_graph_updates(entities, [rel], "tech-2026-05-07-12", category="tech")
+    with get_driver().session() as s:
+        row = s.run(
+            "MATCH ()-[r:INFLUENCES]->() RETURN r.category AS c"
+        ).single()
+    assert row["c"] == "tech"
