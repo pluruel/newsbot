@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from newsparser.claude.runner import run_claude
+from newsparser.classifier import classify_query
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +63,15 @@ def run_tracker(chat_id: str, query: str) -> str:
                     f"Assistant: {last_assistant['content']}\n"
                 )
 
+    try:
+        category_hint = classify_query(query)
+    except Exception:
+        category_hint = "both"
+
     prompt = (
+        f"User query category hint: {category_hint}. "
+        "Use this as a default filter when calling graph/cycle/interests tools, "
+        "but pass category=None or 'both' if the question genuinely spans both.\n\n"
         "You are a market intelligence assistant. Use the available tools "
         "to gather relevant context, then answer the user's query. "
         "Cite cycle reports by date. Lead with TL;DR if the answer is long."
