@@ -1,3 +1,5 @@
+> Note: Python prepends a `## 카테고리` block to this prompt at runtime, declaring the current category and its scope. Treat that block as the source of truth for which category you're processing.
+
 ## /cycle task
 
 1. Read the input file (path appended below).
