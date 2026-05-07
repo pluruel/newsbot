@@ -13,7 +13,7 @@ from newsparser.claude.runner import run_claude
 from newsparser.classifier import classify_article, CATEGORIES
 from newsparser.graph.writer import apply_graph_updates
 from newsparser.store.sqlite import (
-    get_unclassified, get_unprocessed, mark_processed, update_category,
+    get_unclassified, get_unprocessed, init_db, mark_processed, update_category,
 )
 from newsparser.scheduler.lock import acquire_lock, release_lock, LockError
 from newsparser.scheduler.workspace import ensure_workspace
@@ -111,6 +111,7 @@ def _run_for_category(slot: str, category: str, workspace: Path) -> None:
 def run_cycle(slot: str) -> None:
     """Full /cycle flow per slot — classifies pending then runs once per category."""
     workspace = ensure_workspace()
+    init_db()  # idempotent — ensures category column exists on pre-existing DBs
     lock_path = workspace / "state" / "lockfile"
 
     try:
