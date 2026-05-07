@@ -63,7 +63,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 def start() -> None:
     init_db()
     token = os.environ["TELEGRAM_BOT_TOKEN"]
-    app = Application.builder().token(token).build()
+    app = (Application.builder()                                    
+        .token(token)                                                                                                                                                                                    
+        .read_timeout(30)                                        
+        .connect_timeout(10)                                                                                                                                                                             
+        .build())    
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(MessageHandler(filters.COMMAND, handle_message))
     logger.info("Bot polling started")
