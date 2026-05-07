@@ -1,6 +1,6 @@
 # Newsparser
 
-Personal market intelligence system. Collects and analyzes news, sends morning briefs via Telegram, and answers queries against a knowledge graph.
+Personal market intelligence system. Collects and analyzes news, posts cycle reports to Telegram, and answers queries against a knowledge graph.
 
 ---
 
@@ -18,7 +18,7 @@ Compare recent trends for Nvidia and AMD
 
 ### Interest weights
 
-Controls what appears in the morning brief.
+Tracked for query weighting and graph traversal.
 
 ```
 Lower my AI interest weight
@@ -29,7 +29,7 @@ Show weight comparison        ← configured weights vs actual query frequency
 
 ### Manifesto
 
-How the system understands your perspective — reflected in morning brief tone.
+How the system understands your perspective — reflected in tracker tone.
 
 ```
 Show my manifesto
@@ -49,9 +49,8 @@ Clear conversation history
 
 | Schedule | Action |
 |----------|--------|
-| Hourly | Collect news → generate cycle report → update graph |
-| Every morning | Send daily brief via Telegram |
-| Periodic | Auto-update interests.md from query history |
+| Hourly | Collect news |
+| 00/06/12/18 KST | Generate cycle report → update graph → post to Telegram |
 
 ---
 

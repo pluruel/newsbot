@@ -6,6 +6,7 @@ from zoneinfo import ZoneInfo
 
 _KST = ZoneInfo("Asia/Seoul")
 
+from newsparser.bot.sender import send_long_message
 from newsparser.claude.input_builder import build_input_file
 from newsparser.claude.output_parser import parse_graph_updates
 from newsparser.claude.runner import run_claude
@@ -47,6 +48,11 @@ def run_cycle(slot: str) -> None:
         entities, relations = parse_graph_updates(report)
         apply_graph_updates(entities, relations, cycle_id=slot)
         logger.info("Graph updated: %d entities, %d relations", len(entities), len(relations))
+
+        try:
+            send_long_message(report)
+        except Exception as e:
+            logger.error("Telegram send failed for cycle %s: %s", slot, e)
 
         mark_processed([a["guid"] for a in unprocessed])
 

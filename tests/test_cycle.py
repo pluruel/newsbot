@@ -31,16 +31,19 @@ SAMPLE_REPORT = """# Cycle 2026-05-05 00:00 KST
 def test_run_cycle_builds_input_and_calls_claude(tmp_path):
     insert_article("g1", "Reuters", "Title", "https://x.com", "2026-05-05T00:00:00", "body")
     with patch("newsparser.scheduler.cycle.run_claude", return_value=SAMPLE_REPORT) as mock_claude, \
-         patch("newsparser.scheduler.cycle.apply_graph_updates") as mock_graph:
+         patch("newsparser.scheduler.cycle.apply_graph_updates") as mock_graph, \
+         patch("newsparser.scheduler.cycle.send_long_message") as mock_send:
         run_cycle("2026-05-05-00")
     mock_claude.assert_called_once()
     mock_graph.assert_called_once()
+    mock_send.assert_called_once_with(SAMPLE_REPORT)
 
 def test_run_cycle_writes_report_file(tmp_path):
     insert_article("g1", "Reuters", "Title", "https://x.com", "2026-05-05T00:00:00", "body")
     workspace = Path(os.environ["WORKSPACE_DIR"])
     with patch("newsparser.scheduler.cycle.run_claude", return_value=SAMPLE_REPORT), \
-         patch("newsparser.scheduler.cycle.apply_graph_updates"):
+         patch("newsparser.scheduler.cycle.apply_graph_updates"), \
+         patch("newsparser.scheduler.cycle.send_long_message"):
         run_cycle("2026-05-05-00")
     report = workspace / "cycles" / "2026-05-05-00.md"
     assert report.exists()
@@ -49,6 +52,15 @@ def test_run_cycle_writes_report_file(tmp_path):
 def test_run_cycle_marks_articles_processed():
     insert_article("g1", "Reuters", "Title", "https://x.com", "2026-05-05T00:00:00", "body")
     with patch("newsparser.scheduler.cycle.run_claude", return_value=SAMPLE_REPORT), \
-         patch("newsparser.scheduler.cycle.apply_graph_updates"):
+         patch("newsparser.scheduler.cycle.apply_graph_updates"), \
+         patch("newsparser.scheduler.cycle.send_long_message"):
+        run_cycle("2026-05-05-00")
+    assert get_unprocessed() == []
+
+def test_run_cycle_marks_processed_even_if_telegram_fails():
+    insert_article("g1", "Reuters", "Title", "https://x.com", "2026-05-05T00:00:00", "body")
+    with patch("newsparser.scheduler.cycle.run_claude", return_value=SAMPLE_REPORT), \
+         patch("newsparser.scheduler.cycle.apply_graph_updates"), \
+         patch("newsparser.scheduler.cycle.send_long_message", side_effect=RuntimeError("boom")):
         run_cycle("2026-05-05-00")
     assert get_unprocessed() == []

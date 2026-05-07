@@ -14,7 +14,6 @@ load_dotenv()
 from newsparser.bot.dispatcher import classify_message, MessageType
 from newsparser.bot.tracker import run_tracker
 from newsparser.scheduler.cycle import run_cycle
-from newsparser.scheduler.morning import run_morning
 
 logger = logging.getLogger(__name__)
 
@@ -42,11 +41,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await update.message.reply_text(f"⚙️ /cycle 시작: {slot}")
         await asyncio.to_thread(run_cycle, slot)
         await update.message.reply_text("✅ Cycle 완료")
-
-    elif msg_type == MessageType.SLASH_MORNING:
-        date_str = datetime.now(kst).strftime("%Y-%m-%d")
-        await update.message.reply_text("⚙️ /morning 시작")
-        await asyncio.to_thread(run_morning, date_str)
 
     elif msg_type == MessageType.SLASH_WEEKLY:
         await update.message.reply_text("⚙️ /weekly — 미구현 (Plan 5)")

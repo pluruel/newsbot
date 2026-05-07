@@ -5,10 +5,6 @@ def test_cycle_command():
     assert classify_message("/cycle") == MessageType.SLASH_CYCLE
 
 
-def test_morning_command():
-    assert classify_message("/morning") == MessageType.SLASH_MORNING
-
-
 def test_weekly_command():
     assert classify_message("/weekly") == MessageType.SLASH_WEEKLY
 
