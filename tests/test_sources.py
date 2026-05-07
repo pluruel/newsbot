@@ -61,3 +61,35 @@ def test_load_sources_handles_legacy_layout_without_category(tmp_path):
     sources = load_sources(str(p))
     assert len(sources) == 1
     assert sources[0].category is None
+
+
+def test_poll_source_passes_category_to_insert():
+    from unittest.mock import patch, MagicMock
+    from newsparser.collector.poller import poll_source
+
+    fake_entry = MagicMock()
+    fake_entry.id = "guid-x"
+    fake_entry.link = "https://example.com/x"
+    fake_entry.title = "Hello"
+    fake_entry.published = "2026-05-07T00:00:00"
+    fake_entry.summary = "summary"
+
+    fake_feed = MagicMock()
+    fake_feed.entries = [fake_entry]
+
+    src = Source(name="OpenAI Blog", rss_url="https://openai.com/rss",
+                 tier="international", paywall=False, category="tech")
+
+    with patch("newsparser.collector.poller.feedparser.parse", return_value=fake_feed), \
+         patch("newsparser.collector.poller.fetch_body", return_value="body"), \
+         patch("newsparser.collector.poller.insert_article") as mock_insert:
+        poll_source(src)
+
+    mock_insert.assert_called_once()
+    _, kwargs = mock_insert.call_args
+    args = mock_insert.call_args[0]
+    assert "category" in mock_insert.call_args.kwargs or len(args) >= 7
+    if "category" in mock_insert.call_args.kwargs:
+        assert mock_insert.call_args.kwargs["category"] == "tech"
+    else:
+        assert args[6] == "tech"
