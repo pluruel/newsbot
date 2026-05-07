@@ -50,7 +50,18 @@ Clear conversation history
 | Schedule | Action |
 |----------|--------|
 | Hourly | Collect news |
-| 00/06/12/18 KST | Generate cycle report → update graph → post to Telegram |
+| 00/06/12/18 KST | Per category (tech / markets): classify pending → cycle report → update graph → post to Telegram |
+
+---
+
+## Storage
+
+| Layer | Path | Override |
+|---|---|---|
+| Articles + cycle queue | `workspace/newsparser.db` | `DB_PATH` env var |
+| Cycle reports | `workspace/cycles/{tech,markets}/{slot}.md` | `WORKSPACE_DIR` env var |
+| Interest profiles | `workspace/me/interests_{tech,markets}.md` | `WORKSPACE_DIR` env var |
+| Knowledge graph | Neo4j (configured via `NEO4J_PASSWORD`) | — |
 
 ---
 
