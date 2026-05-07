@@ -81,7 +81,13 @@ def run_tracker(chat_id: str, query: str) -> str:
 
     answer = run_claude(prompt, mcp_config=str(_MCP_CONFIG))
 
-    _ADMIN_MARKERS = ("interests.md updated", "manifesto.md updated", "cleared", "interest-events.jsonl")
+    _ADMIN_MARKERS = (
+        "interests_tech.md updated",
+        "interests_markets.md updated",
+        "manifesto.md updated",
+        "cleared",
+        "interest-events.jsonl",
+    )
     if not any(marker in answer for marker in _ADMIN_MARKERS):
         now = datetime.now(timezone.utc).isoformat()
         new_turns = history + [
