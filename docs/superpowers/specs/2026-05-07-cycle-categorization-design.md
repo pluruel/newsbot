@@ -141,7 +141,7 @@ Haiku classifier prompt:
 > 제목: ...
 > 본문 (앞 500자): ...
 
-Model: `claude-haiku-4-5-20251001`. Timeout 15s.
+Model: Claude Haiku 4.5 (specific model ID — pinned snapshot vs alias — chosen at implementation time, ideally matching whatever convention `tracker.py` ends up using). Timeout 15s.
 
 Error handling:
 - Per-article classifier failure or unparseable response (anything not exactly `tech` or `markets` after lowercase + trim) → fallback `markets` (per the global tie-breaker rule).
@@ -202,7 +202,7 @@ Existing `workspace/state/lockfile` is acquired once per slot at the top of `_cy
 
 ### 7.1 Query category hint
 
-`run_tracker()` calls a new `classify_query(query) -> 'tech' | 'markets' | 'both'` (haiku) at entry. Anything outside that set (including timeouts and unparseable responses) is normalized to `'both'` (= no implicit filter). Adds a hint line into the system prompt:
+`run_tracker()` calls a new `classify_query(query) -> 'tech' | 'markets' | 'both'` (Haiku 4.5) at entry. Anything outside that set (including timeouts and unparseable responses) is normalized to `'both'` (= no implicit filter). Adds a hint line into the system prompt:
 
 > User query category hint: `{hint}`. Use this as a default filter when calling graph/cycle/interests tools, but pass `category=None` if the question genuinely spans both.
 
