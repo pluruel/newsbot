@@ -12,10 +12,15 @@ def setup(tmp_path, monkeypatch):
     monkeypatch.setenv("NEO4J_PASSWORD", "testpass")
     init_db()
 
-SAMPLE_REPORT = """# Cycle 2026-05-05 00:00 KST
+SAMPLE_DIGEST = """사이클 2026-05-05 00:00 KST
 
-## New developments
-- [importance: 0.80] **Test story.**
+새 소식
+• (중요도 0.80) Fed가 50bp 깜짝 인하. KOSPI 영향 주목.
+
+오픈 스레드
+• 없음"""
+
+SAMPLE_REPORT = SAMPLE_DIGEST + """
 
 ## Graph updates
 ### Entities
@@ -23,9 +28,6 @@ SAMPLE_REPORT = """# Cycle 2026-05-05 00:00 KST
 
 ### Relations
 - NEW | Fed --INFLUENCES[conf:0.80, impact:0.70]--> KOSPI | test
-
-## Open threads
-- None
 """
 
 def test_run_cycle_builds_input_and_calls_claude(tmp_path):
@@ -36,7 +38,7 @@ def test_run_cycle_builds_input_and_calls_claude(tmp_path):
         run_cycle("2026-05-05-00")
     mock_claude.assert_called_once()
     mock_graph.assert_called_once()
-    mock_send.assert_called_once_with(SAMPLE_REPORT)
+    mock_send.assert_called_once_with(SAMPLE_DIGEST)
 
 def test_run_cycle_writes_report_file(tmp_path):
     insert_article("g1", "Reuters", "Title", "https://x.com", "2026-05-05T00:00:00", "body")
@@ -47,7 +49,9 @@ def test_run_cycle_writes_report_file(tmp_path):
         run_cycle("2026-05-05-00")
     report = workspace / "cycles" / "2026-05-05-00.md"
     assert report.exists()
-    assert "Test story" in report.read_text()
+    text = report.read_text()
+    assert "Fed가 50bp" in text
+    assert "## Graph updates" in text  # full report saved, not just digest
 
 def test_run_cycle_marks_articles_processed():
     insert_article("g1", "Reuters", "Title", "https://x.com", "2026-05-05T00:00:00", "body")

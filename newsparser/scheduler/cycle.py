@@ -17,6 +17,8 @@ from newsparser.scheduler.workspace import ensure_workspace
 
 logger = logging.getLogger(__name__)
 
+_CYCLE_PROMPT_PATH = Path(__file__).parent.parent.parent / "prompts" / "cycle.md"
+
 
 def run_cycle(slot: str) -> None:
     """Full /cycle flow: collect → claude → parse → neo4j."""
@@ -38,7 +40,8 @@ def run_cycle(slot: str) -> None:
         input_path = build_input_file(slot)
         logger.info("Built input file: %s (%d articles)", input_path, len(unprocessed))
 
-        prompt = f"/cycle\n\nInput file: {input_path}"
+        spec = _CYCLE_PROMPT_PATH.read_text(encoding="utf-8")
+        prompt = f"{spec}\n\nInput file: {input_path}"
         report = run_claude(prompt)
 
         report_path = workspace / "cycles" / f"{slot}.md"
@@ -49,8 +52,9 @@ def run_cycle(slot: str) -> None:
         apply_graph_updates(entities, relations, cycle_id=slot)
         logger.info("Graph updated: %d entities, %d relations", len(entities), len(relations))
 
+        digest = report.split("## Graph updates", 1)[0].rstrip()
         try:
-            send_long_message(report)
+            send_long_message(digest or report)
         except Exception as e:
             logger.error("Telegram send failed for cycle %s: %s", slot, e)
 
