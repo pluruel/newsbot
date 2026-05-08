@@ -9,7 +9,7 @@ from mcp.server.fastmcp import FastMCP
 from newsparser.graph.traversal import get_context, get_influence_chain, format_context_for_claude
 from newsparser.classifier import classify_query as _classify_query_impl
 
-mcp = FastMCP("newsparser", host="0.0.0.0", port=8766)
+mcp = FastMCP("newsparser")
 
 
 def _workspace() -> Path:
@@ -220,4 +220,4 @@ def classify_query(query: str) -> str:
 
 
 if __name__ == "__main__":
-    mcp.run(transport="sse")
+    mcp.run(transport="stdio")

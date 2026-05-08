@@ -22,13 +22,12 @@ _ARTICLE_PROMPT = (
     "본문 (앞 {n}자): {body}"
 )
 
-_QUERY_PROMPT = (
+_QUERY_PROMPT_HEADER = (
     "다음 사용자 쿼리가 어느 카테고리에 가까운지 한 단어로 답해.\n"
     "- `tech`: AI 활용·신규 AI 정보·일반 컴퓨터 기술 관련 질문\n"
     "- `markets`: 시장·매크로·정책·기타 산업 관련 질문\n"
     "- `both`: 두 카테고리를 모두 가로지르는 질문 (예: AI가 시장에 미치는 영향)\n\n"
     "응답은 정확히 'tech', 'markets', 또는 'both' 한 단어.\n\n"
-    "쿼리: {query}"
 )
 
 
@@ -60,9 +59,17 @@ def classify_article(title: str, body: str | None) -> str:
     return _normalize_article_response(raw)
 
 
-def classify_query(query: str) -> str:
+def classify_query(query: str, history: list[dict] | None = None) -> str:
     """Return 'tech' / 'markets' / 'both' for a tracker query. Falls back to 'both' on errors."""
-    prompt = _QUERY_PROMPT.format(query=query)
+    parts = [_QUERY_PROMPT_HEADER]
+    if history:
+        lines = [
+            f"{'User' if turn.get('role') == 'user' else 'Assistant'}: {turn.get('content', '')}"
+            for turn in history
+        ]
+        parts.append("최근 대화:\n" + "\n".join(lines) + "\n\n")
+    parts.append(f"쿼리: {query}")
+    prompt = "".join(parts)
     try:
         raw = run_claude(prompt, timeout=15, model=HAIKU_MODEL)
     except (ClaudeError, RuntimeError, OSError) as exc:

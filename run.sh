@@ -8,17 +8,25 @@ PYTHON=".venv/bin/python"
 
 cleanup() {
   echo ""
-  echo "Stopping host services..."
-  kill "$SCHEDULER_PID" "$BOT_PID" 2>/dev/null || true
+  echo "Stopping bot..."
+  kill "$BOT_PID" 2>/dev/null || true
   echo "Stopping docker services..."
   docker compose stop
 }
 trap cleanup EXIT INT TERM
 
-# Infra + non-claude services in docker
-# --build rebuilds poller/mcp-server images so source changes always take effect
-echo "Starting docker services (neo4j, poller, mcp-server)..."
-docker compose up -d --build neo4j poller mcp-server
+echo "Installing cron entries..."
+CRON_BLOCK="# --- newsparser ---
+CRON_TZ=Asia/Seoul
+0 0,6,12,18 * * * flock -n $SCRIPT_DIR/workspace/state/locks/cycle $SCRIPT_DIR/.venv/bin/python -m newsparser.scripts.run_cycle >> $SCRIPT_DIR/workspace/logs/cron.log 2>&1
+0 9 * * 1 flock -n $SCRIPT_DIR/workspace/state/locks/weekly $SCRIPT_DIR/.venv/bin/python -m newsparser.scripts.run_weekly >> $SCRIPT_DIR/workspace/logs/cron.log 2>&1
+0 21 * * 0 flock -n $SCRIPT_DIR/workspace/state/locks/reflect $SCRIPT_DIR/.venv/bin/python -m newsparser.scripts.run_reflect >> $SCRIPT_DIR/workspace/logs/cron.log 2>&1
+# --- end newsparser ---"
+(crontab -l 2>/dev/null | sed '/# --- newsparser ---/,/# --- end newsparser ---/d'; echo "$CRON_BLOCK") | crontab -
+echo "Cron entries installed."
+
+echo "Starting docker services (neo4j, poller)..."
+docker compose up -d --build neo4j poller
 
 echo "Waiting for Neo4j to be ready..."
 until docker compose exec -T neo4j wget -q --spider http://localhost:7474 2>/dev/null; do
@@ -26,13 +34,8 @@ until docker compose exec -T neo4j wget -q --spider http://localhost:7474 2>/dev
 done
 echo "Neo4j ready."
 
-# Host services connect to neo4j and mcp-server via localhost (ports published)
 export NEO4J_URI="bolt://localhost:7687"
 export IS_SANDBOX="1"
-
-echo "Starting scheduler (host)..."
-$PYTHON -m newsparser.scheduler.cron &
-SCHEDULER_PID=$!
 
 echo "Starting bot (host)..."
 $PYTHON -m newsparser.bot.telegram_bot &

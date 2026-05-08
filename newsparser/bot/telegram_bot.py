@@ -13,7 +13,9 @@ load_dotenv()
 
 from newsparser.bot.dispatcher import classify_message, MessageType
 from newsparser.bot.tracker import run_tracker
-from newsparser.scheduler.cycle import run_cycle
+from newsparser.scripts.run_cycle import main as run_cycle_script
+from newsparser.scripts.run_weekly import main as run_weekly_script
+from newsparser.scripts.run_reflect import main as run_reflect_script
 from newsparser.store.sqlite import init_db
 
 logger = logging.getLogger(__name__)
@@ -32,7 +34,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
 
     msg_type = classify_message(text)
-
     logger.info("Message [%s] from %s: %s", msg_type.value, chat_id, text[:60])
 
     kst = ZoneInfo("Asia/Seoul")
@@ -40,14 +41,35 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if msg_type == MessageType.SLASH_CYCLE:
         slot = datetime.now(kst).strftime("%Y-%m-%d-%H")
         await update.message.reply_text(f"⚙️ /cycle 시작: {slot}")
-        await asyncio.to_thread(run_cycle, slot)
+        try:
+            await asyncio.to_thread(run_cycle_script, slot)
+        except Exception as e:
+            logger.exception("Cycle failed: %s", slot)
+            await update.message.reply_text(f"❌ Cycle 오류: {e}")
+            return
         await update.message.reply_text("✅ Cycle 완료")
 
     elif msg_type == MessageType.SLASH_WEEKLY:
-        await update.message.reply_text("⚙️ /weekly — 미구현 (Plan 5)")
+        date = datetime.now(kst).strftime("%Y-%m-%d")
+        await update.message.reply_text(f"⚙️ /weekly 시작: {date}")
+        try:
+            await asyncio.to_thread(run_weekly_script, date)
+        except Exception as e:
+            logger.exception("Weekly failed: %s", date)
+            await update.message.reply_text(f"❌ Weekly 오류: {e}")
+            return
+        await update.message.reply_text("✅ Weekly 완료")
 
     elif msg_type == MessageType.SLASH_REFLECT:
-        await update.message.reply_text("⚙️ /reflect — 미구현 (Plan 5)")
+        date = datetime.now(kst).strftime("%Y-%m-%d")
+        await update.message.reply_text(f"⚙️ /reflect 시작: {date}")
+        try:
+            await asyncio.to_thread(run_reflect_script, date)
+        except Exception as e:
+            logger.exception("Reflect failed: %s", date)
+            await update.message.reply_text(f"❌ Reflect 오류: {e}")
+            return
+        await update.message.reply_text("✅ Reflect 완료")
 
     else:
         await update.message.reply_text("🔍 분석 중...")
@@ -63,11 +85,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 def start() -> None:
     init_db()
     token = os.environ["TELEGRAM_BOT_TOKEN"]
-    app = (Application.builder()                                    
-        .token(token)                                                                                                                                                                                    
-        .read_timeout(30)                                        
-        .connect_timeout(10)                                                                                                                                                                             
-        .build())    
+    app = (Application.builder()
+        .token(token)
+        .read_timeout(30)
+        .connect_timeout(10)
+        .build())
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(MessageHandler(filters.COMMAND, handle_message))
     logger.info("Bot polling started")

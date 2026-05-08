@@ -15,7 +15,6 @@ from newsparser.graph.writer import apply_graph_updates
 from newsparser.store.sqlite import (
     get_unclassified, get_unprocessed, mark_processed, update_category,
 )
-from newsparser.scheduler.lock import acquire_lock, release_lock, LockError
 from newsparser.scheduler.workspace import ensure_workspace
 
 logger = logging.getLogger(__name__)
@@ -111,21 +110,11 @@ def _run_for_category(slot: str, category: str, workspace: Path) -> None:
 def run_cycle(slot: str) -> None:
     """Full /cycle flow per slot — classifies pending then runs once per category."""
     workspace = ensure_workspace()
-    lock_path = workspace / "state" / "lockfile"
 
     try:
-        acquire_lock(lock_path)
-    except LockError as e:
-        logger.warning("Cycle aborted: %s", e)
-        return
+        _classify_pending()
+    except Exception as exc:
+        logger.warning("classify_pending failed (%s); proceeding with already-tagged rows", exc)
 
-    try:
-        try:
-            _classify_pending()
-        except Exception as exc:
-            logger.warning("classify_pending failed (%s); proceeding with already-tagged rows", exc)
-
-        for category in CATEGORIES:
-            _run_for_category(slot, category, workspace)
-    finally:
-        release_lock(lock_path)
+    for category in CATEGORIES:
+        _run_for_category(slot, category, workspace)

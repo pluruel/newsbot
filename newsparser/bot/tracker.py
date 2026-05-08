@@ -64,7 +64,7 @@ def run_tracker(chat_id: str, query: str) -> str:
                 )
 
     try:
-        category_hint = classify_query(query)
+        category_hint = classify_query(query, history=history[-5:] if history else None)
     except Exception:
         category_hint = "both"
 

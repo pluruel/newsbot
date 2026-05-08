@@ -67,7 +67,7 @@ def test_run_tracker_injects_category_hint():
          patch("newsparser.bot.tracker.run_claude", side_effect=fake_run_claude):
         run_tracker(chat_id="t1", query="OpenAI 새 모델 어때?")
 
-    mock_classify.assert_called_once_with("OpenAI 새 모델 어때?")
+    mock_classify.assert_called_once_with("OpenAI 새 모델 어때?", history=None)
     assert "category hint" in captured["prompt"].lower()
     assert "tech" in captured["prompt"]
 

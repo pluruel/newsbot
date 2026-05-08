@@ -1,8 +1,8 @@
 {
   "mcpServers": {
     "newsparser": {
-      "type": "sse",
-      "url": "http://localhost:8766/sse"
+      "command": ".venv/bin/python",
+      "args": ["-m", "newsparser.mcp_server"]
     }
   }
 }
