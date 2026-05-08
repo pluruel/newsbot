@@ -28,6 +28,7 @@ _QUERY_PROMPT = (
     "- `markets`: 시장·매크로·정책·기타 산업 관련 질문\n"
     "- `both`: 두 카테고리를 모두 가로지르는 질문 (예: AI가 시장에 미치는 영향)\n\n"
     "응답은 정확히 'tech', 'markets', 또는 'both' 한 단어.\n\n"
+    "{history_block}"
     "쿼리: {query}"
 )
 
@@ -60,9 +61,16 @@ def classify_article(title: str, body: str | None) -> str:
     return _normalize_article_response(raw)
 
 
-def classify_query(query: str) -> str:
+def classify_query(query: str, history: list[dict] | None = None) -> str:
     """Return 'tech' / 'markets' / 'both' for a tracker query. Falls back to 'both' on errors."""
-    prompt = _QUERY_PROMPT.format(query=query)
+    history_block = ""
+    if history:
+        lines = []
+        for turn in history:
+            role = "User" if turn.get("role") == "user" else "Assistant"
+            lines.append(f"{role}: {turn.get('content', '')}")
+        history_block = "최근 대화:\n" + "\n".join(lines) + "\n\n"
+    prompt = _QUERY_PROMPT.format(query=query, history_block=history_block)
     try:
         raw = run_claude(prompt, timeout=15, model=HAIKU_MODEL)
     except (ClaudeError, RuntimeError, OSError) as exc:
