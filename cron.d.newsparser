@@ -1,0 +1,11 @@
+SHELL=/bin/bash
+CRON_TZ=Asia/Seoul
+
+# Cycle: every 6h at 00:00, 06:00, 12:00, 18:00 KST
+0 0,6,12,18 * * *  ubuntu  flock -n /home/ubuntu/newsparser/workspace/state/locks/cycle /home/ubuntu/newsparser/.venv/bin/python -m newsparser.scripts.run_cycle >> /home/ubuntu/newsparser/workspace/logs/cron.log 2>&1
+
+# Weekly: every Monday 09:00 KST
+0 9 * * 1  ubuntu  flock -n /home/ubuntu/newsparser/workspace/state/locks/weekly /home/ubuntu/newsparser/.venv/bin/python -m newsparser.scripts.run_weekly >> /home/ubuntu/newsparser/workspace/logs/cron.log 2>&1
+
+# Reflect: every Sunday 21:00 KST
+0 21 * * 0  ubuntu  flock -n /home/ubuntu/newsparser/workspace/state/locks/reflect /home/ubuntu/newsparser/.venv/bin/python -m newsparser.scripts.run_reflect >> /home/ubuntu/newsparser/workspace/logs/cron.log 2>&1
