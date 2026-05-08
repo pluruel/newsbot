@@ -16,8 +16,9 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 # Infra + non-claude services in docker
+# --build rebuilds poller/mcp-server images so source changes always take effect
 echo "Starting docker services (neo4j, poller, mcp-server)..."
-docker compose up -d neo4j poller mcp-server
+docker compose up -d --build neo4j poller mcp-server
 
 echo "Waiting for Neo4j to be ready..."
 until docker compose exec -T neo4j wget -q --spider http://localhost:7474 2>/dev/null; do
