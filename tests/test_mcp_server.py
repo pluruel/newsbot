@@ -141,8 +141,7 @@ def test_get_interest_weights_uses_per_category_file(tmp_path):
 
 
 def test_classify_query_tool_returns_label():
-    with patch("newsparser.mcp_server.classify_query", return_value="tech"):
-        # The MCP-exported function delegates to the same name in `classifier`
+    with patch("newsparser.mcp_server._classify_query_impl", return_value="tech"):
         result = mcp_classify_query("OpenAI 신모델 동향")
     assert result == "tech"
 
@@ -185,7 +184,7 @@ def test_read_interests_both_returns_both(tmp_path):
     assert "Markets profile" in out
 
 
-def test_mcp_server_entrypoint_uses_stdio(tmp_path):
+def test_mcp_server_entrypoint_uses_stdio():
     """mcp_server.__main__ block must call mcp.run(transport='stdio')."""
     import ast, inspect
     import newsparser.mcp_server as mod
