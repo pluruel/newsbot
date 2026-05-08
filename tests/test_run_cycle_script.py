@@ -62,6 +62,7 @@ def test_run_cycle_writes_guids_file_before_calling_run_claude(tmp_path):
         return ""
 
     with patch("newsparser.scripts.run_cycle.run_claude", side_effect=fake_claude), \
+         patch("newsparser.scripts.run_cycle.build_input_file"), \
          patch("newsparser.scripts.run_cycle.classify_article", return_value="tech"), \
          patch("newsparser.scripts.run_cycle.send_long_message"):
         script.main("2026-05-08-12")
@@ -75,6 +76,7 @@ def test_run_cycle_sends_digest_to_telegram(tmp_path):
     sent: list[str] = []
 
     with patch("newsparser.scripts.run_cycle.run_claude", side_effect=_fake_run_claude_writes_report), \
+         patch("newsparser.scripts.run_cycle.build_input_file"), \
          patch("newsparser.scripts.run_cycle.classify_article", return_value="tech"), \
          patch("newsparser.scripts.run_cycle.send_long_message", side_effect=lambda m: sent.append(m)):
         script.main("2026-05-08-12")
@@ -95,6 +97,7 @@ def test_run_cycle_skips_empty_category(tmp_path):
         return ""
 
     with patch("newsparser.scripts.run_cycle.run_claude", side_effect=fake_claude), \
+         patch("newsparser.scripts.run_cycle.build_input_file"), \
          patch("newsparser.scripts.run_cycle.classify_article", return_value="tech"), \
          patch("newsparser.scripts.run_cycle.send_long_message"):
         script.main("2026-05-08-12")
@@ -117,6 +120,7 @@ def test_run_cycle_category_error_doesnt_stop_other(tmp_path):
         return ""
 
     with patch("newsparser.scripts.run_cycle.run_claude", side_effect=fake_claude), \
+         patch("newsparser.scripts.run_cycle.build_input_file"), \
          patch("newsparser.scripts.run_cycle.classify_article", return_value="markets"), \
          patch("newsparser.scripts.run_cycle.send_long_message", side_effect=lambda m: sent.append(m)):
         script.main("2026-05-08-12")
