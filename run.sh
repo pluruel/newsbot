@@ -6,12 +6,15 @@ cd "$SCRIPT_DIR"
 
 PYTHON=".venv/bin/python"
 
+BOT_PID=""
 cleanup() {
   echo ""
-  echo "Stopping bot..."
-  kill "$BOT_PID" 2>/dev/null || true
+  if [ -n "${BOT_PID:-}" ]; then
+    echo "Stopping bot..."
+    kill "$BOT_PID" 2>/dev/null || true
+  fi
   echo "Stopping docker services..."
-  docker compose stop
+  docker compose stop || true
 }
 trap cleanup EXIT INT TERM
 
