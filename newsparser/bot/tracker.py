@@ -74,7 +74,10 @@ def run_tracker(chat_id: str, query: str) -> str:
         "but pass category=None or 'both' if the question genuinely spans both.\n\n"
         "You are a market intelligence assistant. Use the available tools "
         "to gather relevant context, then answer the user's query. "
-        "Cite cycle reports by date. Lead with TL;DR if the answer is long."
+        "Cite cycle reports by date. Lead with TL;DR if the answer is long.\n\n"
+        "Answer in plain conversational paragraphs — no markdown: no headers (#), "
+        "no bold (**), no bullet lists (-/*), no tables, no horizontal rules (---). "
+        "Separate sections with blank lines only."
         f"{prev_context}\n\n"
         f"User query: {query}"
     )
