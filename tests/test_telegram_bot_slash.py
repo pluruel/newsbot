@@ -1,5 +1,6 @@
 # tests/test_telegram_bot_slash.py
 import asyncio
+import re
 import pytest
 from unittest.mock import patch, AsyncMock, MagicMock
 
@@ -23,6 +24,8 @@ def test_slash_cycle_calls_run_cycle_script(monkeypatch):
         asyncio.run(handle_message(update, MagicMock()))
 
     mock_cycle.assert_called_once()
+    slot_arg = mock_cycle.call_args.args[0]
+    assert re.match(r"\d{4}-\d{2}-\d{2}-\d{2}$", slot_arg), f"slot format wrong: {slot_arg!r}"
 
 
 def test_slash_weekly_calls_run_weekly_script(monkeypatch):
@@ -36,6 +39,8 @@ def test_slash_weekly_calls_run_weekly_script(monkeypatch):
         asyncio.run(handle_message(update, MagicMock()))
 
     mock_weekly.assert_called_once()
+    date_arg = mock_weekly.call_args.args[0]
+    assert re.match(r"\d{4}-\d{2}-\d{2}$", date_arg), f"date format wrong: {date_arg!r}"
 
 
 def test_slash_reflect_calls_run_reflect_script(monkeypatch):
@@ -49,3 +54,5 @@ def test_slash_reflect_calls_run_reflect_script(monkeypatch):
         asyncio.run(handle_message(update, MagicMock()))
 
     mock_reflect.assert_called_once()
+    date_arg = mock_reflect.call_args.args[0]
+    assert re.match(r"\d{4}-\d{2}-\d{2}$", date_arg), f"date format wrong: {date_arg!r}"

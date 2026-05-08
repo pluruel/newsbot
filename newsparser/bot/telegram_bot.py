@@ -41,19 +41,34 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if msg_type == MessageType.SLASH_CYCLE:
         slot = datetime.now(kst).strftime("%Y-%m-%d-%H")
         await update.message.reply_text(f"⚙️ /cycle 시작: {slot}")
-        await asyncio.to_thread(run_cycle_script, slot)
+        try:
+            await asyncio.to_thread(run_cycle_script, slot)
+        except Exception as e:
+            logger.exception("Cycle failed: %s", slot)
+            await update.message.reply_text(f"❌ Cycle 오류: {e}")
+            return
         await update.message.reply_text("✅ Cycle 완료")
 
     elif msg_type == MessageType.SLASH_WEEKLY:
         date = datetime.now(kst).strftime("%Y-%m-%d")
         await update.message.reply_text(f"⚙️ /weekly 시작: {date}")
-        await asyncio.to_thread(run_weekly_script, date)
+        try:
+            await asyncio.to_thread(run_weekly_script, date)
+        except Exception as e:
+            logger.exception("Weekly failed: %s", date)
+            await update.message.reply_text(f"❌ Weekly 오류: {e}")
+            return
         await update.message.reply_text("✅ Weekly 완료")
 
     elif msg_type == MessageType.SLASH_REFLECT:
         date = datetime.now(kst).strftime("%Y-%m-%d")
         await update.message.reply_text(f"⚙️ /reflect 시작: {date}")
-        await asyncio.to_thread(run_reflect_script, date)
+        try:
+            await asyncio.to_thread(run_reflect_script, date)
+        except Exception as e:
+            logger.exception("Reflect failed: %s", date)
+            await update.message.reply_text(f"❌ Reflect 오류: {e}")
+            return
         await update.message.reply_text("✅ Reflect 완료")
 
     else:
