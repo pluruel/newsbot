@@ -30,26 +30,47 @@ def _log_interest_event(entity: str) -> None:
         f.write(json.dumps(event, ensure_ascii=False) + "\n")
 
 
+def _resolve_categories(category: str | None) -> list[str]:
+    """Normalize a category arg into the list of underlying categories to act on.
+    'both' and None mean both categories."""
+    if category in (None, "both"):
+        return ["tech", "markets"]
+    return [category]
+
+
 @mcp.tool()
 def graph_query(entity: str, category: str | None = None, days: int = 7) -> str:
     """Query the knowledge graph for context about an entity.
-    Pass `category='tech'` or `category='markets'` to restrict traversal."""
-    neighbors = get_context(entity, days, category=category)
-    chains = get_influence_chain(entity, category=category)
+    category='tech' or 'markets' restricts traversal to that category;
+    'both' or None applies no category filter."""
+    cat = None if category in (None, "both") else category
+    neighbors = get_context(entity, days, category=cat)
+    chains = get_influence_chain(entity, category=cat)
     _log_interest_event(entity)
     return format_context_for_claude(entity, neighbors, chains)
 
 
 @mcp.tool()
-def read_cycle_reports(category: str, n: int = 4) -> str:
-    """Read the N most recent cycle reports for the given category ('tech' or 'markets')."""
-    cycles_dir = _workspace() / "cycles" / category
-    if not cycles_dir.exists():
-        return f"No cycle reports found for category={category}."
-    files = sorted(cycles_dir.glob("*.md"), reverse=True)[:n]
-    if not files:
-        return f"No cycle reports found for category={category}."
-    return "\n\n---\n\n".join(f.read_text() for f in reversed(files))
+def read_cycle_reports(category: str | None = None, n: int = 4) -> str:
+    """Read the N most recent cycle reports.
+    category='tech' or 'markets' reads only that category;
+    'both' or None reads across both categories (merged by recency)."""
+    cats = _resolve_categories(category)
+    base = _workspace() / "cycles"
+    found: list[tuple[str, Path]] = []
+    for c in cats:
+        d = base / c
+        if d.exists():
+            for f in d.glob("*.md"):
+                found.append((c, f))
+    if not found:
+        return f"No cycle reports found for category={category or 'both'}."
+    found.sort(key=lambda x: x[1].name, reverse=True)
+    found = found[:n]
+    found.reverse()
+    return "\n\n---\n\n".join(
+        f"# [{c.upper()}] {f.name}\n\n{f.read_text()}" for c, f in found
+    )
 
 
 @mcp.tool()
@@ -62,9 +83,7 @@ def read_conversation_history(chat_id: str, n: int = 10) -> str:
     return "\n".join(f"{t['role'].upper()}: {t['content']}" for t in history)
 
 
-@mcp.tool()
-def get_interest_weights(category: str, days: int = 14) -> str:
-    """Compare actual vs estimated weights for a category's interest profile."""
+def _interest_weights_one(category: str, days: int) -> str:
     interests_path = _workspace() / "me" / f"interests_{category}.md"
     events_path = _workspace() / "me" / "interest-events.jsonl"
 
@@ -123,6 +142,14 @@ def get_interest_weights(category: str, days: int = 14) -> str:
 
 
 @mcp.tool()
+def get_interest_weights(category: str | None = None, days: int = 14) -> str:
+    """Compare actual vs estimated weights for a category's interest profile.
+    'both' or None returns both categories."""
+    cats = _resolve_categories(category)
+    return "\n\n".join(_interest_weights_one(c, days) for c in cats)
+
+
+@mcp.tool()
 def clear_interest_events() -> str:
     """Clear the interest-events.jsonl query log (resets weight estimation baseline)."""
     path = _workspace() / "me" / "interest-events.jsonl"
@@ -145,12 +172,18 @@ def clear_conversation_history() -> str:
 
 
 @mcp.tool()
-def read_interests(category: str) -> str:
-    """Read the per-category interest profile."""
-    path = _workspace() / "me" / f"interests_{category}.md"
-    if not path.exists():
-        return f"No interests file found for category={category}."
-    return path.read_text()
+def read_interests(category: str | None = None) -> str:
+    """Read the per-category interest profile.
+    'both' or None returns both categories concatenated."""
+    cats = _resolve_categories(category)
+    parts = []
+    for c in cats:
+        path = _workspace() / "me" / f"interests_{c}.md"
+        if path.exists():
+            parts.append(f"# {c}\n\n{path.read_text()}")
+        else:
+            parts.append(f"# {c}\n\n(no interests file)")
+    return "\n\n---\n\n".join(parts)
 
 
 @mcp.tool()

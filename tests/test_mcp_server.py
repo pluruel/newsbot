@@ -77,7 +77,7 @@ def test_read_interests_returns_content(tmp_path):
 
 def test_read_interests_missing_file():
     result = read_interests(category="tech")
-    assert "No interests file found" in result
+    assert "(no interests file)" in result
 
 
 from newsparser.mcp_server import (
@@ -145,3 +145,41 @@ def test_classify_query_tool_returns_label():
         # The MCP-exported function delegates to the same name in `classifier`
         result = mcp_classify_query("OpenAI 신모델 동향")
     assert result == "tech"
+
+
+def test_read_cycle_reports_both_merges_categories(tmp_path):
+    base = Path(tmp_path / "workspace" / "cycles")
+    (base / "tech").mkdir(parents=True, exist_ok=True)
+    (base / "markets").mkdir(parents=True, exist_ok=True)
+    (base / "tech" / "2026-05-07-12.md").write_text("tech cycle X")
+    (base / "markets" / "2026-05-07-13.md").write_text("markets cycle Y")
+
+    out = read_cycle_reports(category="both", n=4)
+    assert "tech cycle X" in out
+    assert "markets cycle Y" in out
+
+
+def test_read_cycle_reports_default_means_both(tmp_path):
+    base = Path(tmp_path / "workspace" / "cycles")
+    (base / "tech").mkdir(parents=True, exist_ok=True)
+    (base / "tech" / "2026-05-07-12.md").write_text("tech cycle X")
+    out = read_cycle_reports()
+    assert "tech cycle X" in out
+
+
+def test_graph_query_both_drops_category_filter():
+    with patch("newsparser.mcp_server.get_context", return_value=[]) as mock_ctx, \
+         patch("newsparser.mcp_server.get_influence_chain", return_value=[]):
+        graph_query("OpenAI", category="both")
+    kwargs = mock_ctx.call_args.kwargs
+    assert kwargs.get("category") is None
+
+
+def test_read_interests_both_returns_both(tmp_path):
+    me = Path(tmp_path / "workspace" / "me")
+    me.mkdir(parents=True, exist_ok=True)
+    (me / "interests_tech.md").write_text("Tech profile")
+    (me / "interests_markets.md").write_text("Markets profile")
+    out = read_interests(category="both")
+    assert "Tech profile" in out
+    assert "Markets profile" in out
