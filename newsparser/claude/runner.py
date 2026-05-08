@@ -1,5 +1,9 @@
 import os
 import subprocess
+from pathlib import Path
+
+# Project root: two levels above this file (newsparser/claude/runner.py → project root)
+_PROJECT_ROOT = Path(__file__).parent.parent.parent
 
 
 class ClaudeError(RuntimeError):
@@ -17,7 +21,7 @@ def run_claude(prompt: str, timeout: int = 1500, mcp_config: str | None = None, 
     cmd = [_claude_bin(), "-p", prompt, "--output-format", "text", "--model", model]
     if mcp_config is not None:
         cmd += ["--mcp-config", mcp_config]
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, cwd=_PROJECT_ROOT)
     if result.returncode != 0:
         raise ClaudeError(f"claude exited {result.returncode}: stderr={result.stderr[:500]} stdout={result.stdout[:500]}")
     return result.stdout

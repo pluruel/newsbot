@@ -13,7 +13,7 @@ from newsparser.bot.sender import send_long_message
 from newsparser.claude.input_builder import build_input_file
 from newsparser.claude.runner import run_claude
 from newsparser.classifier import classify_article, CATEGORIES
-from newsparser.store.sqlite import get_unclassified, get_unprocessed, update_category
+from newsparser.store.sqlite import get_unclassified, get_unprocessed, mark_processed, update_category
 from newsparser.scheduler.workspace import ensure_workspace
 
 logger = logging.getLogger(__name__)
@@ -50,6 +50,15 @@ def _run_for_category(slot: str, category: str, workspace: Path) -> None:
 
     run_claude(f"/cycle {slot} {category}")
     logger.info("[%s] Claude cycle complete", category)
+
+    # Safety net: if the slash command's mark_processed.py call was skipped or failed,
+    # the guids file still exists. Mark them here to prevent reprocessing on next cycle.
+    if guids_path.exists():
+        logger.warning("[%s] guids file still present after run_claude — marking processed directly", category)
+        guids = [g for g in guids_path.read_text().splitlines() if g.strip()]
+        if guids:
+            mark_processed(guids)
+        guids_path.unlink()
 
     report_path = workspace / "cycles" / category / f"{slot}.md"
     if report_path.exists():
