@@ -6,6 +6,12 @@ from newsparser.graph.neo4j_client import get_driver, close_driver
 
 @pytest.fixture(autouse=True)
 def neo4j_clean():
+    if os.environ.get("NEWSPARSER_TEST_NEO4J") != "1":
+        pytest.skip(
+            "test_graph_writer.py wipes the entire graph (MATCH (n) DETACH DELETE n) "
+            "and is not safe to run against the live Neo4j. "
+            "Set NEWSPARSER_TEST_NEO4J=1 with NEO4J_URI pointing at a disposable instance."
+        )
     os.environ.setdefault("NEO4J_PASSWORD", "testpass")
     with get_driver().session() as s:
         s.run("MATCH (n) DETACH DELETE n")

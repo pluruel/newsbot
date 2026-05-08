@@ -5,7 +5,7 @@ def get_context(entity_name: str, days: int = 7, category: str | None = None) ->
     """Return 3-hop neighbors updated within last N days. If category is set, only neighbors in that category."""
     cypher = (
         "MATCH (e {canonical_name: $name})-[*1..3]-(related) "
-        "WHERE related.last_seen >= datetime() - duration({days: $days}) "
+        "WHERE datetime(related.last_seen) >= datetime() - duration({days: $days}) "
     )
     params: dict = {"name": entity_name, "days": days}
     if category is not None:
@@ -45,7 +45,7 @@ def get_high_impact_recent(hours: int = 24) -> list[dict]:
     with get_driver().session() as session:
         result = session.run(
             "MATCH (a)-[r]->(b) "
-            "WHERE r.last_seen >= datetime() - duration({hours: $hours}) "
+            "WHERE datetime(r.last_seen) >= datetime() - duration({hours: $hours}) "
             "  AND r.impact_score > 0.7 "
             "RETURN a.canonical_name AS subject, type(r) AS predicate, "
             "  b.canonical_name AS object, r.impact_score AS impact "
