@@ -13,7 +13,8 @@ from newsparser.graph.writer import apply_graph_updates
 def main(argv: list[str] | None = None) -> None:
     args = argv if argv is not None else sys.argv
     if len(args) != 3:
-        print(f"Usage: {args[0]} <category> <slot>", file=sys.stderr)
+        name = args[0] if args else "apply_graph.py"
+        print(f"Usage: {name} <category> <slot>", file=sys.stderr)
         sys.exit(1)
 
     category, slot = args[1], args[2]
