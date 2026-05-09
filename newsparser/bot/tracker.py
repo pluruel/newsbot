@@ -41,8 +41,14 @@ def _needs_history(query: str, last_user: str, last_assistant: str) -> bool:
         f"New query: {query}"
     )
     try:
-        result = run_claude(prompt, timeout=30, model="claude-haiku-4-5-20251001")
-        return result.strip().lower().startswith("yes")
+        result = run_claude(
+            prompt,
+            timeout=30,
+            model="claude-haiku-4-5-20251001",
+            system_prompt="Reply with only the single word 'yes' or 'no'. No other text.",
+        )
+        first_word = result.strip().lower().split()[0].strip(".,!?") if result.strip() else "no"
+        return first_word == "yes"
     except Exception:
         return True
 

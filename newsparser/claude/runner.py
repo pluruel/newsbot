@@ -16,11 +16,19 @@ def _claude_bin() -> str:
     return os.environ.get("CLAUDE_BIN", "claude")
 
 
-def run_claude(prompt: str, timeout: int = 1500, mcp_config: str | None = None, model: str = "claude-sonnet-4-6") -> str:
+def run_claude(
+    prompt: str,
+    timeout: int = 1500,
+    mcp_config: str | None = None,
+    model: str = "claude-sonnet-4-6",
+    system_prompt: str | None = None,
+) -> str:
     """Invoke claude CLI headless and return stdout. Raises ClaudeError on failure."""
     cmd = [_claude_bin(), "-p", prompt, "--output-format", "text", "--model", model]
     if mcp_config is not None:
         cmd += ["--mcp-config", mcp_config]
+    if system_prompt is not None:
+        cmd += ["--system-prompt", system_prompt]
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, cwd=_PROJECT_ROOT)
     if result.returncode != 0:
         raise ClaudeError(f"claude exited {result.returncode}: stderr={result.stderr[:500]} stdout={result.stdout[:500]}")

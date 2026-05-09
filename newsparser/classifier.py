@@ -33,10 +33,11 @@ _QUERY_PROMPT_HEADER = (
 
 def _normalize_article_response(raw: str) -> str:
     cleaned = (raw or "").strip().strip(".`'\" \t\n").lower()
-    if cleaned == "tech":
-        return "tech"
-    if cleaned == "markets":
-        return "markets"
+    if cleaned in ("tech", "markets"):
+        return cleaned
+    first_word = cleaned.split()[0].strip(".,!?`'\"") if cleaned.split() else ""
+    if first_word in ("tech", "markets"):
+        return first_word
     return "markets"  # fallback per the global tie-breaker rule
 
 
@@ -44,7 +45,13 @@ def _normalize_query_response(raw: str) -> str:
     cleaned = (raw or "").strip().strip(".`'\" \t\n").lower()
     if cleaned in ("tech", "markets", "both"):
         return cleaned
+    first_word = cleaned.split()[0].strip(".,!?`'\"") if cleaned.split() else ""
+    if first_word in ("tech", "markets", "both"):
+        return first_word
     return "both"
+
+
+_CLASSIFIER_SYSTEM_PROMPT = "You are a text classifier. Reply with exactly one word from the given options. No explanations, no punctuation."
 
 
 def classify_article(title: str, body: str | None) -> str:
@@ -52,7 +59,7 @@ def classify_article(title: str, body: str | None) -> str:
     body_excerpt = (body or "")[:_BODY_EXCERPT_CHARS]
     prompt = _ARTICLE_PROMPT.format(title=title, n=_BODY_EXCERPT_CHARS, body=body_excerpt)
     try:
-        raw = run_claude(prompt, timeout=15, model=HAIKU_MODEL)
+        raw = run_claude(prompt, timeout=15, model=HAIKU_MODEL, system_prompt=_CLASSIFIER_SYSTEM_PROMPT)
     except (ClaudeError, RuntimeError, OSError) as exc:
         logger.warning("classify_article failed (%s); defaulting to 'markets'", exc)
         return "markets"
@@ -71,7 +78,7 @@ def classify_query(query: str, history: list[dict] | None = None) -> str:
     parts.append(f"쿼리: {query}")
     prompt = "".join(parts)
     try:
-        raw = run_claude(prompt, timeout=15, model=HAIKU_MODEL)
+        raw = run_claude(prompt, timeout=15, model=HAIKU_MODEL, system_prompt=_CLASSIFIER_SYSTEM_PROMPT)
     except (ClaudeError, RuntimeError, OSError) as exc:
         logger.warning("classify_query failed (%s); defaulting to 'both'", exc)
         return "both"
