@@ -21,9 +21,9 @@ trap cleanup EXIT INT TERM
 echo "Installing cron entries..."
 CRON_BLOCK="# --- newsparser ---
 CRON_TZ=Asia/Seoul
-0 0,6,12,18 * * * flock -n $SCRIPT_DIR/workspace/state/locks/cycle $SCRIPT_DIR/.venv/bin/python -m newsparser.scripts.run_cycle >> $SCRIPT_DIR/workspace/logs/cron.log 2>&1
-0 9 * * 1 flock -n $SCRIPT_DIR/workspace/state/locks/weekly $SCRIPT_DIR/.venv/bin/python -m newsparser.scripts.run_weekly >> $SCRIPT_DIR/workspace/logs/cron.log 2>&1
-0 21 * * 0 flock -n $SCRIPT_DIR/workspace/state/locks/reflect $SCRIPT_DIR/.venv/bin/python -m newsparser.scripts.run_reflect >> $SCRIPT_DIR/workspace/logs/cron.log 2>&1
+0 0,6,12,18 * * * mkdir -p $SCRIPT_DIR/workspace/state/locks $SCRIPT_DIR/workspace/logs && flock -n $SCRIPT_DIR/workspace/state/locks/cycle $SCRIPT_DIR/.venv/bin/python -m newsparser.scripts.run_cycle >> $SCRIPT_DIR/workspace/logs/cron.log 2>&1
+0 9 * * 1 mkdir -p $SCRIPT_DIR/workspace/state/locks $SCRIPT_DIR/workspace/logs && flock -n $SCRIPT_DIR/workspace/state/locks/weekly $SCRIPT_DIR/.venv/bin/python -m newsparser.scripts.run_weekly >> $SCRIPT_DIR/workspace/logs/cron.log 2>&1
+0 21 * * 0 mkdir -p $SCRIPT_DIR/workspace/state/locks $SCRIPT_DIR/workspace/logs && flock -n $SCRIPT_DIR/workspace/state/locks/reflect $SCRIPT_DIR/.venv/bin/python -m newsparser.scripts.run_reflect >> $SCRIPT_DIR/workspace/logs/cron.log 2>&1
 # --- end newsparser ---"
 (crontab -l 2>/dev/null | sed '/# --- newsparser ---/,/# --- end newsparser ---/d'; echo "$CRON_BLOCK") | crontab -
 echo "Cron entries installed."

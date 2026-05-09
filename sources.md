@@ -13,6 +13,7 @@
 | Bloomberg Markets | https://feeds.bloomberg.com/markets/news.rss | international | markets | yes |
 | OpenAI Blog | https://openai.com/blog/rss/ | international | tech | no |
 | Anthropic News | https://www.anthropic.com/news/rss.xml | international | tech | no |
+| Claude Code Releases | https://github.com/anthropics/claude-code/releases.atom | international | tech | no |
 | Google DeepMind Blog | https://deepmind.google/blog/rss.xml | international | tech | no |
 | TechCrunch AI | https://techcrunch.com/category/artificial-intelligence/feed/ | international | tech | no |
 | VentureBeat AI | https://venturebeat.com/category/ai/feed | tech | tech | no |
