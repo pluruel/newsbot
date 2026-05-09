@@ -13,6 +13,12 @@
    - **Top — Korean digest.** Plain text per the system Style rules. This is what gets sent to Telegram.
    - **Bottom — graph block.** Machine-parseable. The `## Graph updates`, `### Entities`, `### Relations` headers and the `NEW | ... | ...` line shape are required exactly as shown.
 
+### 문체 규칙
+
+리포트 본문은 문어체로 작성한다. 구어 표현(~해요, ~거든요, ~네요, ~인데요)은 사용하지 않는다.
+문장 말미는 명사형 종결(~함, ~됨) 또는 서술형 종결(~다, ~이다, ~하였다)로 통일한다.
+헤드라인은 핵심 사실만 명사구로 압축한다.
+
 ### Output format
 
 ```
