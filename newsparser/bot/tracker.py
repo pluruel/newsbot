@@ -32,12 +32,39 @@ def save_history(chat_id: str, turns: list[dict]) -> None:
     path.write_text("\n".join(json.dumps(t, ensure_ascii=False) for t in turns))
 
 
-def _needs_history(query: str, last_user: str, last_assistant: str) -> bool:
-    """Use haiku to quickly decide if the query requires prior context."""
+def _extract_pairs(history: list[dict]) -> list[tuple[dict, dict]]:
+    """Walk history and pair each user turn with its following assistant turn."""
+    pairs: list[tuple[dict, dict]] = []
+    i = 0
+    while i < len(history) - 1:
+        if history[i].get("role") == "user" and history[i + 1].get("role") == "assistant":
+            pairs.append((history[i], history[i + 1]))
+            i += 2
+        else:
+            i += 1
+    return pairs
+
+
+_HAIKU_ASSISTANT_PREVIEW = 240
+
+
+def _needed_history_depth(query: str, history: list[dict], max_depth: int) -> int:
+    """Use haiku to decide how many recent exchanges the new query needs (0..max_depth)."""
+    if max_depth <= 0:
+        return 0
+    lines = []
+    for t in history:
+        content = t["content"]
+        if t.get("role") == "assistant" and len(content) > _HAIKU_ASSISTANT_PREVIEW:
+            content = content[:_HAIKU_ASSISTANT_PREVIEW] + "…"
+        lines.append(f"{t['role'].upper()}: {content}")
+    transcript = "\n".join(lines)
     prompt = (
-        "Does the new query require the previous exchange to answer correctly? "
-        "Reply with only 'yes' or 'no'.\n\n"
-        f"Previous exchange:\nUser: {last_user}\nAssistant: {last_assistant}\n\n"
+        "Below is a conversation history followed by a new query. "
+        "How many of the most recent question-and-answer exchanges does the new query "
+        "need in order to be answered correctly? Older context that is not needed should not be counted. "
+        f"Reply with only a single integer between 0 and {max_depth}.\n\n"
+        f"Conversation history:\n{transcript}\n\n"
         f"New query: {query}"
     )
     try:
@@ -45,12 +72,15 @@ def _needs_history(query: str, last_user: str, last_assistant: str) -> bool:
             prompt,
             timeout=30,
             model="claude-haiku-4-5-20251001",
-            system_prompt="Reply with only the single word 'yes' or 'no'. No other text.",
+            system_prompt=(
+                f"Reply with only a single integer between 0 and {max_depth}. No other text."
+            ),
         )
-        first_word = result.strip().lower().split()[0].strip(".,!?") if result.strip() else "no"
-        return first_word == "yes"
+        token = result.strip().split()[0].strip(".,!?") if result.strip() else "1"
+        n = int(token)
     except Exception:
-        return True
+        return min(1, max_depth)
+    return max(0, min(n, max_depth))
 
 
 def run_tracker(chat_id: str, query: str) -> str:
@@ -58,16 +88,15 @@ def run_tracker(chat_id: str, query: str) -> str:
     history = load_history(chat_id)
 
     prev_context = ""
-    if len(history) >= 2:
-        last_user = history[-2]
-        last_assistant = history[-1]
-        if last_user["role"] == "user" and last_assistant["role"] == "assistant":
-            if _needs_history(query, last_user["content"], last_assistant["content"]):
-                prev_context = (
-                    "\n\nPrevious exchange:\n"
-                    f"User: {last_user['content']}\n"
-                    f"Assistant: {last_assistant['content']}\n"
-                )
+    pairs = _extract_pairs(history)
+    if pairs:
+        depth = _needed_history_depth(query, history, max_depth=len(pairs))
+        if depth > 0:
+            recent = pairs[-depth:]
+            sections = "\n\n".join(
+                f"User: {u['content']}\nAssistant: {a['content']}" for u, a in recent
+            )
+            prev_context = f"\n\nPrevious exchanges:\n{sections}\n"
 
     try:
         category_hint = classify_query(query, history=history[-5:] if history else None)
