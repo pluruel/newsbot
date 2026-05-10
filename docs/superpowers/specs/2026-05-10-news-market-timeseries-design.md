@@ -29,18 +29,26 @@ cron 07:30 KST
 
 cron 00/06/12/18 KST
   → run_cycle.py
+    → build_input_file (each article gets [A001] index + GUID line)
+    → write workspace/input/{cat}/{slot}-guids.txt (existing, parallel order)
     → snapshot.build_snapshot_block(today)
     → prepend "## 시장 스냅샷" to workspace/input/{cat}/{slot}-input.md
     → run_claude("/cycle {slot} {cat}")
-        ├── Claude reads input (snapshot included)
+        ├── Claude reads input (snapshot + indexed articles)
         ├── Claude may call market_query MCP for extra data
         └── Claude writes workspace/cycles/{cat}/{slot}.md
+             with relations of form: src:A001,A007 inside brackets
     → apply_graph.py
-        → apply_graph_updates(entities, relations, cycle_id, category)   (existing)
-        → annotate.maybe_annotate_impacts(relations, slot, category)     (new)
-            → fetcher.fetch_intraday_hourly (yfinance)
+        → output_parser → relations with source_indices=['A001','A007']
+        → resolve indices via {slot}-guids.txt → source_article_guids=[<real GUID>, ...]
+        → apply_graph_updates(entities, relations, cycle_id, category)   (writer unions guids)
+        → annotate.maybe_annotate_impacts(relations, slot, category)
+            → fetcher.fetch_intraday_hourly  (if empty: fall back to daily get_daily)
             → store.upsert_intraday
-            → Neo4j SET r.impact_price_delta_pct, r.impact_price_delta_window, ...
+            → Neo4j SET r.impact_price_delta_pct,
+                       r.impact_price_delta_window ∈ {'[-60m, +60m]', 'daily'},
+                       r.impact_target_instrument,
+                       r.annotated_at
 
 tracker free-text
   → run_claude (tracker prompt)
@@ -76,12 +84,19 @@ tests/test_market_query_mcp.py
 
 ```
 newsparser/mcp_server.py            # add @mcp.tool() market_query
-newsparser/scripts/apply_graph.py   # call maybe_annotate_impacts after apply_graph_updates
+newsparser/scripts/apply_graph.py   # resolve source_indices → guids; call maybe_annotate_impacts after apply_graph_updates
 newsparser/scripts/run_cycle.py     # prepend snapshot block to cycle input file
-.claude/commands/cycle.md           # one-paragraph instruction about the snapshot block + canonical_name convention
+.claude/commands/cycle.md           # snapshot instruction + canonical_name convention + src: graph block extension
 newsparser/bot/tracker.py           # tracker prompt guidance for market_query usage
+newsparser/claude/input_builder.py  # per-article [A001] index header + explicit GUID line
+newsparser/claude/output_parser.py  # parse optional src: segment; RelationUpdate.source_indices
+newsparser/graph/writer.py          # accumulate source_article_guids on relations (union, idempotent)
 /etc/cron.d/newsparser              # add 07:30 KST daily fetch line
 tests/test_run_cycle_script.py      # one new case: snapshot block is prepended
+tests/test_input_builder.py         # assert article index headers + GUID line
+tests/test_output_parser.py         # assert src: parsing + back-compat for absent src
+tests/test_graph_writer.py          # assert source_article_guids union/dedup
+tests/test_apply_graph.py           # assert resolver maps A001 → real GUID, drops invalid indices
 ```
 
 The rationale for putting all new code under `newsparser/market/` (parallel to `collector/`, `graph/`, `claude/`) is to keep the time-series concern isolated. Each file has one responsibility and can be reasoned about independently.
@@ -337,6 +352,20 @@ Algorithm:
 
 The slot time is used as the temporal anchor for "the moment of impact". This is an approximation — a news event may have appeared anywhere in the preceding 6 hours — but it is sufficient for first-pass causal labeling and refinable later (e.g., using each article's `published` timestamp).
 
+### Daily fallback for off-hours
+
+The 12:00 and 18:00 KST cycles fall outside US market hours (SPX/NDX/VIX/TNX trade ~23:30–06:00 KST in EDT, ~00:30–07:00 KST in EST). The 00:00 and 18:00 KST cycles also miss KOSPI (open 09:00–15:30 KST). When step 2.c returns empty bars in those windows, the per-relation step would otherwise skip. A daily fallback fires instead.
+
+After step 2.e, if either `before` or `after` is empty:
+
+- `window = store.get_daily(alias, start=slot_date - 3d, end=slot_date + 3d)` (the 3-day cushion absorbs weekends/holidays).
+- `prev = last bar in window with date < slot_date`.
+- `event = first bar in window with date >= slot_date`.
+- If both exist: `delta_pct = (event.close - prev.close) / prev.close * 100`, and `impact_price_delta_window = 'daily'`.
+- If neither exists: skip the relation entirely (no annotation).
+
+Intraday wins when both are available — the fallback only fires when intraday is empty. The `impact_price_delta_window` property is the explicit discriminator (`'[-60m, +60m]'` vs `'daily'`) so consumers always know which granularity produced the delta. With this fallback, every relation targeting a tracked alias gets annotated as long as daily data exists for the surrounding trading days.
+
 ### `apply_graph.py` change
 
 After `apply_graph_updates(entities, relations, cycle_id, category)`:
@@ -354,7 +383,90 @@ Annotation is strictly additive — its failure must never poison the cycle's pr
 
 ---
 
-## Section 6 — Operations and Error Handling
+## Section 6 — Article-Relation Source Linkage
+
+The graph today records each relation's `source_cycles` (which cycle the relation came from) but not the specific articles. For exact reverse traversal — "show me the original article that justifies this `Fed --IMPACTS--> SPX` claim" — we record contributing article GUIDs directly on each relation. This is orthogonal to the market work but lands in the same spec because both stages depend on a tight article ↔ graph linkage to be useful.
+
+### Article indexing in input
+
+`newsparser/claude/input_builder.py` is amended so each article header carries a short stable index, and the GUID is shown explicitly:
+
+```
+### [A001] [Bloomberg] Fed Signals Pause on Rate Hikes
+- URL: https://...
+- GUID: <full GUID>
+- Published: 2026-05-09T14:30:00Z
+- Body: ...
+```
+
+The index `A001`, `A002`, ... is per-cycle and per-category (resets each cycle). The existing `{slot}-guids.txt` already lists GUIDs in input order — line `N` (1-indexed) maps to article index `A{N:03d}`. No new side file is required; the resolver in `apply_graph.py` reads the same file and reconstructs the mapping.
+
+### Graph block syntax extension
+
+`cycle.md` prompt gains one bullet under "Task":
+
+> For each relation in `### Relations`, append a `src:` segment listing the indices of input articles that justify the claim, e.g. `[conf:0.85, impact:0.7, src:A001,A007]`. Use only indices from this cycle's input.
+
+Example relation line:
+
+```
+- NEW | Fed --IMPACTS[conf:0.85, impact:0.7, src:A001,A007]--> SPX | rate decision drove
+```
+
+### Parser change
+
+`newsparser/claude/output_parser.py`:
+
+- `RELATION_RE` extended to capture an optional `src:` segment inside the bracket. Sketch:
+
+  ```python
+  r"\[conf:([\d.]+),\s*impact:([\d.]+)(?:,\s*src:([A-Z0-9,]+))?\]-->"
+  ```
+
+- `RelationUpdate` gains `source_indices: list[str]` (default `[]`). The parser splits `"A001,A007"` into `["A001", "A007"]`.
+- Backward compatibility: relation lines without `src:` parse exactly as before with `source_indices = []`.
+
+### Resolver in `apply_graph.py`
+
+Before calling `apply_graph_updates`:
+
+1. Read `{slot}-guids.txt` once → `guids: list[str]` (existing artifact; already produced by `run_cycle.py`).
+2. For each relation, resolve `source_indices` → `source_article_guids = [guids[int(idx[1:])-1] for idx in relation.source_indices if valid index]`. Invalid or out-of-range indices are dropped with a warning log.
+3. Pass `source_article_guids` through to the writer.
+
+### Writer change
+
+`newsparser/graph/writer.py:upsert_relation` Cypher accumulates GUIDs across cycles (lossless union; re-running a cycle stays idempotent):
+
+```cypher
+ON CREATE SET r.source_article_guids = $guids,
+              ...
+ON MATCH  SET r.source_article_guids = [g IN coalesce(r.source_article_guids, []) + $guids
+                                         WHERE g IS NOT NULL]
+              -- de-duplicate in Cypher
+              ...
+```
+
+The exact de-dup expression can be polished during implementation; the contract is "union, no duplicates."
+
+### Reverse traversal
+
+Given a relation from Neo4j:
+
+```cypher
+MATCH (a {canonical_name:"Fed"})-[r:IMPACTS]->(b {canonical_name:"SPX"})
+RETURN r.source_article_guids, r.impact_price_delta_pct
+```
+
+Then for each GUID, `SELECT title, body, url FROM pending_articles WHERE guid = ?` in SQLite. Article text → relation → price reaction is now a two-hop lookup that is exact, not a "follow `source_cycles` to the report and parse what Claude wrote."
+
+### Staging
+
+The article-linkage work is independent of the market work in this spec. It can be implemented in any order relative to fetcher/store/snapshot/annotate. Suggested order during planning: do it early (right after store) because it touches existing parsing and is the riskiest single change — landing it before annotate keeps annotate's tests less entangled.
+
+---
+
+## Section 7 — Operations and Error Handling
 
 ### Workspace and locks
 
@@ -375,6 +487,8 @@ The `flock` pattern matches existing cycle/weekly/reflect cron lines: `flock -n`
 | `snapshot.build_snapshot_block`| no rows for an instrument              | row shows `— (결측)`, table still rendered        |
 | `run_cycle.py` snapshot prepend| `market.db` missing entirely           | empty snapshot block prepended, warning logged    |
 | `annotate.maybe_annotate_impacts` | any per-relation failure            | warning, continue; cycle's apply_graph unaffected |
+| `annotate` intraday empty       | off-hours (US/KOSPI)                  | daily fallback fires using `store.get_daily`; window literal becomes `'daily'` |
+| `apply_graph.py` resolver       | invalid / out-of-range index in `src:` | drop that index with warning; relation still applied with the remaining valid GUIDs (or `[]` if none) |
 | `market_query` MCP tool        | no data in range                       | returns text "no data for {alias} in {start}..{end}" — not an exception |
 
 The principle: the price layer is additive context. Its absence degrades cycle quality but never breaks the cycle.
@@ -391,18 +505,22 @@ The script auto-detects empty DB and back-fills five years. Subsequent invocatio
 
 ---
 
-## Section 7 — Testing
+## Section 8 — Testing
 
 | Component                       | Test approach |
 |---------------------------------|---------------|
 | `fetcher.py`                    | yfinance monkeypatched to fixed returns; verify retry counts, backoff, empty-data handling |
 | `store.py`                      | tmp_path SQLite; upsert idempotence, PK conflict, get range, WAL pragma applied |
 | `snapshot.py`                   | seed store with sample rows; assert markdown output matches expected; missing-row case |
-| `annotate.py`                   | fetcher mocked; assert Cypher invocations with correct args; skip cases (non-tracked alias, non-IMPACTS predicate, empty bar windows) |
+| `annotate.py`                   | fetcher mocked; assert Cypher invocations with correct args; skip cases (non-tracked alias, non-IMPACTS predicate); intraday vs daily-fallback path each have a case (`impact_price_delta_window` literal asserted); empty intraday + empty daily → no annotation |
 | `fetch_market_daily.py`         | module-level mocks; smoke `main()` with empty DB (backfill) and seeded DB (incremental) |
 | `market_query` MCP tool         | call the `@mcp.tool()` function directly; normal range, partial gap, unknown alias |
 | `cycle.md`                      | no automated test (prompt review only) |
 | `run_cycle.py` integration      | one new case in `tests/test_run_cycle_script.py`: snapshot block is prepended to input file before `run_claude` is called |
+| `input_builder.py`              | extend `test_input_builder.py`: assert each article entry has `[A001]` index header and an explicit `- GUID:` line; ordering matches `{slot}-guids.txt` |
+| `output_parser.py`              | extend `test_output_parser.py`: `src:A001,A007` is captured into `source_indices`; missing `src:` parses to `[]`; malformed `src:` segment yields empty `source_indices` without raising |
+| `graph/writer.py`               | extend `test_graph_writer.py`: ON CREATE sets `source_article_guids` to the input list; ON MATCH unions without duplicates; two cycles citing one shared and one new GUID produce 3 elements total |
+| `apply_graph.py` resolver       | extend `test_apply_graph.py`: index `A001` resolves to first line of `{slot}-guids.txt`; out-of-range and unparsable indices are dropped with a warning |
 
 Live yfinance is **not** exercised in CI. A separate `scripts/smoke_market.py` (not under `tests/`) makes one real call per instrument and is run manually after fetcher changes.
 
@@ -430,12 +548,19 @@ tests/test_market_query_mcp.py
 
 ```
 newsparser/mcp_server.py             add @mcp.tool() market_query
-newsparser/scripts/apply_graph.py    call maybe_annotate_impacts after apply_graph_updates
+newsparser/scripts/apply_graph.py    resolve source_indices → guids; call maybe_annotate_impacts
 newsparser/scripts/run_cycle.py      prepend snapshot block to cycle input file
-.claude/commands/cycle.md            add "## 시장 스냅샷" instruction + canonical_name convention
+.claude/commands/cycle.md            snapshot instruction + canonical_name convention + src: extension
 newsparser/bot/tracker.py            add market_query usage paragraph to tracker prompt
+newsparser/claude/input_builder.py   per-article [A001] index header + explicit GUID line
+newsparser/claude/output_parser.py   parse optional src: segment; RelationUpdate.source_indices
+newsparser/graph/writer.py           accumulate source_article_guids on relations (union, idempotent)
 /etc/cron.d/newsparser               add 07:30 KST daily fetch line
 tests/test_run_cycle_script.py       add snapshot-prepended assertion
+tests/test_input_builder.py          assert article index headers + GUID line
+tests/test_output_parser.py          assert src: parsing + back-compat for absent src
+tests/test_graph_writer.py           assert source_article_guids union/dedup
+tests/test_apply_graph.py            assert resolver maps A001 → real GUID, drops invalid indices
 ```
 
 ## Files to Delete
