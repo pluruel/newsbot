@@ -8,7 +8,7 @@ ENTITY_RE = re.compile(
 )
 RELATION_RE = re.compile(
     r"^-\s+(NEW|UPDATE)\s+\|\s+(.+?)\s+--(\w+)"
-    r"\[conf:([\d.]+),\s*impact:([\d.]+)\]-->\s+(.+?)"
+    r"\[conf:([\d.]+),\s*impact:([\d.]+)(?:,\s*src:([A-Z0-9,]+))?\]-->\s+(.+?)"
     r"(?:\s+\|\s+(.+))?$"
 )
 
@@ -30,6 +30,8 @@ class RelationUpdate:
     confidence: float
     impact_score: float
     predicate_text: str = ""
+    source_indices: list[str] = field(default_factory=list)
+    source_article_guids: list[str] = field(default_factory=list)
 
 
 def parse_graph_updates(report: str) -> tuple[list[EntityUpdate], list[RelationUpdate]]:
@@ -56,11 +58,13 @@ def parse_graph_updates(report: str) -> tuple[list[EntityUpdate], list[RelationU
 
         m = RELATION_RE.match(stripped)
         if m:
-            op, subject, predicate, conf, impact, obj, text = m.groups()
+            op, subject, predicate, conf, impact, src, obj, text = m.groups()
+            indices = [s.strip() for s in (src or "").split(",") if s.strip()]
             relations.append(RelationUpdate(
                 op=op, subject=subject.strip(), predicate=predicate,
                 obj=obj.strip(), confidence=float(conf), impact_score=float(impact),
                 predicate_text=(text or "").strip(),
+                source_indices=indices,
             ))
 
     return entities, relations
