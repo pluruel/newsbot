@@ -127,3 +127,49 @@ def test_run_cycle_category_error_doesnt_stop_other(tmp_path):
 
     assert len(sent) == 1
     assert sent[0].startswith("[MARKETS]")
+
+
+def test_snapshot_block_prepended_to_input(tmp_path, monkeypatch):
+    """run_cycle should prepend a ## 시장 스냅샷 block above the article list."""
+    from datetime import date
+    from unittest.mock import patch
+
+    monkeypatch.setenv("MARKET_DB_PATH", str(tmp_path / "market.db"))
+    monkeypatch.setenv("WORKSPACE_DIR", str(tmp_path / "workspace"))
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "test.db"))
+
+    from newsparser.store.sqlite import init_db, insert_article
+    from newsparser.market import store as market_store
+    init_db()
+    market_store.init_market_db()
+    market_store.upsert_daily([
+        {"instrument": "SPX", "date": "2026-05-07",
+         "open": 100, "high": 100, "low": 100, "close": 100, "volume": 1},
+        {"instrument": "SPX", "date": "2026-05-08",
+         "open": 100, "high": 100, "low": 100, "close": 102, "volume": 1},
+    ])
+
+    insert_article("g1", "Bloomberg", "T", "https://x.com/1", None, "body", category="markets")
+
+    seen_input: list[str] = []
+
+    def fake_run_claude(prompt, **kw):
+        ws = tmp_path / "workspace"
+        slot, cat = prompt.strip().split()[1:3]
+        seen_input.append((ws / "input" / cat / f"{slot}-input.md").read_text())
+        report_dir = ws / "cycles" / cat
+        report_dir.mkdir(parents=True, exist_ok=True)
+        (report_dir / f"{slot}.md").write_text("사이클 OK\n## Graph updates\n")
+        return ""
+
+    import newsparser.scripts.run_cycle as run_cycle
+    with patch.object(run_cycle, "run_claude", side_effect=fake_run_claude), \
+         patch.object(run_cycle, "send_long_message"):
+        run_cycle.main("2026-05-09-12")
+
+    assert any("## 시장 스냅샷" in t for t in seen_input)
+    # Snapshot must precede article list
+    text = next(t for t in seen_input if "## 시장 스냅샷" in t)
+    snap_idx = text.find("## 시장 스냅샷")
+    art_idx = text.find("Collected Articles")
+    assert 0 <= snap_idx < art_idx

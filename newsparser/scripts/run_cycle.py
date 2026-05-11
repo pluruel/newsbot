@@ -2,7 +2,7 @@
 import logging
 import os
 import sys
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -13,6 +13,8 @@ from newsparser.bot.sender import send_long_message
 from newsparser.claude.input_builder import build_input_file
 from newsparser.claude.runner import run_claude
 from newsparser.classifier import classify_article, CATEGORIES
+from newsparser.market import snapshot as market_snapshot
+from newsparser.market import store as market_store
 from newsparser.store.sqlite import get_unclassified, get_unprocessed, mark_processed, update_category
 from newsparser.scheduler.workspace import ensure_workspace
 
@@ -47,6 +49,19 @@ def _run_for_category(slot: str, category: str, workspace: Path) -> None:
 
     build_input_file(slot, category)
     logger.info("[%s] Built input file (%d articles)", category, len(articles))
+
+    # Prepend a market snapshot block to the input file so Claude sees it first.
+    input_path = workspace / "input" / category / f"{slot}-input.md"
+    try:
+        market_store.init_market_db()
+        slot_date = date.fromisoformat(slot[:10])
+        snapshot_block = market_snapshot.build_snapshot_block(slot_date)
+    except Exception as exc:
+        logger.warning("[%s] market snapshot failed: %s", category, exc)
+        snapshot_block = ""
+    if snapshot_block and input_path.exists():
+        existing = input_path.read_text(encoding="utf-8")
+        input_path.write_text(snapshot_block + "\n\n" + existing, encoding="utf-8")
 
     run_claude(f"/cycle {slot} {category}")
     logger.info("[%s] Claude cycle complete", category)
