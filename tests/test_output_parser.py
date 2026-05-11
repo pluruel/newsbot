@@ -44,3 +44,38 @@ def test_parse_empty_report():
     entities, relations = parse_graph_updates("# Cycle\n## New developments\n- nothing")
     assert entities == []
     assert relations == []
+
+
+def test_relation_with_src_captures_indices():
+    report = (
+        "## Graph updates\n"
+        "### Relations\n"
+        "- NEW | Fed --IMPACTS[conf:0.85, impact:0.7, src:A001,A007]--> SPX | rate decision\n"
+    )
+    entities, relations = parse_graph_updates(report)
+    assert len(relations) == 1
+    r = relations[0]
+    assert r.subject == "Fed"
+    assert r.obj == "SPX"
+    assert r.predicate == "IMPACTS"
+    assert r.source_indices == ["A001", "A007"]
+
+
+def test_relation_without_src_keeps_empty_indices():
+    report = (
+        "## Graph updates\n"
+        "### Relations\n"
+        "- NEW | Fed --IMPACTS[conf:0.85, impact:0.7]--> SPX | rate decision\n"
+    )
+    entities, relations = parse_graph_updates(report)
+    assert relations[0].source_indices == []
+
+
+def test_relation_with_single_src_index():
+    report = (
+        "## Graph updates\n"
+        "### Relations\n"
+        "- NEW | OpenAI --ANNOUNCED[conf:0.95, impact:0.6, src:A003]--> GPT-5 | release\n"
+    )
+    entities, relations = parse_graph_updates(report)
+    assert relations[0].source_indices == ["A003"]

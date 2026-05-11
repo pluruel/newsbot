@@ -52,3 +52,130 @@ def test_apply_graph_exits_1_on_wrong_args():
     with pytest.raises(SystemExit) as exc:
         script.main(["apply_graph.py", "tech"])
     assert exc.value.code == 1
+
+
+def test_resolver_maps_A_indices_to_real_guids(tmp_path, monkeypatch):
+    import os
+    monkeypatch.setenv("WORKSPACE_DIR", str(tmp_path / "workspace"))
+    ws = tmp_path / "workspace"
+    (ws / "input" / "markets").mkdir(parents=True)
+    (ws / "input" / "markets" / "2026-05-09-12-guids.txt").write_text("g-first\ng-second\ng-third\n")
+    (ws / "cycles" / "markets").mkdir(parents=True)
+    (ws / "cycles" / "markets" / "2026-05-09-12.md").write_text(
+        "## Graph updates\n"
+        "### Relations\n"
+        "- NEW | Fed --IMPACTS[conf:0.85, impact:0.7, src:A001,A003]--> SPX | rate\n"
+    )
+
+    captured = {}
+
+    def fake_apply(entities, relations, cycle_id, category=None):
+        captured["relations"] = relations
+
+    from unittest.mock import patch
+    import newsparser.scripts.apply_graph as script
+    with patch.object(script, "apply_graph_updates", side_effect=fake_apply):
+        script.main(["apply_graph.py", "markets", "2026-05-09-12"])
+
+    rels = captured["relations"]
+    assert len(rels) == 1
+    assert sorted(rels[0].source_article_guids) == ["g-first", "g-third"]
+
+
+def test_resolver_drops_out_of_range_indices(tmp_path, monkeypatch):
+    monkeypatch.setenv("WORKSPACE_DIR", str(tmp_path / "workspace"))
+    ws = tmp_path / "workspace"
+    (ws / "input" / "markets").mkdir(parents=True)
+    (ws / "input" / "markets" / "2026-05-09-12-guids.txt").write_text("g-only\n")
+    (ws / "cycles" / "markets").mkdir(parents=True)
+    (ws / "cycles" / "markets" / "2026-05-09-12.md").write_text(
+        "## Graph updates\n"
+        "### Relations\n"
+        "- NEW | Fed --IMPACTS[conf:0.85, impact:0.7, src:A001,A099]--> SPX | rate\n"
+    )
+
+    captured = {}
+
+    def fake_apply(entities, relations, cycle_id, category=None):
+        captured["relations"] = relations
+
+    from unittest.mock import patch
+    import newsparser.scripts.apply_graph as script
+    with patch.object(script, "apply_graph_updates", side_effect=fake_apply):
+        script.main(["apply_graph.py", "markets", "2026-05-09-12"])
+
+    rels = captured["relations"]
+    # A099 is out of range; only A001 → "g-only" survives
+    assert rels[0].source_article_guids == ["g-only"]
+
+
+def test_resolver_handles_missing_guids_file(tmp_path, monkeypatch):
+    monkeypatch.setenv("WORKSPACE_DIR", str(tmp_path / "workspace"))
+    ws = tmp_path / "workspace"
+    (ws / "cycles" / "markets").mkdir(parents=True)
+    (ws / "cycles" / "markets" / "2026-05-09-12.md").write_text(
+        "## Graph updates\n"
+        "### Relations\n"
+        "- NEW | Fed --IMPACTS[conf:0.85, impact:0.7, src:A001]--> SPX | rate\n"
+    )
+
+    captured = {}
+
+    def fake_apply(entities, relations, cycle_id, category=None):
+        captured["relations"] = relations
+
+    from unittest.mock import patch
+    import newsparser.scripts.apply_graph as script
+    with patch.object(script, "apply_graph_updates", side_effect=fake_apply):
+        script.main(["apply_graph.py", "markets", "2026-05-09-12"])
+
+    # No guids file → no resolution; source_article_guids stays empty.
+    assert captured["relations"][0].source_article_guids == []
+
+
+def test_apply_graph_calls_annotate_after_apply(tmp_path, monkeypatch):
+    monkeypatch.setenv("WORKSPACE_DIR", str(tmp_path / "workspace"))
+    ws = tmp_path / "workspace"
+    (ws / "cycles" / "markets").mkdir(parents=True)
+    (ws / "cycles" / "markets" / "2026-05-09-12.md").write_text(
+        "## Graph updates\n"
+        "### Relations\n"
+        "- NEW | Fed --IMPACTS[conf:0.85, impact:0.7]--> SPX | rate\n"
+    )
+
+    order: list[str] = []
+
+    def fake_apply(*a, **kw):
+        order.append("apply")
+
+    def fake_annotate(relations, slot, category):
+        order.append("annotate")
+        assert slot == "2026-05-09-12"
+        assert category == "markets"
+        return 1
+
+    from unittest.mock import patch
+    import newsparser.scripts.apply_graph as script
+    with patch.object(script, "apply_graph_updates", side_effect=fake_apply), \
+         patch.object(script, "maybe_annotate_impacts", side_effect=fake_annotate):
+        script.main(["apply_graph.py", "markets", "2026-05-09-12"])
+
+    assert order == ["apply", "annotate"]
+
+
+def test_apply_graph_annotate_failure_doesnt_break_cycle(tmp_path, monkeypatch):
+    monkeypatch.setenv("WORKSPACE_DIR", str(tmp_path / "workspace"))
+    ws = tmp_path / "workspace"
+    (ws / "cycles" / "markets").mkdir(parents=True)
+    (ws / "cycles" / "markets" / "2026-05-09-12.md").write_text(
+        "## Graph updates\n"
+        "### Relations\n"
+        "- NEW | Fed --IMPACTS[conf:0.85, impact:0.7]--> SPX | rate\n"
+    )
+
+    from unittest.mock import patch
+    import newsparser.scripts.apply_graph as script
+    with patch.object(script, "apply_graph_updates"), \
+         patch.object(script, "maybe_annotate_impacts", side_effect=RuntimeError("boom")):
+        # Must not raise
+        script.main(["apply_graph.py", "markets", "2026-05-09-12"])

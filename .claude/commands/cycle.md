@@ -10,6 +10,10 @@ Parse `$ARGUMENTS` as two space-separated tokens: slot (e.g. `2026-05-08-12`) an
 
 Read `workspace/me/interests_{category}.md` and use it to weight importance scoring. Higher interest_weight topics deserve more analysis depth.
 
+## 시장 스냅샷
+
+입력파일 상단에 `## 시장 스냅샷` 블록이 있다. 보고서의 "새 소식" 첫 단락 또는 lead-in 한 줄에 그 날 시장 상태를 짧게 요약·반영하라. Indicator 엔티티를 라벨링할 때 `canonical_name`은 반드시 다음 별칭 중 하나로 쓴다: `SPX`, `NDX`, `KOSPI`, `USDKRW`, `USDJPY`, `DXY`, `VIX`, `TNX`. 그래프와 가격 DB는 이 별칭으로 연결된다.
+
 ## Task
 
 1. Read `workspace/input/{category}/{slot}-input.md`.
@@ -19,6 +23,7 @@ Read `workspace/me/interests_{category}.md` and use it to weight importance scor
    - Delta: what is genuinely new vs continuation.
    - Causal threading: link to prior cycles ("third update on Story X").
    - Importance scoring: 0.0–1.0, objective only. Reserve 0.8+ for genuine market-moving events.
+   - 각 관계에 대해 그 주장을 뒷받침하는 입력파일 내 기사 인덱스(`A001`, `A002` 등)를 `src:` 세그먼트로 표기한다. 예: `[conf:0.85, impact:0.7, src:A001,A007]`.
 4. Write the full report (Korean digest + graph block) to `workspace/cycles/{category}/{slot}.md`.
 5. Run: `.venv/bin/python newsparser/scripts/apply_graph.py {category} {slot}`
 6. Run: `.venv/bin/python newsparser/scripts/mark_processed.py {category} {slot}`
@@ -54,8 +59,8 @@ Read `workspace/me/interests_{category}.md` and use it to weight importance scor
 - UPDATE | {Label} | {canonical_name}
 
 ### Relations
-- NEW | {subject} --{PREDICATE}[conf:{0.NN}, impact:{0.NN}]--> {object} | {predicate_text}
-- UPDATE | {subject} --{PREDICATE}[conf:{0.NN}, impact:{0.NN}]--> {object}
+- NEW | {subject} --{PREDICATE}[conf:{0.NN}, impact:{0.NN}, src:A001,A007]--> {object} | {predicate_text}
+- UPDATE | {subject} --{PREDICATE}[conf:{0.NN}, impact:{0.NN}, src:A003]--> {object}
 ```
 
 Valid Labels: Company, Person, Institution, Event, Indicator, Market, Sector, Policy

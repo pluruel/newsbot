@@ -25,15 +25,19 @@ def upsert_relation(rel: RelationUpdate, cycle_id: str, category: str | None = N
             f"MERGE (a)-[r:{rel.predicate}]->(b) "
             "ON CREATE SET r.first_seen = datetime(), r.confidence = $conf, "
             "  r.impact_score = $impact, r.source_cycles = [$cycle_id], "
-            "  r.predicate_text = $text, r.category = $category "
+            "  r.predicate_text = $text, r.category = $category, "
+            "  r.source_article_guids = $guids "
             "ON MATCH SET r.impact_score = 0.85 * r.impact_score + 0.15 * $impact, "
             "  r.source_cycles = r.source_cycles + [$cycle_id], "
-            "  r.category = coalesce(r.category, $category) "
+            "  r.category = coalesce(r.category, $category), "
+            "  r.source_article_guids = coalesce(r.source_article_guids, []) + "
+            "    [g IN $guids WHERE NOT g IN coalesce(r.source_article_guids, [])] "
             "SET r.last_seen = datetime()",
             subject=rel.subject, obj=rel.obj,
             conf=rel.confidence, impact=rel.impact_score,
             cycle_id=cycle_id, text=rel.predicate_text,
             category=category,
+            guids=list(rel.source_article_guids or []),
         )
 
 

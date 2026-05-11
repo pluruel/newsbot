@@ -97,3 +97,57 @@ def test_upsert_relation_sets_category():
             "MATCH ()-[r:INFLUENCES]->() RETURN r.category AS c"
         ).single()
     assert row["c"] == "tech"
+
+
+def test_upsert_relation_sets_source_article_guids_on_create():
+    entities = [
+        EntityUpdate(op="NEW", label="Institution", name="Fed", aliases=[]),
+        EntityUpdate(op="NEW", label="Indicator", name="SPX", aliases=[]),
+    ]
+    rel = RelationUpdate(
+        op="NEW", subject="Fed", predicate="IMPACTS",
+        obj="SPX", confidence=0.85, impact_score=0.7,
+        source_article_guids=["guid-a", "guid-b"],
+    )
+    apply_graph_updates(entities, [rel], "markets-2026-05-09-12")
+    with get_driver().session() as s:
+        row = s.run(
+            "MATCH ()-[r:IMPACTS]->() RETURN r.source_article_guids AS guids"
+        ).single()
+    assert sorted(row["guids"]) == ["guid-a", "guid-b"]
+
+
+def test_upsert_relation_unions_source_article_guids_on_match():
+    entities = [
+        EntityUpdate(op="NEW", label="Institution", name="Fed", aliases=[]),
+        EntityUpdate(op="NEW", label="Indicator", name="SPX", aliases=[]),
+    ]
+    rel1 = RelationUpdate(op="NEW", subject="Fed", predicate="IMPACTS",
+                          obj="SPX", confidence=0.85, impact_score=0.7,
+                          source_article_guids=["guid-a", "guid-b"])
+    rel2 = RelationUpdate(op="UPDATE", subject="Fed", predicate="IMPACTS",
+                          obj="SPX", confidence=0.9, impact_score=0.8,
+                          source_article_guids=["guid-b", "guid-c"])
+    apply_graph_updates(entities, [rel1], "markets-2026-05-09-12")
+    apply_graph_updates([], [rel2], "markets-2026-05-09-18")
+    with get_driver().session() as s:
+        row = s.run(
+            "MATCH ()-[r:IMPACTS]->() RETURN r.source_article_guids AS guids"
+        ).single()
+    assert sorted(row["guids"]) == ["guid-a", "guid-b", "guid-c"]
+
+
+def test_upsert_relation_handles_empty_source_article_guids():
+    entities = [
+        EntityUpdate(op="NEW", label="Company", name="OpenAI", aliases=[]),
+        EntityUpdate(op="NEW", label="Company", name="Microsoft", aliases=[]),
+    ]
+    rel = RelationUpdate(op="NEW", subject="OpenAI", predicate="COMPETES_WITH",
+                         obj="Microsoft", confidence=0.7, impact_score=0.5)
+    apply_graph_updates(entities, [rel], "tech-2026-05-09-12")
+    with get_driver().session() as s:
+        row = s.run(
+            "MATCH ()-[r:COMPETES_WITH]->() RETURN r.source_article_guids AS guids"
+        ).single()
+    # Either [] or null is acceptable; we just want this not to crash.
+    assert row["guids"] in ([], None)
