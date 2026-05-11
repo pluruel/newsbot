@@ -114,10 +114,16 @@ def fetch_intraday_hourly(alias: str, start: datetime, end: datetime) -> list[di
         logger.warning("Unknown alias: %s", alias)
         return []
 
+    # yfinance's history() parser rejects fractional-second ISO strings
+    # (e.g. 2026-05-11T00:08:38.556157+00:00). Pass POSIX timestamps instead —
+    # accepted unambiguously across yfinance versions.
+    start_ts = int(start.timestamp())
+    end_ts = int(end.timestamp())
+
     def call() -> pd.DataFrame:
         return yf.Ticker(symbol).history(
-            start=start.isoformat(),
-            end=end.isoformat(),
+            start=start_ts,
+            end=end_ts,
             interval="1h",
             auto_adjust=False,
         )
