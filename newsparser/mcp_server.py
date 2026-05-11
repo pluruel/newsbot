@@ -2,12 +2,15 @@ import json
 import os
 from collections import Counter
 from datetime import datetime, timedelta, timezone
+from datetime import date as _date, datetime as _datetime, time as _time, timezone as _tz
 from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
 from newsparser.graph.traversal import get_context, get_influence_chain, format_context_for_claude
 from newsparser.classifier import classify_query as _classify_query_impl
+from newsparser.market import store as _market_store
+from newsparser.market.fetcher import TICKERS as _MARKET_TICKERS
 
 mcp = FastMCP("newsparser")
 
@@ -217,6 +220,50 @@ def write_manifesto(content: str) -> str:
 def classify_query(query: str) -> str:
     """Return the category the query is most likely about: 'tech', 'markets', or 'both'."""
     return _classify_query_impl(query)
+
+
+@mcp.tool()
+def market_query(
+    instruments: list[str],
+    start: str,
+    end: str,
+    freq: str = "1d",
+) -> str:
+    """Return OHLCV rows for the given macro instruments as compact markdown tables.
+
+    Valid instruments: SPX, NDX, KOSPI, USDKRW, USDJPY, DXY, VIX, TNX.
+    Dates must be absolute (YYYY-MM-DD). The caller is expected to resolve
+    relative expressions ("최근 30일") against the current date before invoking.
+    """
+    _market_store.init_market_db()
+    start_d = _date.fromisoformat(start)
+    end_d = _date.fromisoformat(end)
+    out: list[str] = []
+    for alias in instruments:
+        if alias not in _MARKET_TICKERS:
+            out.append(f"## {alias}\n\nunknown instrument\n")
+            continue
+        if freq == "1d":
+            rows = _market_store.get_daily(alias, start_d, end_d)
+            ts_key = "date"
+        elif freq == "1h":
+            start_dt = _datetime.combine(start_d, _time.min, tzinfo=_tz.utc)
+            end_dt = _datetime.combine(end_d, _time.max, tzinfo=_tz.utc)
+            rows = _market_store.get_intraday(alias, start_dt, end_dt)
+            ts_key = "ts"
+        else:
+            out.append(f"## {alias}\n\nunsupported freq: {freq}\n")
+            continue
+        if not rows:
+            out.append(f"## {alias} ({freq})\n\nno data for {alias} in {start}..{end}\n")
+            continue
+        out.append(f"## {alias} ({freq})")
+        out.append("| " + ts_key + " | open | high | low | close | volume |")
+        out.append("|---|---|---|---|---|---|")
+        for r in rows:
+            out.append(f"| {r[ts_key]} | {r['open']} | {r['high']} | {r['low']} | {r['close']} | {r['volume']} |")
+        out.append("")
+    return "\n".join(out)
 
 
 if __name__ == "__main__":
