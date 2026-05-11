@@ -38,7 +38,8 @@ def _fmt_pct(prev: float, cur: float, alias: str) -> str:
 
 
 def build_snapshot_block(at: date) -> str:
-    # Fetch up to 10 trading days back per instrument so we can pick the latest two
+    # Look back ~30 calendar days so weekends, holidays, and ≤2-week market closures
+    # still surface the most recent two bars per instrument.
     lookback = at - timedelta(days=30)
     latest_date: str | None = None
     rows_out: list[str] = []
