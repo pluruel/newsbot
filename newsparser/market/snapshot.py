@@ -1,7 +1,6 @@
 from datetime import date, timedelta
 
 from newsparser.market import store
-from newsparser.market.fetcher import TICKERS
 
 DISPLAY = {
     "SPX":    "S&P 500",
@@ -21,8 +20,6 @@ ORDER = ["SPX", "NDX", "KOSPI", "USDKRW", "USDJPY", "DXY", "VIX", "TNX"]
 def _fmt_close(alias: str, close: float) -> str:
     if alias == "TNX":
         return f"{close:.2f}%"
-    if alias in ("USDKRW", "USDJPY", "DXY", "VIX"):
-        return f"{close:,.2f}"
     return f"{close:,.2f}"
 
 
@@ -30,7 +27,8 @@ def _fmt_pct(prev: float, cur: float, alias: str) -> str:
     if prev == 0 or prev is None or cur is None:
         return "—"
     if alias == "TNX":
-        # bps change in absolute terms
+        # TNX close is rendered as a percentage; the delta is the absolute
+        # difference in percentage points (e.g., +0.05 = 5 bps).
         diff = cur - prev
         sign = "+" if diff >= 0 else ""
         return f"{sign}{diff:.2f}"
@@ -41,7 +39,7 @@ def _fmt_pct(prev: float, cur: float, alias: str) -> str:
 
 def build_snapshot_block(at: date) -> str:
     # Fetch up to 10 trading days back per instrument so we can pick the latest two
-    lookback = at - timedelta(days=14)
+    lookback = at - timedelta(days=30)
     latest_date: str | None = None
     rows_out: list[str] = []
 
