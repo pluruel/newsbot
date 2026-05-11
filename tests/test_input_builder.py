@@ -40,3 +40,35 @@ def test_build_input_file_marks_category_in_header(tmp_path):
 def test_build_input_file_zero_articles_for_category(tmp_path):
     path = build_input_file("2026-05-05-00", "tech")
     assert "0 total" in path.read_text()
+
+
+def test_build_input_file_assigns_A_indices(tmp_path):
+    insert_article("g1", "Bloomberg", "T1", "https://x.com/1", None, "b1", category="markets")
+    insert_article("g2", "FT", "T2", "https://x.com/2", None, "b2", category="markets")
+    insert_article("g3", "AP", "T3", "https://x.com/3", None, "b3", category="markets")
+    path = build_input_file("2026-05-09-12", "markets")
+    text = path.read_text()
+    assert "[A001]" in text
+    assert "[A002]" in text
+    assert "[A003]" in text
+
+
+def test_build_input_file_emits_guid_lines(tmp_path):
+    insert_article("guid-abc", "Bloomberg", "T", "https://x.com/1", None, "b", category="markets")
+    path = build_input_file("2026-05-09-12", "markets")
+    text = path.read_text()
+    assert "- GUID: guid-abc" in text
+
+
+def test_index_order_matches_db_order(tmp_path):
+    # The index order in the input file must match the order get_unprocessed returns,
+    # which is what {slot}-guids.txt is written from in run_cycle.py.
+    insert_article("g-first", "Bloomberg", "T1", "u1", "2026-05-09T01:00:00Z", "b", category="markets")
+    insert_article("g-second", "FT", "T2", "u2", "2026-05-09T02:00:00Z", "b", category="markets")
+    path = build_input_file("2026-05-09-12", "markets")
+    text = path.read_text()
+    a001 = text.index("[A001]")
+    a002 = text.index("[A002]")
+    g_first = text.index("g-first")
+    g_second = text.index("g-second")
+    assert a001 < g_first < a002 < g_second
