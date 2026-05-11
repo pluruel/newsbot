@@ -88,3 +88,5 @@ cp .env.example .env
 ```
 
 Required env vars: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `NEO4J_PASSWORD`
+
+`IS_SANDBOX=1` must be set before running if you want sandbox mode — `run.sh` exports it automatically, but set it manually if invoking the bot or scripts directly.
