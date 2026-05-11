@@ -9,6 +9,7 @@ load_dotenv()
 
 from newsparser.claude.output_parser import parse_graph_updates
 from newsparser.graph.writer import apply_graph_updates
+from newsparser.market.annotate import maybe_annotate_impacts
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +58,13 @@ def main(argv: list[str] | None = None) -> None:
     cycle_id = f"{category}-{slot}"
     apply_graph_updates(entities, relations, cycle_id=cycle_id, category=category)
     print(f"Graph updated: {len(entities)} entities, {len(relations)} relations")
+
+    try:
+        annotated = maybe_annotate_impacts(relations, slot, category)
+        if annotated:
+            print(f"Annotated {annotated} relations with price reactions.")
+    except Exception as exc:
+        logger.warning("annotation pass failed: %s", exc)
 
 
 if __name__ == "__main__":

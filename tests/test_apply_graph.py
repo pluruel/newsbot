@@ -131,3 +131,51 @@ def test_resolver_handles_missing_guids_file(tmp_path, monkeypatch):
 
     # No guids file → no resolution; source_article_guids stays empty.
     assert captured["relations"][0].source_article_guids == []
+
+
+def test_apply_graph_calls_annotate_after_apply(tmp_path, monkeypatch):
+    monkeypatch.setenv("WORKSPACE_DIR", str(tmp_path / "workspace"))
+    ws = tmp_path / "workspace"
+    (ws / "cycles" / "markets").mkdir(parents=True)
+    (ws / "cycles" / "markets" / "2026-05-09-12.md").write_text(
+        "## Graph updates\n"
+        "### Relations\n"
+        "- NEW | Fed --IMPACTS[conf:0.85, impact:0.7]--> SPX | rate\n"
+    )
+
+    order: list[str] = []
+
+    def fake_apply(*a, **kw):
+        order.append("apply")
+
+    def fake_annotate(relations, slot, category):
+        order.append("annotate")
+        assert slot == "2026-05-09-12"
+        assert category == "markets"
+        return 1
+
+    from unittest.mock import patch
+    import newsparser.scripts.apply_graph as script
+    with patch.object(script, "apply_graph_updates", side_effect=fake_apply), \
+         patch.object(script, "maybe_annotate_impacts", side_effect=fake_annotate):
+        script.main(["apply_graph.py", "markets", "2026-05-09-12"])
+
+    assert order == ["apply", "annotate"]
+
+
+def test_apply_graph_annotate_failure_doesnt_break_cycle(tmp_path, monkeypatch):
+    monkeypatch.setenv("WORKSPACE_DIR", str(tmp_path / "workspace"))
+    ws = tmp_path / "workspace"
+    (ws / "cycles" / "markets").mkdir(parents=True)
+    (ws / "cycles" / "markets" / "2026-05-09-12.md").write_text(
+        "## Graph updates\n"
+        "### Relations\n"
+        "- NEW | Fed --IMPACTS[conf:0.85, impact:0.7]--> SPX | rate\n"
+    )
+
+    from unittest.mock import patch
+    import newsparser.scripts.apply_graph as script
+    with patch.object(script, "apply_graph_updates"), \
+         patch.object(script, "maybe_annotate_impacts", side_effect=RuntimeError("boom")):
+        # Must not raise
+        script.main(["apply_graph.py", "markets", "2026-05-09-12"])
