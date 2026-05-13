@@ -32,3 +32,6 @@ include = ["newsparser*"]
 dev = [
     "pytest>=9.0.3",
 ]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"

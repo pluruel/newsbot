@@ -1,4 +1,5 @@
 from unittest.mock import patch, MagicMock
+import json
 from newsparser.claude.runner import run_claude, ClaudeError
 
 def test_run_claude_returns_stdout():
@@ -46,3 +47,20 @@ def test_run_claude_omits_mcp_config_by_default():
         run_claude("query")
     cmd = mock_run.call_args[0][0]
     assert "--mcp-config" not in cmd
+
+def test_run_claude_json_returns_text_and_meta():
+    from unittest.mock import MagicMock, patch
+    payload = json.dumps({
+        "result": "analysis",
+        "duration_ms": 5000,
+        "usage": {"input_tokens": 100, "output_tokens": 50},
+        "cost_usd": 0.002,
+    })
+    mock_result = MagicMock(returncode=0, stdout=payload, stderr="")
+    with patch("newsparser.claude.runner.subprocess.run", return_value=mock_result):
+        from newsparser.claude.runner import run_claude_json
+        text, meta = run_claude_json("/cycle")
+    assert text == "analysis"
+    assert meta["duration_ms"] == 5000
+    assert meta["input_tokens"] == 100
+    assert meta["cost_usd"] == 0.002
