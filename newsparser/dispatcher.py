@@ -70,14 +70,29 @@ async def _handle_message(update: Update, ptb_ctx: ContextTypes.DEFAULT_TYPE) ->
 
 
 async def _handle_reload(update: Update, ptb_ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    allowed = os.environ.get("ALLOWED_CHAT_ID")
+    chat_id = str(update.message.chat_id)
+    if allowed and chat_id != allowed:
+        logger.warning("Unauthorized /reload attempt from %s", chat_id)
+        return
     before = set(registry.names())
     job_queue = ptb_ctx.application.job_queue
-    for job in job_queue.jobs():
-        if job.name in before:
-            job.schedule_removal()
     registry.load()
-    _register_cron_jobs(ptb_ctx.application)
     after = set(registry.names())
+    # Remove jobs for bots no longer in registry
+    for job in job_queue.jobs():
+        if job.name in before and job.name not in after:
+            job.schedule_removal()
+    # Register only new bots' cron jobs
+    new_bots = after - before
+    for bot, trigger in registry.cron_bots():
+        if bot.name in new_bots:
+            from apscheduler.triggers.cron import CronTrigger
+            job_queue.run_custom(
+                callback=_make_cron_callback(bot),
+                job_kwargs={"trigger": CronTrigger.from_crontab(trigger.schedule, timezone=trigger.tz)},
+                name=bot.name,
+            )
     added = sorted(after - before)
     removed = sorted(before - after)
     lines = [f"✅ Reload 완료 — 활성: {sorted(after)}"]

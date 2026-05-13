@@ -34,20 +34,19 @@ def record_run(
 ) -> None:
     path = _db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path)
-    _init(conn)
-    conn.execute(
-        "INSERT INTO runs VALUES (?,?,?,?,?,?,?,?,?)",
-        (
-            datetime.now(timezone.utc).isoformat(),
-            bot, model,
-            meta.get("duration_ms"),
-            meta.get("input_tokens"),
-            meta.get("output_tokens"),
-            meta.get("cost_usd"),
-            1 if ok else 0,
-            error,
-        ),
-    )
-    conn.commit()
-    conn.close()
+    with sqlite3.connect(path) as conn:
+        _init(conn)
+        conn.execute(
+            "INSERT INTO runs VALUES (?,?,?,?,?,?,?,?,?)",
+            (
+                datetime.now(timezone.utc).isoformat(),
+                bot, model,
+                meta.get("duration_ms"),
+                meta.get("input_tokens"),
+                meta.get("output_tokens"),
+                meta.get("cost_usd"),
+                1 if ok else 0,
+                error,
+            ),
+        )
+        conn.commit()

@@ -52,7 +52,10 @@ def run_claude_json(
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, cwd=_PROJECT_ROOT)
     if result.returncode != 0:
         raise ClaudeError(f"claude exited {result.returncode}: stderr={result.stderr[:500]}")
-    data = json.loads(result.stdout)
+    try:
+        data = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise ClaudeError(f"claude returned non-JSON output: {result.stdout[:200]}") from exc
     text = data.get("result", "")
     meta = {
         "duration_ms": data.get("duration_ms"),

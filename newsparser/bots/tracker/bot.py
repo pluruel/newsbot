@@ -22,6 +22,7 @@ async def run(ctx: Context) -> None:
 
 
 def _docker_rebuild() -> None:
+    # start_new_session=True ensures the build survives this container being replaced
     subprocess.Popen(
         ["docker", "compose", "up", "-d", "--build", "dispatcher"],
         start_new_session=True,
