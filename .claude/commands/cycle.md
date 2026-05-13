@@ -25,8 +25,8 @@ Read `workspace/me/interests_{category}.md` and use it to weight importance scor
    - Importance scoring: 0.0–1.0, objective only. Reserve 0.8+ for genuine market-moving events.
    - 각 관계에 대해 그 주장을 뒷받침하는 입력파일 내 기사 인덱스(`A001`, `A002` 등)를 `src:` 세그먼트로 표기한다. 예: `[conf:0.85, impact:0.7, src:A001,A007]`.
 4. Write the full report (Korean digest + graph block) to `workspace/cycles/{category}/{slot}.md`.
-5. Run: `.venv/bin/python newsparser/scripts/apply_graph.py {category} {slot}`
-6. Run: `.venv/bin/python newsparser/scripts/mark_processed.py {category} {slot}`
+5. Run: `python newsparser/scripts/apply_graph.py {category} {slot}`
+6. Run: `python newsparser/scripts/mark_processed.py {category} {slot}`
 
 ## 문체 규칙
 
