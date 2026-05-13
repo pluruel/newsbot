@@ -4,8 +4,8 @@ import os
 import sys
 from pathlib import Path
 
-from dotenv import load_dotenv
-load_dotenv()
+from newsparser._env_loader import load_env
+load_env()
 
 from newsparser.claude.output_parser import parse_graph_updates
 from newsparser.graph.writer import apply_graph_updates

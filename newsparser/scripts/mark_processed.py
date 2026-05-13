@@ -3,8 +3,8 @@ import os
 import sys
 from pathlib import Path
 
-from dotenv import load_dotenv
-load_dotenv()
+from newsparser._env_loader import load_env
+load_env()
 
 from newsparser.store.sqlite import mark_processed
 

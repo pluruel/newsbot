@@ -4,16 +4,16 @@ import re
 import traceback
 from pathlib import Path
 
-from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 from apscheduler.triggers.cron import CronTrigger
 
+from newsparser._env_loader import load_env
 from newsparser.bots.core.context import Context, TelegramSender
 from newsparser.bots.core.registry import BotRegistry
 from newsparser.bots.core.types import Bot, Cron
 
-load_dotenv()
+load_env()
 logger = logging.getLogger(__name__)
 
 _WORKSPACE = Path(os.environ.get("WORKSPACE_DIR", "workspace"))

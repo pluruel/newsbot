@@ -3,8 +3,8 @@ import logging
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from dotenv import load_dotenv
-load_dotenv()
+from newsparser._env_loader import load_env
+load_env()
 
 from newsparser.bot.sender import send_long_message
 from newsparser.claude.runner import run_claude

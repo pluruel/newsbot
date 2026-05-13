@@ -1,8 +1,8 @@
 import logging
 from datetime import date, timedelta
 
-from dotenv import load_dotenv
-load_dotenv()
+from newsparser._env_loader import load_env
+load_env()
 
 from newsparser.market import fetcher, store
 

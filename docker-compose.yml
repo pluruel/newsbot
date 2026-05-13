@@ -1,8 +1,7 @@
 services:
   neo4j:
     image: neo4j:5
-    environment:
-      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD}
+    env_file: ../.env
     ports:
       - "7474:7474"
       - "7687:7687"
@@ -23,7 +22,7 @@ services:
   poller:
     build: .
     command: python -m newsparser.collector.run_poller
-    env_file: .env
+    env_file: ../.env
     environment:
       NEO4J_URI: bolt://neo4j:7687
     volumes:
@@ -41,7 +40,7 @@ services:
   dispatcher:
     build: .
     command: python -m newsparser.dispatcher
-    env_file: .env
+    env_file: ../.env
     environment:
       NEO4J_URI: bolt://neo4j:7687
       WORKSPACE_DIR: /app/workspace

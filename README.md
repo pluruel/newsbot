@@ -83,11 +83,11 @@ Telegram message
 ## Running
 
 ```bash
-cp .env.example .env
-./run.sh
+cp .env.example ../.env   # kept outside the repo so it's not in the bind-mounted /app
+docker compose up -d
 ```
 
-Required env vars: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `NEO4J_PASSWORD`
+Required env vars: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `NEO4J_PASSWORD`, `NEO4J_AUTH`
 
 `IS_SANDBOX=1` must be set before running if you want sandbox mode — `run.sh` exports it automatically, but set it manually if invoking the bot or scripts directly.
 ---
@@ -109,13 +109,13 @@ claude setup-token
 
 Follow the browser login prompt. On success, the CLI prints a `sk-ant-oat01-...` token.
 
-### 2. Add to `.env`
+### 2. Add to `../.env`
 
 ```
 CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-...
 ```
 
-Keep `.env` mode `600` and confirm it is in `.gitignore`.
+The env file lives one directory above the repo root so that headless `claude -p` calls running inside the dispatcher container (which bind-mounts the repo at `/app`) cannot read it from the filesystem. Keep it mode `600`.
 
 ### 3. Ensure cron sees the variable
 

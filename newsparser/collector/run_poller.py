@@ -4,9 +4,9 @@ import os
 import time
 from collections import defaultdict
 from datetime import datetime, timedelta
-from dotenv import load_dotenv
+from newsparser._env_loader import load_env
 
-load_dotenv()
+load_env()
 
 from newsparser.store.sqlite import init_db, get_recent, mark_alerted
 from newsparser.collector.sources import load_sources

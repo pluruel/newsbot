@@ -5,11 +5,12 @@ import os
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import Application, ContextTypes, MessageHandler, filters
 
-load_dotenv()
+from newsparser._env_loader import load_env
+
+load_env()
 
 from newsparser.bot.dispatcher import classify_message, MessageType
 from newsparser.bot.tracker import run_tracker

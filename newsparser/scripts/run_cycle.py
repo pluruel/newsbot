@@ -6,8 +6,8 @@ from datetime import date, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from dotenv import load_dotenv
-load_dotenv()
+from newsparser._env_loader import load_env
+load_env()
 
 from newsparser.bot.sender import send_long_message
 from newsparser.claude.input_builder import build_input_file
