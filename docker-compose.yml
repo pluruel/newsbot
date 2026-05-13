@@ -1,7 +1,8 @@
 services:
   neo4j:
     image: neo4j:5
-    env_file: ../.env
+    environment:
+      NEO4J_AUTH: ${NEO4J_AUTH}
     ports:
       - "7474:7474"
       - "7687:7687"

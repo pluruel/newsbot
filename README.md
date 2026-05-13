@@ -84,7 +84,7 @@ Telegram message
 
 ```bash
 cp .env.example ../.env   # kept outside the repo so it's not in the bind-mounted /app
-docker compose up -d
+docker compose --env-file ../.env up -d
 ```
 
 Required env vars: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `NEO4J_PASSWORD`, `NEO4J_AUTH`
