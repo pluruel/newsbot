@@ -1,7 +1,7 @@
 {
   "mcpServers": {
     "newsparser": {
-      "command": ".venv/bin/python",
+      "command": "python",
       "args": ["-m", "newsparser.mcp_server"]
     }
   }
