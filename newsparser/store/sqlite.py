@@ -144,3 +144,29 @@ def update_category(guid: str, category: str) -> None:
             "UPDATE pending_articles SET category = ? WHERE guid = ?",
             (category, guid),
         )
+
+
+def search_articles(
+    keyword: str,
+    category: str | None = None,
+    limit: int = 5,
+) -> list[dict]:
+    """Case-insensitive LIKE search over title and body across all ingested articles
+    (regardless of `processed`). Returns rows newest-first."""
+    if not keyword.strip():
+        return []
+    pattern = f"%{keyword.strip()}%"
+    sql = (
+        "SELECT guid, source, title, url, published, body, fetched_at, category "
+        "FROM pending_articles "
+        "WHERE (title LIKE ? OR body LIKE ?)"
+    )
+    params: list = [pattern, pattern]
+    if category is not None:
+        sql += " AND category = ?"
+        params.append(category)
+    sql += " ORDER BY COALESCE(published, fetched_at) DESC LIMIT ?"
+    params.append(limit)
+    with _connection() as conn:
+        rows = conn.execute(sql, params).fetchall()
+        return [dict(r) for r in rows]

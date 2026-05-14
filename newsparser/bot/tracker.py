@@ -111,10 +111,20 @@ def run_tracker(chat_id: str, query: str) -> str:
         "Always call read_cycle_reports() first to load recent cycle context before answering. "
         "Then use graph_query or other tools as needed. "
         "Cite cycle reports by date. Lead with TL;DR if the answer is long.\n\n"
+        "사용자가 특정 기사 원문/내용을 묻거나(\"그 기사 보여줘\", \"H200 중국 승인 기사\"), "
+        "사이클 요약에 없는 디테일을 요구하면 `search_articles(keyword, category, n)`로 "
+        "원문(title/url/body)을 직접 조회한다.\n\n"
         "시계열·가격·환율 질문이 들어오면 `market_query` 도구를 쓴다. "
         "`start`/`end`는 항상 절대 날짜(YYYY-MM-DD). "
         "사용자가 \"최근 한 달\" 같이 말하면 오늘 날짜 기준으로 직접 변환해서 넣는다. "
         "유효 instruments: SPX, NDX, KOSPI, USDKRW, USDJPY, DXY, VIX, TNX.\n\n"
+        "운영(ops) 권한도 있다. 사용자가 봇/서비스 상태나 재시작·로그를 묻거나 "
+        "지시하면 `service_status`, `tail_logs(service, n)`, `restart_service(service)` "
+        "MCP 도구를 쓴다. 허용 서비스: neo4j, poller, dispatcher. "
+        "`restart_service('dispatcher')`는 현재 프로세스를 죽이므로 반드시 사용자 확인 후에만 호출한다. "
+        "이 외에 호스트 환경을 만질 필요가 있으면 Bash 도구로 직접 명령을 실행할 수 있다 "
+        "(docker, ls, cat, .venv/bin/python 등). 단, 파괴적 명령(rm -rf, drop, force push)은 "
+        "사용자 확인을 받는다.\n\n"
         "Answer in plain conversational paragraphs — no markdown: no headers (#), "
         "no bold (**), no bullet lists (-/*), no tables, no horizontal rules (---). "
         "Separate sections with blank lines only."
@@ -122,7 +132,12 @@ def run_tracker(chat_id: str, query: str) -> str:
         f"User query: {query}"
     )
 
-    answer = run_claude(prompt, mcp_config=str(_MCP_CONFIG))
+    answer = run_claude(
+        prompt,
+        mcp_config=str(_MCP_CONFIG),
+        allowed_tools=["Bash", "Read", "Edit", "Write", "Grep", "Glob"],
+        permission_mode="bypassPermissions",
+    )
 
     _ADMIN_MARKERS = (
         "interests_tech.md updated",

@@ -11,6 +11,7 @@ from newsparser.graph.traversal import get_context, get_influence_chain, format_
 from newsparser.classifier import classify_query as _classify_query_impl
 from newsparser.market import store as _market_store
 from newsparser.market.fetcher import TICKERS as _MARKET_TICKERS
+from newsparser.store import sqlite as _sqlite_store
 
 mcp = FastMCP("newsparser")
 
@@ -264,6 +265,134 @@ def market_query(
             out.append(f"| {r[ts_key]} | {r['open']} | {r['high']} | {r['low']} | {r['close']} | {r['volume']} |")
         out.append("")
     return "\n".join(out)
+
+
+_ARTICLE_BODY_PREVIEW = 600
+
+
+@mcp.tool()
+def search_articles(keyword: str, category: str | None = None, n: int = 5) -> str:
+    """Search ingested articles by keyword (case-insensitive LIKE over title and body).
+    Returns up to n matches, newest first, with title/url/published/category and a
+    truncated body preview. category='tech' or 'markets' restricts; None or 'both'
+    searches all categories.
+    Use this when the user references a specific story and wants the source article."""
+    cat = None if category in (None, "both") else category
+    rows = _sqlite_store.search_articles(keyword, category=cat, limit=n)
+    if not rows:
+        return f"No articles found matching '{keyword}'" + (
+            f" in category={cat}" if cat else ""
+        ) + "."
+    out: list[str] = [f"Found {len(rows)} article(s) matching '{keyword}':\n"]
+    for r in rows:
+        body = (r.get("body") or "").strip()
+        if len(body) > _ARTICLE_BODY_PREVIEW:
+            body = body[:_ARTICLE_BODY_PREVIEW] + "…"
+        out.append(
+            f"## {r['title']}\n"
+            f"- url: {r['url']}\n"
+            f"- published: {r.get('published') or r['fetched_at']}\n"
+            f"- source: {r['source']} | category: {r.get('category') or '?'}\n\n"
+            f"{body}\n"
+        )
+    return "\n".join(out)
+
+
+# --- Ops tools -------------------------------------------------------------
+
+_ALLOWED_SERVICES = {"neo4j", "poller", "dispatcher"}
+
+
+def _docker_ps_name(service: str) -> str | None:
+    """Find a running container whose compose service label matches `service`.
+    Returns the container name, or None if not found."""
+    import subprocess
+    try:
+        out = subprocess.run(
+            ["docker", "ps", "--filter", f"label=com.docker.compose.service={service}",
+             "--format", "{{.Names}}"],
+            capture_output=True, text=True, timeout=10, check=True,
+        ).stdout.strip()
+    except (subprocess.SubprocessError, FileNotFoundError):
+        return None
+    name = out.splitlines()[0].strip() if out else ""
+    return name or None
+
+
+@mcp.tool()
+def service_status() -> str:
+    """List the project's docker compose services and their state.
+    Use this before restarting anything or when the user asks about system health."""
+    import subprocess
+    try:
+        result = subprocess.run(
+            ["docker", "ps", "-a",
+             "--filter", "label=com.docker.compose.project",
+             "--format", "{{.Names}}\t{{.Status}}\t{{.Label \"com.docker.compose.service\"}}"],
+            capture_output=True, text=True, timeout=10, check=True,
+        )
+    except FileNotFoundError:
+        return "docker CLI not available inside this container."
+    except subprocess.CalledProcessError as e:
+        return f"docker ps failed: {e.stderr.strip()}"
+    lines = result.stdout.strip().splitlines()
+    if not lines:
+        return "No compose-managed containers found."
+    out = ["| service | container | status |", "|---|---|---|"]
+    for line in lines:
+        parts = line.split("\t")
+        if len(parts) < 3:
+            continue
+        name, status, svc = parts[0], parts[1], parts[2]
+        out.append(f"| {svc} | {name} | {status} |")
+    return "\n".join(out)
+
+
+@mcp.tool()
+def restart_service(service: str) -> str:
+    """Restart one compose service (allowed: neo4j, poller, dispatcher).
+    Use when the user explicitly asks to restart or reload a service.
+    Restarting `dispatcher` will kill this very process — confirm with the user first."""
+    import subprocess
+    if service not in _ALLOWED_SERVICES:
+        return f"Service '{service}' not allowed. Allowed: {sorted(_ALLOWED_SERVICES)}."
+    container = _docker_ps_name(service)
+    if not container:
+        return f"No running container found for service '{service}'."
+    try:
+        subprocess.run(
+            ["docker", "restart", container],
+            capture_output=True, text=True, timeout=60, check=True,
+        )
+    except FileNotFoundError:
+        return "docker CLI not available inside this container."
+    except subprocess.CalledProcessError as e:
+        return f"docker restart failed: {e.stderr.strip()}"
+    return f"Restarted service '{service}' (container={container})."
+
+
+@mcp.tool()
+def tail_logs(service: str, n: int = 50) -> str:
+    """Tail the last n log lines of a compose service (allowed: neo4j, poller, dispatcher).
+    Use when diagnosing a problem the user reports."""
+    import subprocess
+    if service not in _ALLOWED_SERVICES:
+        return f"Service '{service}' not allowed. Allowed: {sorted(_ALLOWED_SERVICES)}."
+    container = _docker_ps_name(service)
+    if not container:
+        return f"No running container found for service '{service}'."
+    n = max(1, min(int(n), 500))
+    try:
+        result = subprocess.run(
+            ["docker", "logs", "--tail", str(n), container],
+            capture_output=True, text=True, timeout=30, check=True,
+        )
+    except FileNotFoundError:
+        return "docker CLI not available inside this container."
+    except subprocess.CalledProcessError as e:
+        return f"docker logs failed: {e.stderr.strip()}"
+    body = (result.stdout + result.stderr).strip()
+    return body or f"(no log output for {service})"
 
 
 if __name__ == "__main__":
