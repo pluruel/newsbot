@@ -1,8 +1,13 @@
 import asyncio
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 
 from claude_code_sdk import ClaudeCodeOptions, ClaudeSDKClient, ResultMessage
+from claude_code_sdk._errors import MessageParseError
+from claude_code_sdk._internal.message_parser import parse_message
+
+logger = logging.getLogger(__name__)
 
 _PROJECT_ROOT = Path(__file__).parent.parent.parent
 
@@ -47,11 +52,21 @@ async def run_claude(
     # foreign task — which trips anyio's "cancel scope exited in a different
     # task" check. ClaudeSDKClient binds connect/disconnect to __aenter__ /
     # __aexit__ coroutines, keeping the task-group lifecycle in this task.
+    #
+    # We iterate the underlying raw dict stream and parse ourselves so we can
+    # skip message types this SDK build does not know about (e.g.
+    # rate_limit_event from newer CLI builds): receive_response() would let
+    # MessageParseError kill the iterator and abort the whole session.
     try:
         async with asyncio.timeout(timeout):
             async with ClaudeSDKClient(options=options) as client:
                 await client.query(prompt)
-                async for message in client.receive_response():
+                async for data in client._query.receive_messages():
+                    try:
+                        message = parse_message(data)
+                    except MessageParseError as parse_exc:
+                        logger.debug("skipping unknown SDK message: %s", parse_exc)
+                        continue
                     if isinstance(message, ResultMessage):
                         usage = message.usage or {}
                         return RunResult(
