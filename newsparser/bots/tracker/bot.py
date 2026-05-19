@@ -17,7 +17,7 @@ async def run(ctx: Context) -> None:
         return
 
     await ctx.telegram.send("🔍 분석 중...")
-    answer = await ctx.run_in_thread(run_tracker, chat_id=chat_id, query=text)
+    answer = await run_tracker(chat_id=chat_id, query=text)
     await ctx.telegram.send(answer)
 
 

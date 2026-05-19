@@ -1,7 +1,8 @@
 import pytest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import patch, AsyncMock
 from newsparser.bot.tracker import run_tracker, load_history, save_history
+from newsparser.claude.runner import RunResult
 
 
 @pytest.fixture(autouse=True)
@@ -34,10 +35,11 @@ def test_load_history_returns_last_10_turns():
     assert history[0]["content"] == "5"
 
 
-def test_run_tracker_calls_claude_with_mcp_config():
-    with patch("newsparser.bot.tracker.classify_query", return_value="both"), \
-         patch("newsparser.bot.tracker.run_claude", return_value="Claude answer") as mock_claude:
-        answer = run_tracker(chat_id="chat123", query="FOMC 어떻게 됐어?")
+async def test_run_tracker_calls_claude_with_mcp_config():
+    mock_claude = AsyncMock(return_value=RunResult(text="Claude answer"))
+    with patch("newsparser.bot.tracker.classify_query", AsyncMock(return_value="both")), \
+         patch("newsparser.bot.tracker.run_claude", mock_claude):
+        answer = await run_tracker(chat_id="chat123", query="FOMC 어떻게 됐어?")
     mock_claude.assert_called_once()
     args, kwargs = mock_claude.call_args
     prompt = args[0]
@@ -46,38 +48,38 @@ def test_run_tracker_calls_claude_with_mcp_config():
     assert answer == "Claude answer"
 
 
-def test_run_tracker_appends_to_history():
-    with patch("newsparser.bot.tracker.classify_query", return_value="both"), \
-         patch("newsparser.bot.tracker.run_claude", return_value="답변"):
-        run_tracker(chat_id="chat123", query="질문")
+async def test_run_tracker_appends_to_history():
+    with patch("newsparser.bot.tracker.classify_query", AsyncMock(return_value="both")), \
+         patch("newsparser.bot.tracker.run_claude", AsyncMock(return_value=RunResult(text="답변"))):
+        await run_tracker(chat_id="chat123", query="질문")
     history = load_history("chat123")
     assert len(history) == 2
     assert history[0]["role"] == "user"
     assert history[1]["role"] == "assistant"
 
 
-def test_run_tracker_injects_category_hint():
+async def test_run_tracker_injects_category_hint():
     captured: dict = {}
 
-    def fake_run_claude(prompt, **kw):
+    async def fake_run_claude(prompt, **kw):
         captured["prompt"] = prompt
-        return "answer"
+        return RunResult(text="answer")
 
-    with patch("newsparser.bot.tracker.classify_query", return_value="tech") as mock_classify, \
+    mock_classify = AsyncMock(return_value="tech")
+    with patch("newsparser.bot.tracker.classify_query", mock_classify), \
          patch("newsparser.bot.tracker.run_claude", side_effect=fake_run_claude):
-        run_tracker(chat_id="t1", query="OpenAI 새 모델 어때?")
+        await run_tracker(chat_id="t1", query="OpenAI 새 모델 어때?")
 
     mock_classify.assert_called_once_with("OpenAI 새 모델 어때?", history=None)
     assert "category hint" in captured["prompt"].lower()
     assert "tech" in captured["prompt"]
 
 
-def test_run_tracker_continues_if_classify_query_fails():
-    def fake_run_claude(prompt, **kw):
-        return "answer"
+async def test_run_tracker_continues_if_classify_query_fails():
+    async def fake_run_claude(prompt, **kw):
+        return RunResult(text="answer")
 
-    with patch("newsparser.bot.tracker.classify_query", side_effect=RuntimeError("boom")), \
+    with patch("newsparser.bot.tracker.classify_query", AsyncMock(side_effect=RuntimeError("boom"))), \
          patch("newsparser.bot.tracker.run_claude", side_effect=fake_run_claude):
-        # must not raise — the tracker should treat classification as best-effort
-        result = run_tracker(chat_id="t1", query="anything")
+        result = await run_tracker(chat_id="t1", query="anything")
     assert result == "answer"

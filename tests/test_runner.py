@@ -1,66 +1,110 @@
-from unittest.mock import patch, MagicMock
-import json
-from newsparser.claude.runner import run_claude, ClaudeError
+import pytest
+from unittest.mock import patch, AsyncMock
 
-def test_run_claude_returns_stdout():
-    mock_result = MagicMock(returncode=0, stdout="analysis output", stderr="")
-    with patch("newsparser.claude.runner.subprocess.run", return_value=mock_result):
-        output = run_claude("/cycle")
-    assert output == "analysis output"
+from newsparser.claude.runner import run_claude, RunResult, ClaudeError
+from claude_code_sdk import ResultMessage
 
-def test_run_claude_raises_on_nonzero_exit():
-    mock_result = MagicMock(returncode=1, stdout="", stderr="error message")
-    with patch("newsparser.claude.runner.subprocess.run", return_value=mock_result):
-        try:
-            run_claude("/cycle")
-            assert False, "should have raised"
-        except ClaudeError as e:
-            assert "error message" in str(e)
 
-def test_run_claude_passes_prompt():
-    mock_result = MagicMock(returncode=0, stdout="ok", stderr="")
-    with patch("newsparser.claude.runner.subprocess.run", return_value=mock_result) as mock_run:
-        run_claude("/cycle with context")
-    args = mock_run.call_args[0][0]
-    assert "/cycle with context" in " ".join(args)
+def _make_result_message(text: str = "ok", cost: float = 0.001) -> ResultMessage:
+    return ResultMessage(
+        subtype="success",
+        duration_ms=500,
+        duration_api_ms=400,
+        is_error=False,
+        num_turns=1,
+        session_id="test-session",
+        total_cost_usd=cost,
+        usage={"input_tokens": 10, "output_tokens": 5},
+        result=text,
+    )
 
-def test_run_claude_includes_model_flag():
-    mock_result = MagicMock(returncode=0, stdout="ok", stderr="")
-    with patch("newsparser.claude.runner.subprocess.run", return_value=mock_result) as mock_run:
-        run_claude("query")
-    cmd = mock_run.call_args[0][0]
-    assert "--model" in cmd
-    assert "claude-sonnet-4-6" in cmd
 
-def test_run_claude_includes_mcp_config_when_given():
-    mock_result = MagicMock(returncode=0, stdout="ok", stderr="")
-    with patch("newsparser.claude.runner.subprocess.run", return_value=mock_result) as mock_run:
-        run_claude("query", mcp_config="mcp.json")
-    cmd = mock_run.call_args[0][0]
-    assert "--mcp-config" in cmd
-    idx = cmd.index("--mcp-config")
-    assert cmd[idx + 1] == "mcp.json"
+async def _mock_sdk_query(text: str = "ok"):
+    """Async generator that yields one ResultMessage."""
+    yield _make_result_message(text)
 
-def test_run_claude_omits_mcp_config_by_default():
-    mock_result = MagicMock(returncode=0, stdout="ok", stderr="")
-    with patch("newsparser.claude.runner.subprocess.run", return_value=mock_result) as mock_run:
-        run_claude("query")
-    cmd = mock_run.call_args[0][0]
-    assert "--mcp-config" not in cmd
 
-def test_run_claude_json_returns_text_and_meta():
-    from unittest.mock import MagicMock, patch
-    payload = json.dumps({
-        "result": "analysis",
-        "duration_ms": 5000,
-        "usage": {"input_tokens": 100, "output_tokens": 50},
-        "cost_usd": 0.002,
-    })
-    mock_result = MagicMock(returncode=0, stdout=payload, stderr="")
-    with patch("newsparser.claude.runner.subprocess.run", return_value=mock_result):
-        from newsparser.claude.runner import run_claude_json
-        text, meta = run_claude_json("/cycle")
-    assert text == "analysis"
-    assert meta["duration_ms"] == 5000
-    assert meta["input_tokens"] == 100
-    assert meta["cost_usd"] == 0.002
+async def test_run_claude_returns_text():
+    with patch("newsparser.claude.runner._sdk_query", side_effect=lambda **kw: _mock_sdk_query("analysis output")):
+        result = await run_claude("/cycle")
+    assert isinstance(result, RunResult)
+    assert result.text == "analysis output"
+
+
+async def test_run_claude_returns_cost_and_tokens():
+    async def gen(**kw):
+        yield _make_result_message("output")
+
+    with patch("newsparser.claude.runner._sdk_query", side_effect=lambda **kw: gen(**kw)):
+        result = await run_claude("query")
+    assert result.cost_usd == 0.001
+    assert result.input_tokens == 10
+    assert result.output_tokens == 5
+    assert result.duration_ms == 500
+
+
+async def test_run_claude_raises_claude_error_on_sdk_exception():
+    async def gen(**kw):
+        raise RuntimeError("SDK failure")
+        yield  # make it a generator
+
+    with patch("newsparser.claude.runner._sdk_query", side_effect=lambda **kw: gen(**kw)):
+        with pytest.raises(ClaudeError, match="SDK failure"):
+            await run_claude("/cycle")
+
+
+async def test_run_claude_raises_on_no_result():
+    async def gen(**kw):
+        return
+        yield  # empty generator
+
+    with patch("newsparser.claude.runner._sdk_query", side_effect=lambda **kw: gen(**kw)):
+        with pytest.raises(ClaudeError, match="no result"):
+            await run_claude("/cycle")
+
+
+async def test_run_claude_passes_model():
+    received_options = {}
+
+    async def gen(**kw):
+        received_options.update(kw)
+        yield _make_result_message()
+
+    with patch("newsparser.claude.runner._sdk_query", side_effect=lambda **kw: gen(**kw)):
+        await run_claude("query", model="claude-haiku-4-5-20251001")
+
+    assert received_options.get("options").model == "claude-haiku-4-5-20251001"
+
+
+async def test_run_claude_loads_mcp_config(tmp_path):
+    mcp_file = tmp_path / "mcp.json"
+    mcp_file.write_text('{"mcpServers": {"newsparser": {"command": "python"}}}')
+
+    received_options = {}
+
+    async def gen(**kw):
+        received_options.update(kw)
+        yield _make_result_message()
+
+    with patch("newsparser.claude.runner._sdk_query", side_effect=lambda **kw: gen(**kw)):
+        await run_claude("query", mcp_config=str(mcp_file))
+
+    # mcp_servers should be passed as a Path (the file)
+    import pathlib
+    opts = received_options.get("options")
+    assert opts is not None
+    assert opts.mcp_servers == mcp_file
+
+
+async def test_run_claude_no_mcp_config_passes_empty_dict():
+    received_options = {}
+
+    async def gen(**kw):
+        received_options.update(kw)
+        yield _make_result_message()
+
+    with patch("newsparser.claude.runner._sdk_query", side_effect=lambda **kw: gen(**kw)):
+        await run_claude("query")
+
+    opts = received_options.get("options")
+    assert opts.mcp_servers == {}

@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 from datetime import datetime
@@ -33,7 +34,7 @@ _SCOPE_TEXT = {
 }
 
 
-def _classify_pending() -> int:
+async def _classify_pending() -> int:
     """Tag any unprocessed articles with NULL category via haiku. Returns count tagged."""
     rows = get_unclassified()
     if not rows:
@@ -41,8 +42,8 @@ def _classify_pending() -> int:
     logger.info("Classifying %d untagged articles via haiku", len(rows))
     for r in rows:
         try:
-            cat = classify_article(r["title"], r["body"])
-        except Exception as exc:  # defense in depth — classifier already catches its own errors
+            cat = await classify_article(r["title"], r["body"])
+        except Exception as exc:
             logger.warning("Unexpected classifier error on %s: %s — defaulting to 'markets'", r["guid"], exc)
             cat = "markets"
         update_category(r["guid"], cat)
@@ -67,7 +68,7 @@ def _build_prompt(spec: str, category: str, workspace: Path, input_path: Path) -
     return f"{header}\n{spec}\n\nInput file: {input_path}"
 
 
-def _run_for_category(slot: str, category: str, workspace: Path) -> None:
+async def _run_for_category(slot: str, category: str, workspace: Path) -> None:
     unprocessed = get_unprocessed(category=category)
     if not unprocessed:
         logger.info("No unprocessed articles for category=%s slot=%s", category, slot)
@@ -78,7 +79,8 @@ def _run_for_category(slot: str, category: str, workspace: Path) -> None:
 
     spec = _CYCLE_PROMPT_PATH.read_text(encoding="utf-8")
     prompt = _build_prompt(spec, category, workspace, input_path)
-    report = run_claude(prompt)
+    result = await run_claude(prompt)
+    report = result.text
 
     report_path = workspace / "cycles" / category / f"{slot}.md"
     report_path.parent.mkdir(parents=True, exist_ok=True)
@@ -93,7 +95,7 @@ def _run_for_category(slot: str, category: str, workspace: Path) -> None:
     digest = report.split("## Graph updates", 1)[0].rstrip()
     message = f"[{category.upper()}] {digest}" if digest else f"[{category.upper()}] (empty digest)"
     try:
-        send_long_message(message)
+        await asyncio.to_thread(send_long_message, message)
     except Exception as e:
         logger.error("Telegram send failed for cycle %s/%s: %s", category, slot, e)
 
@@ -107,14 +109,14 @@ def _run_for_category(slot: str, category: str, workspace: Path) -> None:
         )
 
 
-def run_cycle(slot: str) -> None:
+async def run_cycle(slot: str) -> None:
     """Full /cycle flow per slot — classifies pending then runs once per category."""
     workspace = ensure_workspace()
 
     try:
-        _classify_pending()
+        await _classify_pending()
     except Exception as exc:
         logger.warning("classify_pending failed (%s); proceeding with already-tagged rows", exc)
 
     for category in CATEGORIES:
-        _run_for_category(slot, category, workspace)
+        await _run_for_category(slot, category, workspace)

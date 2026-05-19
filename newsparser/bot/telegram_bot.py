@@ -42,7 +42,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         slot = datetime.now(kst).strftime("%Y-%m-%d-%H")
         await update.message.reply_text(f"⚙️ /cycle 시작: {slot}")
         try:
-            await asyncio.to_thread(run_cycle_script, slot)
+            await run_cycle_script(slot)
         except Exception as e:
             logger.exception("Cycle failed: %s", slot)
             await update.message.reply_text(f"❌ Cycle 오류: {e}")
@@ -53,7 +53,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         date = datetime.now(kst).strftime("%Y-%m-%d")
         await update.message.reply_text(f"⚙️ /weekly 시작: {date}")
         try:
-            await asyncio.to_thread(run_weekly_script, date)
+            await run_weekly_script(date)
         except Exception as e:
             logger.exception("Weekly failed: %s", date)
             await update.message.reply_text(f"❌ Weekly 오류: {e}")
@@ -64,7 +64,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         date = datetime.now(kst).strftime("%Y-%m-%d")
         await update.message.reply_text(f"⚙️ /reflect 시작: {date}")
         try:
-            await asyncio.to_thread(run_reflect_script, date)
+            await run_reflect_script(date)
         except Exception as e:
             logger.exception("Reflect failed: %s", date)
             await update.message.reply_text(f"❌ Reflect 오류: {e}")
@@ -74,7 +74,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     else:
         await update.message.reply_text("🔍 분석 중...")
         try:
-            answer = await asyncio.to_thread(run_tracker, chat_id=chat_id, query=text)
+            answer = await run_tracker(chat_id=chat_id, query=text)
         except Exception as e:
             logger.exception("Tracker failed for query: %s", text[:60])
             await update.message.reply_text(f"❌ 오류: {e}")

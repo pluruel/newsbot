@@ -33,11 +33,17 @@ class Context:
 
     async def claude(self, prompt: str, **kwargs) -> str:
         from newsparser.bots.core.cost_db import record_run
-        from newsparser.claude.runner import run_claude_json
+        from newsparser.claude.runner import run_claude
         try:
-            text, meta = await asyncio.to_thread(run_claude_json, prompt, **kwargs)
+            result = await run_claude(prompt, **kwargs)
+            meta = {
+                "cost_usd": result.cost_usd,
+                "input_tokens": result.input_tokens,
+                "output_tokens": result.output_tokens,
+                "duration_ms": result.duration_ms,
+            }
             await asyncio.to_thread(record_run, bot=self.bot_name, meta=meta, ok=True)
-            return text
+            return result.text
         except Exception as exc:
             await asyncio.to_thread(record_run, bot=self.bot_name, meta={}, ok=False, error=str(exc))
             raise

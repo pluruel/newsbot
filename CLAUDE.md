@@ -7,15 +7,15 @@ Context for working on this codebase with Claude Code.
 ## Architecture
 
 - Python handles all I/O, scheduling, DB, Telegram, and Neo4j.
-- Claude is invoked headless via CLI subprocess (`claude -p ...`) — see `newsparser/claude/runner.py`. Do not switch to the Anthropic API directly.
-- `CLAUDE.md` is auto-loaded by every `claude -p` call from the project root and acts as the system prompt — keep it minimal (role + style).
+- Claude is invoked via the `claude-code-sdk` Python library — see `newsparser/claude/runner.py`. This wraps the Claude Code CLI (not the raw Anthropic API).
+- `CLAUDE.md` is auto-loaded by every SDK call from the project root and acts as the system prompt — keep it minimal (role + style).
 - Slash command specs live in `.claude/commands/`:
   - `.claude/commands/cycle.md` — cycle analysis (reads input file, writes report, calls helper scripts via Bash)
   - `.claude/commands/weekly.md` — weekly briefing synthesis
   - `.claude/commands/reflect.md` — interest profile update
-- Outer coordinators (`newsparser/scripts/run_cycle.py`, `run_weekly.py`, `run_reflect.py`) build input files and call `run_claude("/cycle …")`.
+- Outer coordinators (`newsparser/scripts/run_cycle.py`, `run_weekly.py`, `run_reflect.py`) build input files and call `await run_claude("/cycle …")`.
 - Helper scripts (`newsparser/scripts/apply_graph.py`, `mark_processed.py`) are called by Claude via Bash tool inside slash commands.
-- MCP transport is stdio — spawned per `claude -p` call, no persistent container. Config: `mcp.json`.
+- MCP transport is stdio — configured via `mcp_servers` in `ClaudeCodeOptions`. Config: `mcp.json`.
 - The `/tracker` flow is different: `newsparser/bot/tracker.py` builds its prompt inline and uses MCP tools via `mcp.json`.
 
 ---

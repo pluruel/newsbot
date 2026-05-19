@@ -8,7 +8,6 @@ from pathlib import Path
 from mcp.server.fastmcp import FastMCP
 
 from newsparser.graph.traversal import get_context, get_influence_chain, format_context_for_claude
-from newsparser.classifier import classify_query as _classify_query_impl
 from newsparser.market import store as _market_store
 from newsparser.market.fetcher import TICKERS as _MARKET_TICKERS
 from newsparser.store import sqlite as _sqlite_store
@@ -218,9 +217,10 @@ def write_manifesto(content: str) -> str:
 
 
 @mcp.tool()
-def classify_query(query: str) -> str:
+async def classify_query(query: str) -> str:
     """Return the category the query is most likely about: 'tech', 'markets', or 'both'."""
-    return _classify_query_impl(query)
+    from newsparser.classifier import classify_query as _cq
+    return await _cq(query)
 
 
 @mcp.tool()

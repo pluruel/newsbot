@@ -140,9 +140,10 @@ def test_get_interest_weights_uses_per_category_file(tmp_path):
     assert "0.95" in out
 
 
-def test_classify_query_tool_returns_label():
-    with patch("newsparser.mcp_server._classify_query_impl", return_value="tech"):
-        result = mcp_classify_query("OpenAI 신모델 동향")
+async def test_classify_query_tool_returns_label():
+    from unittest.mock import AsyncMock
+    with patch("newsparser.classifier.classify_query", AsyncMock(return_value="tech")):
+        result = await mcp_classify_query("OpenAI 신모델 동향")
     assert result == "tech"
 
 

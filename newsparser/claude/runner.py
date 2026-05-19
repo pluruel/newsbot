@@ -1,9 +1,10 @@
-import os
-import subprocess
-import json
+import asyncio
+from dataclasses import dataclass
 from pathlib import Path
 
-# Project root: two levels above this file (newsparser/claude/runner.py → project root)
+from claude_code_sdk import ClaudeCodeOptions, ResultMessage
+from claude_code_sdk import query as _sdk_query
+
 _PROJECT_ROOT = Path(__file__).parent.parent.parent
 
 
@@ -11,74 +12,52 @@ class ClaudeError(RuntimeError):
     pass
 
 
-# Resolve at call time. Override with `CLAUDE_BIN` env var when PATH lookup fails
-# (e.g. systemd services with minimal PATH).
-def _claude_bin() -> str:
-    return os.environ.get("CLAUDE_BIN", "claude")
+@dataclass
+class RunResult:
+    text: str
+    cost_usd: float | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    duration_ms: int | None = None
 
 
-def _extra_perm_args(
-    allowed_tools: list[str] | None,
-    permission_mode: str | None,
-) -> list[str]:
-    args: list[str] = []
-    if allowed_tools:
-        args += ["--allowedTools", ",".join(allowed_tools)]
-    if permission_mode is not None:
-        args += ["--permission-mode", permission_mode]
-    return args
-
-
-def run_claude(
+async def run_claude(
     prompt: str,
+    *,
+    model: str = "claude-sonnet-4-6",
     timeout: int = 1500,
     mcp_config: str | None = None,
-    model: str = "claude-sonnet-4-6",
     system_prompt: str | None = None,
     allowed_tools: list[str] | None = None,
     permission_mode: str | None = None,
-) -> str:
-    """Invoke claude CLI headless and return stdout. Raises ClaudeError on failure."""
-    cmd = [_claude_bin(), "-p", prompt, "--output-format", "text", "--model", model]
-    if mcp_config is not None:
-        cmd += ["--mcp-config", mcp_config]
-    if system_prompt is not None:
-        cmd += ["--system-prompt", system_prompt]
-    cmd += _extra_perm_args(allowed_tools, permission_mode)
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, cwd=_PROJECT_ROOT)
-    if result.returncode != 0:
-        raise ClaudeError(f"claude exited {result.returncode}: stderr={result.stderr[:500]} stdout={result.stdout[:500]}")
-    return result.stdout
+) -> RunResult:
+    """Invoke Claude via SDK and return RunResult. Raises ClaudeError on failure."""
+    options = ClaudeCodeOptions(
+        model=model,
+        system_prompt=system_prompt,
+        allowed_tools=allowed_tools or [],
+        permission_mode=permission_mode,  # type: ignore[arg-type]
+        mcp_servers=Path(mcp_config) if mcp_config else {},
+        cwd=_PROJECT_ROOT,
+    )
 
-
-def run_claude_json(
-    prompt: str,
-    timeout: int = 1500,
-    mcp_config: str | None = None,
-    model: str = "claude-sonnet-4-6",
-    system_prompt: str | None = None,
-    allowed_tools: list[str] | None = None,
-    permission_mode: str | None = None,
-) -> tuple[str, dict]:
-    """Like run_claude() but uses --output-format json. Returns (text, meta)."""
-    cmd = [_claude_bin(), "-p", prompt, "--output-format", "json", "--model", model]
-    if mcp_config is not None:
-        cmd += ["--mcp-config", mcp_config]
-    if system_prompt is not None:
-        cmd += ["--system-prompt", system_prompt]
-    cmd += _extra_perm_args(allowed_tools, permission_mode)
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, cwd=_PROJECT_ROOT)
-    if result.returncode != 0:
-        raise ClaudeError(f"claude exited {result.returncode}: stderr={result.stderr[:500]}")
     try:
-        data = json.loads(result.stdout)
-    except json.JSONDecodeError as exc:
-        raise ClaudeError(f"claude returned non-JSON output: {result.stdout[:200]}") from exc
-    text = data.get("result", "")
-    meta = {
-        "duration_ms": data.get("duration_ms"),
-        "input_tokens": (data.get("usage") or {}).get("input_tokens"),
-        "output_tokens": (data.get("usage") or {}).get("output_tokens"),
-        "cost_usd": data.get("cost_usd"),
-    }
-    return text, meta
+        async with asyncio.timeout(timeout):
+            async for message in _sdk_query(prompt=prompt, options=options):
+                if isinstance(message, ResultMessage):
+                    usage = message.usage or {}
+                    return RunResult(
+                        text=message.result or "",
+                        cost_usd=message.total_cost_usd,
+                        input_tokens=usage.get("input_tokens"),
+                        output_tokens=usage.get("output_tokens"),
+                        duration_ms=message.duration_ms,
+                    )
+    except asyncio.TimeoutError:
+        raise ClaudeError(f"claude timed out after {timeout}s")
+    except ClaudeError:
+        raise
+    except Exception as exc:
+        raise ClaudeError(str(exc)) from exc
+
+    raise ClaudeError("claude returned no result")

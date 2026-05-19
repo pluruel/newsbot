@@ -11,7 +11,7 @@ async def run(ctx: Context) -> None:
     slot = datetime.now(_KST).strftime("%Y-%m-%d-%H")
     if ctx.message:
         await ctx.telegram.send(f"⚙️ /cycle 시작: {slot}")
-    await ctx.run_in_thread(_run_cycle, slot)
+    await _run_cycle(slot)
     if ctx.message:
         await ctx.telegram.send("✅ Cycle 완료")
 

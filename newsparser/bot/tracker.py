@@ -48,7 +48,7 @@ def _extract_pairs(history: list[dict]) -> list[tuple[dict, dict]]:
 _HAIKU_ASSISTANT_PREVIEW = 240
 
 
-def _needed_history_depth(query: str, history: list[dict], max_depth: int) -> int:
+async def _needed_history_depth(query: str, history: list[dict], max_depth: int) -> int:
     """Use haiku to decide how many recent exchanges the new query needs (0..max_depth)."""
     if max_depth <= 0:
         return 0
@@ -68,7 +68,7 @@ def _needed_history_depth(query: str, history: list[dict], max_depth: int) -> in
         f"New query: {query}"
     )
     try:
-        result = run_claude(
+        result = await run_claude(
             prompt,
             timeout=30,
             model="claude-haiku-4-5-20251001",
@@ -76,21 +76,21 @@ def _needed_history_depth(query: str, history: list[dict], max_depth: int) -> in
                 f"Reply with only a single integer between 0 and {max_depth}. No other text."
             ),
         )
-        token = result.strip().split()[0].strip(".,!?") if result.strip() else "1"
+        token = result.text.strip().split()[0].strip(".,!?") if result.text.strip() else "1"
         n = int(token)
     except Exception:
         return min(1, max_depth)
     return max(0, min(n, max_depth))
 
 
-def run_tracker(chat_id: str, query: str) -> str:
+async def run_tracker(chat_id: str, query: str) -> str:
     """Resolve a user query using Claude with MCP tools."""
     history = load_history(chat_id)
 
     prev_context = ""
     pairs = _extract_pairs(history)
     if pairs:
-        depth = _needed_history_depth(query, history, max_depth=len(pairs))
+        depth = await _needed_history_depth(query, history, max_depth=len(pairs))
         if depth > 0:
             recent = pairs[-depth:]
             sections = "\n\n".join(
@@ -99,7 +99,7 @@ def run_tracker(chat_id: str, query: str) -> str:
             prev_context = f"\n\nPrevious exchanges:\n{sections}\n"
 
     try:
-        category_hint = classify_query(query, history=history[-5:] if history else None)
+        category_hint = await classify_query(query, history=history[-5:] if history else None)
     except Exception:
         category_hint = "both"
 
@@ -132,12 +132,13 @@ def run_tracker(chat_id: str, query: str) -> str:
         f"User query: {query}"
     )
 
-    answer = run_claude(
+    result = await run_claude(
         prompt,
         mcp_config=str(_MCP_CONFIG),
         allowed_tools=["Bash", "Read", "Edit", "Write", "Grep", "Glob"],
         permission_mode="bypassPermissions",
     )
+    answer = result.text
 
     _ADMIN_MARKERS = (
         "interests_tech.md updated",
