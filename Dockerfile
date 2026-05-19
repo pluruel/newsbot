@@ -5,12 +5,13 @@ RUN apt-get update \
     && npm install -g @anthropic-ai/claude-code \
     && rm -rf /var/lib/apt/lists/*
 
-RUN pip install uv --quiet
-
 WORKDIR /app
 
-COPY pyproject.toml uv.lock ./
-RUN uv sync --no-dev --frozen
+COPY requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
 
+COPY pyproject.toml ./
 COPY newsparser/ ./newsparser/
 COPY sources.md ./
+
+RUN pip install --no-cache-dir --no-deps -e .

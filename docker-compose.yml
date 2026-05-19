@@ -22,7 +22,7 @@ services:
 
   poller:
     build: .
-    command: .venv/bin/python -m newsparser.collector.run_poller
+    command: python -m newsparser.collector.run_poller
     env_file: .env
     environment:
       NEO4J_URI: bolt://neo4j:7687
@@ -40,7 +40,7 @@ services:
 
   dispatcher:
     build: .
-    command: .venv/bin/python -m newsparser.dispatcher
+    command: python -m newsparser.dispatcher
     env_file: .env
     environment:
       NEO4J_URI: bolt://neo4j:7687
