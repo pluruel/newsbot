@@ -59,7 +59,7 @@ async def classify_article(title: str, body: str | None) -> str:
     body_excerpt = (body or "")[:_BODY_EXCERPT_CHARS]
     prompt = _ARTICLE_PROMPT.format(title=title, n=_BODY_EXCERPT_CHARS, body=body_excerpt)
     try:
-        result = await run_claude(prompt, timeout=15, model=HAIKU_MODEL, system_prompt=_CLASSIFIER_SYSTEM_PROMPT)
+        result = await run_claude(prompt, timeout=30, model=HAIKU_MODEL, system_prompt=_CLASSIFIER_SYSTEM_PROMPT)
     except (ClaudeError, RuntimeError, OSError) as exc:
         logger.warning("classify_article failed (%s); defaulting to 'markets'", exc)
         return "markets"
@@ -78,7 +78,7 @@ async def classify_query(query: str, history: list[dict] | None = None) -> str:
     parts.append(f"쿼리: {query}")
     prompt = "".join(parts)
     try:
-        result = await run_claude(prompt, timeout=15, model=HAIKU_MODEL, system_prompt=_CLASSIFIER_SYSTEM_PROMPT)
+        result = await run_claude(prompt, timeout=30, model=HAIKU_MODEL, system_prompt=_CLASSIFIER_SYSTEM_PROMPT)
     except (ClaudeError, RuntimeError, OSError) as exc:
         logger.warning("classify_query failed (%s); defaulting to 'both'", exc)
         return "both"
