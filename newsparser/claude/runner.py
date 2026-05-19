@@ -2,8 +2,7 @@ import asyncio
 from dataclasses import dataclass
 from pathlib import Path
 
-from claude_code_sdk import ClaudeCodeOptions, ResultMessage
-from claude_code_sdk import query as _sdk_query
+from claude_code_sdk import ClaudeCodeOptions, ClaudeSDKClient, ResultMessage
 
 _PROJECT_ROOT = Path(__file__).parent.parent.parent
 
@@ -41,18 +40,27 @@ async def run_claude(
         cwd=_PROJECT_ROOT,
     )
 
+    # Using ClaudeSDKClient (not the query() helper): the helper is an async
+    # generator wrapping an inner async generator that owns an anyio task
+    # group, and `async for` won't propagate aclose() to the inner one, so its
+    # task group ends up being torn down by the asyncgen GC finalizer in a
+    # foreign task — which trips anyio's "cancel scope exited in a different
+    # task" check. ClaudeSDKClient binds connect/disconnect to __aenter__ /
+    # __aexit__ coroutines, keeping the task-group lifecycle in this task.
     try:
         async with asyncio.timeout(timeout):
-            async for message in _sdk_query(prompt=prompt, options=options):
-                if isinstance(message, ResultMessage):
-                    usage = message.usage or {}
-                    return RunResult(
-                        text=message.result or "",
-                        cost_usd=message.total_cost_usd,
-                        input_tokens=usage.get("input_tokens"),
-                        output_tokens=usage.get("output_tokens"),
-                        duration_ms=message.duration_ms,
-                    )
+            async with ClaudeSDKClient(options=options) as client:
+                await client.query(prompt)
+                async for message in client.receive_response():
+                    if isinstance(message, ResultMessage):
+                        usage = message.usage or {}
+                        return RunResult(
+                            text=message.result or "",
+                            cost_usd=message.total_cost_usd,
+                            input_tokens=usage.get("input_tokens"),
+                            output_tokens=usage.get("output_tokens"),
+                            duration_ms=message.duration_ms,
+                        )
     except asyncio.TimeoutError:
         raise ClaudeError(f"claude timed out after {timeout}s")
     except ClaudeError:
