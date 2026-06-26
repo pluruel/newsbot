@@ -53,6 +53,22 @@ Read `workspace/me/interests_{category}.md` and use it to weight importance scor
 오픈 스레드
 • ...
 
+## 텔레그램 요약
+YYYY-MM-DD HH:00 KST
+
+새 소식
+• (0.NN) 한 줄 헤드라인
+• (0.NN) ...
+
+이어지는 흐름
+• (0.NN) ...
+
+조용한 영역
+• 없음
+
+오픈 스레드
+• ...
+
 ## Graph updates
 ### Entities
 - NEW | {Label} | {canonical_name} | aliases: [{alias1}, {alias2}]
@@ -67,3 +83,5 @@ Valid Labels: Company, Person, Institution, Event, Indicator, Market, Sector, Po
 Valid Predicates: INFLUENCES, MEMBER_OF, COMPETES_WITH, ANNOUNCED, IMPACTS, CONTRADICTS, FOLLOWS_UP
 
 If a digest section has nothing to report, write `• 없음`. Omit empty graph entries.
+
+`## 텔레그램 요약` 블록은 위 다이제스트를 키워드형으로 압축한 것이다. 텔레그램으로는 **이 블록만** 전송되고, .md 파일에는 위 전체 다이제스트가 그대로 남아 /weekly·그래프 맥락에 쓰인다. 요약 블록의 각 항목은 `• (0.NN) 한 줄 헤드라인` 한 줄로만 쓴다 — 본문 문장·엔티티·출처는 넣지 않는다. 섹션 구조(새 소식/이어지는 흐름/조용한 영역/오픈 스레드)는 유지하고, 내용이 없으면 `• 없음`.

@@ -86,6 +86,58 @@ def test_run_cycle_sends_digest_to_telegram(tmp_path):
     assert "## Graph updates" not in sent[0]
 
 
+SAMPLE_REPORT_WITH_SUMMARY = """\
+사이클 2026-05-08 12:00 KST
+
+새 소식
+• (중요도 0.8) OpenAI 신모델 발표. 본문 여러 문장이 길게 들어간다.
+  엔티티: OpenAI / 출처: A001
+
+## 텔레그램 요약
+2026-05-08 12:00 KST
+
+새 소식
+• (0.8) OpenAI 신모델 발표
+
+## Graph updates
+### Entities
+- NEW | Company | OpenAI | aliases: []
+"""
+
+
+def _fake_run_claude_writes_report_with_summary(prompt, **kw):
+    import os as _os
+    from pathlib import Path as _Path
+    ws = _Path(_os.environ["WORKSPACE_DIR"])
+    parts = prompt.strip().split()
+    slot, category = parts[1], parts[2]
+    report_dir = ws / "cycles" / category
+    report_dir.mkdir(parents=True, exist_ok=True)
+    (report_dir / f"{slot}.md").write_text(SAMPLE_REPORT_WITH_SUMMARY)
+    return ""
+
+
+def test_run_cycle_sends_only_terse_summary_when_present(tmp_path):
+    insert_article("g1", "src", "t1", "u1", None, "body", category="tech")
+
+    sent: list[str] = []
+
+    with patch("newsparser.scripts.run_cycle.run_claude", side_effect=_fake_run_claude_writes_report_with_summary), \
+         patch("newsparser.scripts.run_cycle.build_input_file"), \
+         patch("newsparser.scripts.run_cycle.classify_article", return_value="tech"), \
+         patch("newsparser.scripts.run_cycle.send_long_message", side_effect=lambda m: sent.append(m)):
+        script.main("2026-05-08-12")
+
+    assert len(sent) == 1
+    msg = sent[0]
+    assert msg.startswith("[TECH]")
+    assert "## Graph updates" not in msg
+    assert "## 텔레그램 요약" not in msg          # header stripped
+    assert "(0.8) OpenAI 신모델 발표" in msg       # terse line present
+    assert "본문 여러 문장" not in msg             # verbose body excluded
+    assert "엔티티: OpenAI" not in msg             # entity/source line excluded
+
+
 def test_run_cycle_skips_empty_category(tmp_path):
     insert_article("g1", "src", "t1", "u1", None, "body", category="tech")
 

@@ -10,4 +10,4 @@ Parse `$ARGUMENTS` as the date string (e.g. `2026-05-08`).
    - Include a "시장 vs 기술" synthesis section if notable cross-category patterns emerged.
    - End with "다음 주 주목할 점" — 2–3 forward-looking threads.
 4. Write the briefing to `workspace/cycles/weekly/{date}.md`.
-5. Print a short summary (3–5 bullet points) to stdout — this is forwarded to Telegram.
+5. Print ONLY 3–5 keyword headlines to stdout — one line each, `• 한 줄 핵심` 형식, 본문 문장 없이. This is forwarded to Telegram; the full briefing stays in the file.
