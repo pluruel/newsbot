@@ -63,7 +63,7 @@ def _run_for_category(slot: str, category: str, workspace: Path) -> None:
         existing = input_path.read_text(encoding="utf-8")
         input_path.write_text(snapshot_block + "\n\n" + existing, encoding="utf-8")
 
-    run_claude(f"/cycle {slot} {category}")
+    summary = run_claude(f"/cycle {slot} {category}")
     logger.info("[%s] Claude cycle complete", category)
 
     # Safety net: if the slash command's mark_processed.py call was skipped or failed,
@@ -75,19 +75,18 @@ def _run_for_category(slot: str, category: str, workspace: Path) -> None:
             mark_processed(guids)
         guids_path.unlink()
 
+    # Telegram gets the terse keyword summary the skill prints to stdout (same pattern as
+    # /weekly and /reflect). The full digest stays in the report file for /weekly, /reflect
+    # and graph context — it is NOT sent. Fall back to the file digest only if stdout is empty.
     report_path = workspace / "cycles" / category / f"{slot}.md"
-    if report_path.exists():
+    summary = summary.strip()
+    if not summary and report_path.exists():
+        logger.warning("[%s] empty cycle stdout — falling back to file digest", category)
         report = report_path.read_text(encoding="utf-8")
-        # Telegram gets the terse "## 텔레그램 요약" block only; the full digest stays in the
-        # report file for /weekly and graph context. Fall back to the full digest if the
-        # summary block is absent (older reports / skill skipped it).
-        if "## 텔레그램 요약" in report:
-            digest = report.split("## 텔레그램 요약", 1)[1].split("## Graph updates", 1)[0].strip()
-        else:
-            digest = report.split("## Graph updates", 1)[0].rstrip()
-        message = f"[{category.upper()}] {digest}" if digest else f"[{category.upper()}] (empty digest)"
+        summary = report.split("## Graph updates", 1)[0].strip()
+    if summary:
         try:
-            send_long_message(message)
+            send_long_message(f"[{category.upper()}] {summary}")
         except Exception as e:
             logger.error("Telegram send failed for %s/%s: %s", category, slot, e)
 
