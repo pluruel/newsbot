@@ -10,4 +10,4 @@ Parse `$ARGUMENTS` as the date string (e.g. `2026-05-08`).
    - Add new rows for themes that appeared prominently but aren't tracked yet.
    - Decrease weights for themes that were predicted but didn't appear (오픈 스레드 entries that resolved silently).
 4. Overwrite both files using the same markdown table format.
-5. Print a compact diff summary to stdout (which themes changed and by how much).
+5. Print one line per changed theme to stdout — `테마명 ↑/↓ (3단어 이내 사유)` 형식, 산문 없이. 변경 없으면 `변경 없음` 한 줄.

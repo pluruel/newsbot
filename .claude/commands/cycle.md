@@ -27,6 +27,7 @@ Read `workspace/me/interests_{category}.md` and use it to weight importance scor
 4. Write the full report (Korean digest + graph block) to `workspace/cycles/{category}/{slot}.md`.
 5. Run: `.venv/bin/python newsparser/scripts/apply_graph.py {category} {slot}`
 6. Run: `.venv/bin/python newsparser/scripts/mark_processed.py {category} {slot}`
+7. 마지막으로 텔레그램 전송용 키워드 요약을 **stdout(최종 메시지)** 으로 출력한다. 형식은 아래 "텔레그램 전송용 요약 (stdout)"을 따른다. 이것이 텔레그램으로 전송되는 유일한 출력이며, 리포트 파일에는 넣지 않는다.
 
 ## 문체 규칙
 
@@ -67,3 +68,24 @@ Valid Labels: Company, Person, Institution, Event, Indicator, Market, Sector, Po
 Valid Predicates: INFLUENCES, MEMBER_OF, COMPETES_WITH, ANNOUNCED, IMPACTS, CONTRADICTS, FOLLOWS_UP
 
 If a digest section has nothing to report, write `• 없음`. Omit empty graph entries.
+
+## 텔레그램 전송용 요약 (stdout)
+
+리포트 파일을 쓰고 위 스크립트를 모두 실행한 뒤, **마지막 출력(stdout)** 으로 텔레그램 전송용 키워드 요약만 출력한다. 텔레그램에는 이 stdout 요약만 전송되고, 리포트 .md 파일에는 위 전체 다이제스트가 그대로 남아 /weekly·/reflect·그래프 맥락에 쓰인다 (요약은 파일에 넣지 않는다). 섹션 구조(새 소식/이어지는 흐름/조용한 영역/오픈 스레드)는 유지하되 각 항목은 `• (0.NN) 한 줄 헤드라인` 한 줄로만 — 본문 문장·엔티티·출처는 넣지 않는다. 내용이 없으면 `• 없음`.
+
+```
+YYYY-MM-DD HH:00 KST
+
+새 소식
+• (0.NN) 한 줄 헤드라인
+• (0.NN) ...
+
+이어지는 흐름
+• (0.NN) ...
+
+조용한 영역
+• 없음
+
+오픈 스레드
+• ...
+```

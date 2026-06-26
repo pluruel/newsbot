@@ -32,8 +32,16 @@ SAMPLE_REPORT = """\
 """
 
 
+# The skill writes the full digest to the report file and prints the terse keyword
+# summary to stdout (run_claude's return value), mirroring /weekly and /reflect.
+TERSE_SUMMARY = """2026-05-08 12:00 KST
+
+새 소식
+• (0.8) OpenAI 신모델 발표"""
+
+
 def _fake_run_claude_writes_report(prompt, **kw):
-    """Simulates claude writing the report file, then returning."""
+    """Simulates claude writing the full report file and printing the terse stdout summary."""
     import os as _os
     from pathlib import Path as _Path
     ws = _Path(_os.environ["WORKSPACE_DIR"])
@@ -42,7 +50,7 @@ def _fake_run_claude_writes_report(prompt, **kw):
     report_dir = ws / "cycles" / category
     report_dir.mkdir(parents=True, exist_ok=True)
     (report_dir / f"{slot}.md").write_text(SAMPLE_REPORT)
-    return ""
+    return TERSE_SUMMARY
 
 
 def test_run_cycle_writes_guids_file_before_calling_run_claude(tmp_path):
@@ -84,6 +92,37 @@ def test_run_cycle_sends_digest_to_telegram(tmp_path):
     assert len(sent) == 1
     assert sent[0].startswith("[TECH]")
     assert "## Graph updates" not in sent[0]
+    assert "(0.8) OpenAI 신모델 발표" in sent[0]   # terse stdout summary is what's sent
+    assert "(중요도 0.8)" not in sent[0]            # verbose file digest is NOT sent
+
+
+def test_run_cycle_falls_back_to_file_digest_when_stdout_empty(tmp_path):
+    insert_article("g1", "src", "t1", "u1", None, "body", category="tech")
+
+    sent: list[str] = []
+
+    def fake_empty_stdout(prompt, **kw):
+        # Skill wrote the report file but printed nothing usable to stdout.
+        import os as _os
+        from pathlib import Path as _Path
+        ws = _Path(_os.environ["WORKSPACE_DIR"])
+        slot, category = prompt.strip().split()[1:3]
+        report_dir = ws / "cycles" / category
+        report_dir.mkdir(parents=True, exist_ok=True)
+        (report_dir / f"{slot}.md").write_text(SAMPLE_REPORT)
+        return "   \n"  # whitespace-only stdout
+
+    with patch("newsparser.scripts.run_cycle.run_claude", side_effect=fake_empty_stdout), \
+         patch("newsparser.scripts.run_cycle.build_input_file"), \
+         patch("newsparser.scripts.run_cycle.classify_article", return_value="tech"), \
+         patch("newsparser.scripts.run_cycle.send_long_message", side_effect=lambda m: sent.append(m)):
+        script.main("2026-05-08-12")
+
+    assert len(sent) == 1
+    msg = sent[0]
+    assert msg.startswith("[TECH]")
+    assert "## Graph updates" not in msg
+    assert "OpenAI 신모델 발표" in msg   # full file digest used as fallback
 
 
 def test_run_cycle_skips_empty_category(tmp_path):

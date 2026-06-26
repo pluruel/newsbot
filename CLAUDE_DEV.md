@@ -9,8 +9,8 @@ Context for working on this codebase with Claude Code.
 - Python handles all I/O, scheduling, DB, Telegram, and Neo4j.
 - Claude is invoked headless via CLI subprocess (`claude -p ...`) — see `newsparser/claude/runner.py`. Do not switch to the Anthropic API directly.
 - `CLAUDE.md` is auto-loaded by every `claude -p` call from the project root and acts as the system prompt — keep it minimal (role + style).
-- Per-task instructions are injected by the Python caller from `prompts/`:
-  - `prompts/cycle.md` — `/cycle` analysis spec, read by `newsparser/scheduler/cycle.py`.
+- Slash command specs live in `.claude/commands/` (auto-loaded per `claude -p` call):
+  - `.claude/commands/cycle.md` — `/cycle` analysis spec, invoked by `newsparser/scripts/run_cycle.py`.
 - The `/tracker` flow is different: `newsparser/bot/tracker.py` builds its prompt inline and uses MCP tools via `mcp.json`.
 
 ---
@@ -25,6 +25,6 @@ Context for working on this codebase with Claude Code.
 
 ## Slash Command Behavior (runtime reference)
 
-What `/cycle` does at runtime is defined by `prompts/cycle.md` — that is the source of truth, not this file.
+What `/cycle` does at runtime is defined by `.claude/commands/cycle.md` — that is the source of truth, not this file.
 
 `/tracker` is the catch-all for free-text Telegram messages. The bot dispatcher in `newsparser/bot/dispatcher.py` routes anything that isn't `/cycle`, `/weekly`, or `/reflect` to `run_tracker()`. The tracker prompt and tool list live in `newsparser/bot/tracker.py`.
