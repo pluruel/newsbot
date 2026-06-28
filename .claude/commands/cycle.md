@@ -10,6 +10,13 @@ Parse `$ARGUMENTS` as two space-separated tokens: slot (e.g. `2026-05-08-12`) an
 
 Read `workspace/me/interests_{category}.md` and use it to weight importance scoring. Higher interest_weight topics deserve more analysis depth.
 
+## 무시 목록
+
+Read `workspace/me/ignore.md`. 표의 모든 `대상`(종류 entity/storyline)을 이번 사이클에서 **완전히 배제**한다:
+- 직전 사이클 리포트(아래 step 2)에서 해당 화제를 **이어받아 재서술하지 않는다.**
+- 중요도 점수·다이제스트 본문·`## Graph updates` 블록 어디에도 포함하지 않는다.
+- 목록이 비어 있으면 무시.
+
 ## 시장 스냅샷
 
 입력파일 상단에 `## 시장 스냅샷` 블록이 있다. 보고서의 "새 소식" 첫 단락 또는 lead-in 한 줄에 그 날 시장 상태를 짧게 요약·반영하라. Indicator 엔티티를 라벨링할 때 `canonical_name`은 반드시 다음 별칭 중 하나로 쓴다: `SPX`, `NDX`, `KOSPI`, `USDKRW`, `USDJPY`, `DXY`, `VIX`, `TNX`. 그래프와 가격 DB는 이 별칭으로 연결된다.
@@ -17,7 +24,7 @@ Read `workspace/me/interests_{category}.md` and use it to weight importance scor
 ## Task
 
 1. Read `workspace/input/{category}/{slot}-input.md`.
-2. Read the most recent file in `workspace/cycles/{category}/` for prior context (skip if none exist).
+2. Read the most recent file in `workspace/cycles/{category}/` for prior context (skip if none exist). **무시 목록의 대상이 직전 리포트에 등장하더라도 이어받지 말 것** (위 "무시 목록" 참조).
 3. Analyze all collected articles:
    - Cross-source dedup: same event from multiple sources → merge.
    - Delta: what is genuinely new vs continuation.
@@ -27,7 +34,7 @@ Read `workspace/me/interests_{category}.md` and use it to weight importance scor
 4. Write the full report (Korean digest + graph block) to `workspace/cycles/{category}/{slot}.md`.
 5. Run: `.venv/bin/python newsparser/scripts/apply_graph.py {category} {slot}`
 6. Run: `.venv/bin/python newsparser/scripts/mark_processed.py {category} {slot}`
-7. 마지막으로 텔레그램 전송용 키워드 요약을 **stdout(최종 메시지)** 으로 출력한다. 형식은 아래 "텔레그램 전송용 요약 (stdout)"을 따른다. 이것이 텔레그램으로 전송되는 유일한 출력이며, 리포트 파일에는 넣지 않는다.
+7. 텔레그램 메시지는 이제 Python(`run_cycle.py`)이 리포트 파일에서 직접 렌더하므로, **별도의 stdout 요약을 출력할 필요가 없다.** 리포트 `.md`만 위 형식대로 정확히 작성하면 된다 (특히 각 항목의 `• (중요도 0.NN) 헤드라인`을 정확한 형식으로).
 
 ## 문체 규칙
 
@@ -68,24 +75,3 @@ Valid Labels: Company, Person, Institution, Event, Indicator, Market, Sector, Po
 Valid Predicates: INFLUENCES, MEMBER_OF, COMPETES_WITH, ANNOUNCED, IMPACTS, CONTRADICTS, FOLLOWS_UP
 
 If a digest section has nothing to report, write `• 없음`. Omit empty graph entries.
-
-## 텔레그램 전송용 요약 (stdout)
-
-리포트 파일을 쓰고 위 스크립트를 모두 실행한 뒤, **마지막 출력(stdout)** 으로 텔레그램 전송용 키워드 요약만 출력한다. 텔레그램에는 이 stdout 요약만 전송되고, 리포트 .md 파일에는 위 전체 다이제스트가 그대로 남아 /weekly·/reflect·그래프 맥락에 쓰인다 (요약은 파일에 넣지 않는다). 섹션 구조(새 소식/이어지는 흐름/조용한 영역/오픈 스레드)는 유지하되 각 항목은 `• (0.NN) 한 줄 헤드라인` 한 줄로만 — 본문 문장·엔티티·출처는 넣지 않는다. 내용이 없으면 `• 없음`.
-
-```
-YYYY-MM-DD HH:00 KST
-
-새 소식
-• (0.NN) 한 줄 헤드라인
-• (0.NN) ...
-
-이어지는 흐름
-• (0.NN) ...
-
-조용한 영역
-• 없음
-
-오픈 스레드
-• ...
-```
