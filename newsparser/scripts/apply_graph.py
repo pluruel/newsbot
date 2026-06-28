@@ -59,10 +59,16 @@ def main(argv: list[str] | None = None) -> None:
     ignore = load_ignore(workspace)
     if ignore.entries:
         before_e, before_r = len(entities), len(relations)
-        entities = [e for e in entities
-                    if not ignore.matches_entity(e.name, e.aliases)]
+        # Names of entities dropped by the ignore filter (incl. alias-only hits).
+        # Relations are dropped if either endpoint is one of those names OR the
+        # endpoint name itself matches a target — so an alias-matched entity
+        # can't keep its relations (which reference it by canonical_name).
+        ignored = {e.name for e in entities
+                   if ignore.matches_entity(e.name, e.aliases)}
+        entities = [e for e in entities if e.name not in ignored]
         relations = [r for r in relations
-                     if not (ignore.matches_entity(r.subject, [])
+                     if not (r.subject in ignored or r.obj in ignored
+                             or ignore.matches_entity(r.subject, [])
                              or ignore.matches_entity(r.obj, []))]
         dropped_e, dropped_r = before_e - len(entities), before_r - len(relations)
         if dropped_e or dropped_r:

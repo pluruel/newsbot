@@ -224,3 +224,39 @@ def test_apply_graph_no_ignore_file_keeps_everything(tmp_path):
     entities, relations = mock_apply.call_args.args
     assert len(entities) == 2
     assert len(relations) == 1
+
+
+SAMPLE_REPORT_ALIAS_IGNORED = """\
+## Graph updates
+### Entities
+- NEW | Company | Claude | aliases: [opus 4.8 preview]
+- NEW | Company | OpenAI | aliases: []
+
+### Relations
+- NEW | Claude --ANNOUNCED[conf:0.9, impact:0.8]--> Thing | a
+- NEW | OpenAI --ANNOUNCED[conf:0.9, impact:0.8]--> Other | b
+"""
+
+
+def test_apply_graph_drops_relations_of_alias_matched_entity(tmp_path):
+    """An entity dropped only via an ALIAS match must also lose its relations."""
+    ws = Path(os.environ["WORKSPACE_DIR"])
+    (ws / "me").mkdir(parents=True, exist_ok=True)
+    (ws / "me" / "ignore.md").write_text(
+        "| 종류 | 대상 | 추가일 | 메모 |\n"
+        "|------|------|--------|------|\n"
+        "| entity | opus 4.8 preview | 2026-06-28 |  |\n",
+        encoding="utf-8",
+    )
+    (ws / "cycles" / "tech" / "2026-05-08-12.md").write_text(SAMPLE_REPORT_ALIAS_IGNORED)
+
+    with patch("newsparser.scripts.apply_graph.apply_graph_updates") as mock_apply:
+        script.main(["apply_graph.py", "tech", "2026-05-08-12"])
+
+    entities, relations = mock_apply.call_args.args
+    # Claude is dropped via its alias; its relation must be dropped too.
+    assert all(e.name != "Claude" for e in entities)
+    assert all(r.subject != "Claude" for r in relations)
+    # OpenAI and its relation survive.
+    assert any(e.name == "OpenAI" for e in entities)
+    assert any(r.subject == "OpenAI" for r in relations)

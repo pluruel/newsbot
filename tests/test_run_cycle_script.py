@@ -6,6 +6,7 @@ from unittest.mock import patch
 import pytest
 
 from newsparser.store.sqlite import insert_article, get_unprocessed
+from newsparser.ignore import IgnoreList
 import newsparser.scripts.run_cycle as script
 
 
@@ -164,6 +165,63 @@ def test_run_cycle_drops_ignored_headline_from_telegram(tmp_path):
     msg = sent[0]
     assert "미등장" not in msg                       # ignored storyline dropped
     assert "• 0.70 엔비디아 신규 GPU 공개" in msg     # other item kept
+
+
+def test_render_telegram_keeps_highest_score_for_duplicate_headline():
+    report = (
+        "새 소식\n"
+        "• (중요도 0.6) 환율 급등.\n"
+        "이어지는 흐름\n"
+        "• (중요도 0.8) 환율 급등. 추가 본문.\n"
+        "## Graph updates\n"
+    )
+    # Dedup must keep the higher score, not the first-by-document-order one.
+    assert script._render_telegram(report, IgnoreList([])) == ["• 0.80 환율 급등"]
+
+
+def test_render_telegram_does_not_truncate_at_abbreviations():
+    report = (
+        "새 소식\n"
+        "• (중요도 0.8) U.S. 반도체 수출 통제 강화. 본문.\n"
+        "• (중요도 0.7) Apple Inc. 신제품 발표. 본문 문장.\n"
+        "• (중요도 0.6) 2026. 6. 28. 美 연준 동결. 본문.\n"
+        "## Graph updates\n"
+    )
+    lines = script._render_telegram(report, IgnoreList([]))
+    assert "• 0.80 U.S. 반도체 수출 통제 강화" in lines
+    assert "• 0.70 Apple Inc. 신제품 발표" in lines
+    assert "• 0.60 2026. 6. 28. 美 연준 동결" in lines
+
+
+def test_run_cycle_warns_when_report_has_items_but_render_empty(tmp_path, caplog):
+    import logging
+    insert_article("g1", "src", "t1", "u1", None, "body", category="tech")
+
+    drift_report = (
+        "새 소식\n"
+        "• (중요도: 0.8) 콜론 형식이라 regex 불일치.\n"   # colon → _CYCLE_ITEM_RE won't match
+        "## Graph updates\n"
+    )
+
+    def fake_claude(prompt, **kw):
+        import os as _os
+        from pathlib import Path as _Path
+        ws = _Path(_os.environ["WORKSPACE_DIR"])
+        slot, category = prompt.strip().split()[1:3]
+        (ws / "cycles" / category).mkdir(parents=True, exist_ok=True)
+        (ws / "cycles" / category / f"{slot}.md").write_text(drift_report)
+        return ""
+
+    sent: list[str] = []
+    with caplog.at_level(logging.WARNING), \
+         patch("newsparser.scripts.run_cycle.run_claude", side_effect=fake_claude), \
+         patch("newsparser.scripts.run_cycle.build_input_file"), \
+         patch("newsparser.scripts.run_cycle.classify_article", return_value="tech"), \
+         patch("newsparser.scripts.run_cycle.send_long_message", side_effect=lambda m: sent.append(m)):
+        script.main("2026-05-08-12")
+
+    assert sent == ["[TECH]\n새 소식 없음"]
+    assert any("format drift" in r.getMessage() for r in caplog.records)
 
 
 def test_run_cycle_skips_empty_category(tmp_path):

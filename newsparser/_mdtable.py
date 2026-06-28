@@ -18,3 +18,28 @@ def split_row(line: str) -> list[str]:
 def is_separator(cells: list[str]) -> bool:
     """True if every cell is a non-empty run of ``-``/``:`` (a ``|---|:--|`` row)."""
     return all(set(c) <= set("-:") and c for c in cells)
+
+
+def parse_rows(text: str) -> list[dict[str, str]]:
+    """Parse a markdown table body into a list of ``{header: cell}`` dicts.
+
+    The first pipe row is the header (keys lowercased); the separator row is
+    skipped; short rows are right-padded with empty cells; lines that are not
+    table rows (don't start with ``|``) are ignored. Shared by ``ignore.py`` and
+    ``collector/sources.py`` so the tolerant row-iteration lives in one place.
+    """
+    header: list[str] | None = None
+    rows: list[dict[str, str]] = []
+    for line in text.splitlines():
+        if not line.strip().startswith("|"):
+            continue
+        cells = split_row(line)
+        if header is None:
+            header = [h.lower() for h in cells]
+            continue
+        if is_separator(cells):
+            continue
+        if len(cells) < len(header):
+            cells += [""] * (len(header) - len(cells))
+        rows.append(dict(zip(header, cells)))
+    return rows

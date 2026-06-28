@@ -75,6 +75,43 @@ def test_matches_entity_checks_name_and_aliases(tmp_path):
     assert ig.matches_entity("OpenAI", []) is False
 
 
+def test_matches_entity_ascii_target_respects_word_boundary(tmp_path):
+    ws = _write_ignore(tmp_path, textwrap.dedent("""\
+        | 종류 | 대상 | 추가일 | 메모 |
+        |------|------|--------|------|
+        | entity | AI | 2026-06-28 |  |
+    """))
+    ig = load_ignore(ws)
+    # A short ASCII target must NOT over-match inside a longer word.
+    assert ig.matches_entity("OpenAI", []) is False
+    assert ig.matches_entity("xAI", []) is False
+    assert ig.matches_entity("Air Liquide", []) is False
+    # But it matches as a whole token.
+    assert ig.matches_entity("Open AI", []) is True
+
+
+def test_matches_ascii_target_not_substring_of_korean_word(tmp_path):
+    ws = _write_ignore(tmp_path, textwrap.dedent("""\
+        | 종류 | 대상 | 추가일 | 메모 |
+        |------|------|--------|------|
+        | entity | AI | 2026-06-28 |  |
+    """))
+    ig = load_ignore(ws)
+    # "오픈AI" is one token; standalone-AI ignore must not drop it.
+    assert ig.matches("오픈AI 신모델 공개") is False
+
+
+def test_matches_entity_korean_target_keeps_substring(tmp_path):
+    ws = _write_ignore(tmp_path, textwrap.dedent("""\
+        | 종류 | 대상 | 추가일 | 메모 |
+        |------|------|--------|------|
+        | entity | 엔비디아 | 2026-06-28 |  |
+    """))
+    ig = load_ignore(ws)
+    # Korean particles attach without a boundary → substring matching is kept.
+    assert ig.matches_entity("엔비디아의 신규 칩", []) is True
+
+
 def test_load_ignore_missing_file_is_empty(tmp_path):
     ig = load_ignore(tmp_path / "workspace")
     assert ig.entries == []

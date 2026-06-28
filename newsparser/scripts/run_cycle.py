@@ -26,33 +26,52 @@ _KST = ZoneInfo("Asia/Seoul")
 
 _CYCLE_ITEM_RE = re.compile(r"^\s*[•\-\*]\s*\(중요도\s*([0-9]*\.?[0-9]+)\)\s*(.+)$")
 
+# Tokens that legitimately end with a period and must NOT be treated as the
+# headline/body sentence boundary when splitting on ". ".
+_ABBREV = {"inc.", "corp.", "co.", "ltd.", "vs.", "etc.", "e.g.", "i.e.", "no."}
+# An initialism like "u.s." / "a.i." or a number+period like "2026." / "6.".
+_NON_BOUNDARY_RE = re.compile(r"(?:[a-z]\.)+|\d+\.")
+
+
+def _headline_only(text: str) -> str:
+    """Return just the headline portion of a digest item — the text before the
+    first sentence-ending ``. `` — without truncating inside abbreviations
+    ("U.S.", "Apple Inc.") or Korean-style numeric dates ("2026. 6. 28.")."""
+    i = 0
+    while True:
+        idx = text.find(". ", i)
+        if idx == -1:
+            return text.rstrip(". ").strip()
+        token = text[:idx + 1].rsplit(" ", 1)[-1].lower()
+        if token in _ABBREV or _NON_BOUNDARY_RE.fullmatch(token):
+            i = idx + 2  # this ". " is inside an abbreviation; keep scanning
+            continue
+        return text[:idx].rstrip(". ").strip()
+
 
 def _render_telegram(report_text: str, ignore) -> list[str]:
     """Build the terse Telegram lines from a saved cycle report.
 
     Extract `• (중요도 0.NN) 헤드라인. 본문…` items from the digest (everything
-    before `## Graph updates`), keep only the headline (text before the first
-    sentence end), drop ignored ones, and return `• 0.NN 헤드라인` sorted by
-    importance descending. Items without a 중요도 score (조용한 영역 / 오픈 스레드)
-    are naturally excluded.
+    before `## Graph updates`), keep only the headline, drop ignored ones, and
+    return `• 0.NN 헤드라인` sorted by importance descending. Duplicate headlines
+    collapse to their HIGHEST score. Items without a 중요도 score (조용한 영역 /
+    오픈 스레드) are naturally excluded.
     """
     digest = report_text.split("## Graph updates", 1)[0]
-    items: list[tuple[float, str]] = []
-    seen: set[str] = set()
+    best: dict[str, float] = {}
     for line in digest.splitlines():
         m = _CYCLE_ITEM_RE.match(line)
         if not m:
             continue
+        headline = _headline_only(m.group(2))
+        if not headline or ignore.matches(headline):
+            continue
         score = float(m.group(1))
-        headline = m.group(2).split(". ", 1)[0].rstrip(". ").strip()
-        if not headline or headline in seen:
-            continue
-        if ignore.matches(headline):
-            continue
-        seen.add(headline)
-        items.append((score, headline))
-    items.sort(key=lambda x: x[0], reverse=True)
-    return [f"• {score:.2f} {headline}" for score, headline in items]
+        if score > best.get(headline, -1.0):
+            best[headline] = score
+    items = sorted(best.items(), key=lambda kv: kv[1], reverse=True)
+    return [f"• {score:.2f} {headline}" for headline, score in items]
 
 
 def _classify_pending() -> None:
@@ -112,8 +131,15 @@ def _run_for_category(slot: str, category: str, workspace: Path) -> None:
     # entities/storylines dropped. The full digest stays in the report file.
     report_path = workspace / "cycles" / category / f"{slot}.md"
     if report_path.exists():
+        report_text = report_path.read_text(encoding="utf-8")
         ignore = load_ignore(workspace)
-        lines = _render_telegram(report_path.read_text(encoding="utf-8"), ignore)
+        lines = _render_telegram(report_text, ignore)
+        # If the digest clearly has scored items but none rendered, the report
+        # likely drifted from the expected `• (중요도 0.NN)` format — surface it
+        # instead of silently sending an empty "새 소식 없음".
+        if not lines and "중요도" in report_text.split("## Graph updates", 1)[0]:
+            logger.warning("[%s] %s: report has 중요도 items but render produced 0 lines "
+                           "— possible format drift", category, slot)
         body = "\n".join(lines) if lines else "새 소식 없음"
         try:
             send_long_message(f"[{category.upper()}]\n{body}")

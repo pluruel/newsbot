@@ -6,11 +6,12 @@ bot-editable, same tier as manifesto/interests), parsed tolerantly like
 ``collector/sources.py``. No database — the file is the only persistent state.
 """
 import os
+import re
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
-from newsparser._mdtable import is_separator, split_row
+from newsparser._mdtable import parse_rows
 
 VALID_KINDS = ("entity", "storyline")
 
@@ -30,6 +31,18 @@ def _parse_date(s: str) -> date | None:
         return None
 
 
+def _matches_target(target: str, haystack: str) -> bool:
+    """True if casefolded ``target`` occurs in casefolded ``haystack``.
+
+    ASCII targets match on whole-token boundaries so short ones like ``ai`` /
+    ``meta`` don't hit ``openai`` / ``metaverse`` (or ``오픈ai``); targets that
+    contain non-ASCII (e.g. Korean) keep plain substring matching, since Korean
+    attaches particles without a word boundary."""
+    if target.isascii():
+        return re.search(rf"(?<!\w){re.escape(target)}(?!\w)", haystack) is not None
+    return target in haystack
+
+
 class IgnoreList:
     def __init__(self, entries: list[IgnoreEntry]):
         self.entries = entries
@@ -46,22 +59,24 @@ class IgnoreList:
         return [e.target.casefold() for e in self.entries if e.target]
 
     def matches(self, text: str) -> bool:
-        """True if any ignore target (entity or storyline) appears in ``text``
-        as a casefold substring. Deterministic backstop for the Telegram render;
-        semantic storyline exclusion is the cycle.md (SOFT) instruction's job."""
+        """True if any ignore target (entity or storyline) matches ``text``.
+        Deterministic backstop for the Telegram render; semantic storyline
+        exclusion is the cycle.md (SOFT) instruction's job. See
+        ``_matches_target`` for the word-boundary vs substring rule."""
         if not text:
             return False
         t = text.casefold()
-        return any(target in t for target in self._all_targets_cf())
+        return any(_matches_target(target, t) for target in self._all_targets_cf())
 
     def matches_entity(self, name: str, aliases: list[str]) -> bool:
-        """True if any entity-kind target is a casefold substring of the entity
-        name or one of its aliases. Used to drop graph entities/relations."""
+        """True if any entity-kind target matches the entity name or one of its
+        aliases. Used to drop graph entities/relations. See ``_matches_target``
+        for the word-boundary vs substring rule."""
         targets = self.entity_names()
         if not targets:
             return False
         haystacks = [name.casefold()] + [a.casefold() for a in aliases]
-        return any(target in h for target in targets for h in haystacks)
+        return any(_matches_target(target, h) for target in targets for h in haystacks)
 
 
 def _workspace(workspace: Path | str | None = None) -> Path:
@@ -74,23 +89,9 @@ def load_ignore(workspace: Path | str | None = None) -> IgnoreList:
     path = _workspace(workspace) / "me" / "ignore.md"
     if not path.exists():
         return IgnoreList([])
-    text = path.read_text(encoding="utf-8")
 
-    header: list[str] | None = None
     entries: list[IgnoreEntry] = []
-    for line in text.splitlines():
-        if not line.strip().startswith("|"):
-            continue
-        cells = split_row(line)
-        if header is None:
-            header = [h.lower() for h in cells]
-            continue
-        if is_separator(cells):
-            continue
-        if len(cells) < len(header):
-            cells += [""] * (len(header) - len(cells))
-        row = dict(zip(header, cells))
-
+    for row in parse_rows(path.read_text(encoding="utf-8")):
         kind = (row.get("종류") or row.get("kind") or "").strip().lower()
         target = (row.get("대상") or row.get("target") or "").strip()
         if kind not in VALID_KINDS or not target:
