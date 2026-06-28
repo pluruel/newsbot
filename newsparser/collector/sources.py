@@ -2,6 +2,8 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
+from newsparser._mdtable import split_row, is_separator
+
 logger = logging.getLogger(__name__)
 
 
@@ -12,21 +14,6 @@ class Source:
     tier: str
     paywall: bool = False
     category: str | None = None
-
-
-def _split_row(line: str) -> list[str]:
-    """Split a markdown table row into stripped cells."""
-    # Drop the leading and trailing pipe before splitting so empty cells survive.
-    inner = line.strip()
-    if inner.startswith("|"):
-        inner = inner[1:]
-    if inner.endswith("|"):
-        inner = inner[:-1]
-    return [cell.strip() for cell in inner.split("|")]
-
-
-def _is_separator(cells: list[str]) -> bool:
-    return all(set(c) <= set("-:") and c for c in cells)
 
 
 def load_sources(path: str = "sources.md") -> list[Source]:
@@ -40,11 +27,11 @@ def load_sources(path: str = "sources.md") -> list[Source]:
     for line in text.splitlines():
         if not line.strip().startswith("|"):
             continue
-        cells = _split_row(line)
+        cells = split_row(line)
         if header is None:
             header = [h.lower() for h in cells]
             continue
-        if _is_separator(cells):
+        if is_separator(cells):
             continue
         if len(cells) < len(header):
             cells += [""] * (len(header) - len(cells))
