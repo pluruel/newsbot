@@ -6,7 +6,7 @@ from unittest.mock import patch
 import pytest
 
 from newsparser.store.sqlite import insert_article, get_unprocessed
-from newsparser.ignore import IgnoreList
+from newsparser.ignore import IgnoreList, IgnoreEntry
 import newsparser.scripts.run_cycle as script
 
 
@@ -175,8 +175,129 @@ def test_render_telegram_keeps_highest_score_for_duplicate_headline():
         "• (중요도 0.8) 환율 급등. 추가 본문.\n"
         "## Graph updates\n"
     )
-    # Dedup must keep the higher score, not the first-by-document-order one.
-    assert script._render_telegram(report, IgnoreList([])) == ["• 0.80 환율 급등"]
+    # Dedup must keep the higher score AND its section (이어지는 흐름, not 새 소식).
+    assert script._render_telegram(report, IgnoreList([])) == ["이어지는 흐름", "• 0.80 환율 급등"]
+
+
+def test_render_telegram_keeps_section_headers_and_groups_items():
+    report = (
+        "사이클 2026-05-08 12:00 KST\n\n"
+        "새 소식\n"
+        "• (중요도 0.8) A 발표.\n"
+        "이어지는 흐름\n"
+        "• (중요도 0.5) B 후속.\n"
+        "## Graph updates\n"
+    )
+    lines = script._render_telegram(report, IgnoreList([]))
+    assert lines[0] == "사이클 2026-05-08 12:00 KST"        # timestamp header (E)
+    assert "새 소식" in lines and "이어지는 흐름" in lines    # section grouping (D)
+    # 새 소식 group precedes 이어지는 흐름, each holding its own item
+    assert lines.index("• 0.80 A 발표") > lines.index("새 소식")
+    assert lines.index("• 0.50 B 후속") > lines.index("이어지는 흐름")
+    assert lines.index("새 소식") < lines.index("이어지는 흐름")
+
+
+def test_render_telegram_includes_entity_source_line():
+    report = (
+        "새 소식\n"
+        "• (중요도 0.8) 엔비디아 실적 상회. 본문 문장.\n"
+        "  엔티티: 엔비디아, TSMC / 출처: Bloomberg\n"
+        "## Graph updates\n"
+    )
+    lines = script._render_telegram(report, IgnoreList([]))
+    assert "• 0.80 엔비디아 실적 상회" in lines
+    assert "  엔티티: 엔비디아, TSMC / 출처: Bloomberg" in lines   # C restored
+
+
+def test_render_telegram_includes_quiet_and_open_threads():
+    report = (
+        "새 소식\n"
+        "• (중요도 0.8) A 발표.\n"
+        "조용한 영역\n"
+        "• 12시 사이클에 예상된 FOMC 코멘트 관측 안 됨\n"
+        "오픈 스레드\n"
+        "• 디든로보틱스 추가 수주 여부\n"
+        "## Graph updates\n"
+    )
+    lines = script._render_telegram(report, IgnoreList([]))
+    assert "조용한 영역" in lines                                  # A restored
+    assert "• 12시 사이클에 예상된 FOMC 코멘트 관측 안 됨" in lines
+    assert "오픈 스레드" in lines
+    assert "• 디든로보틱스 추가 수주 여부" in lines
+
+
+def test_render_telegram_tolerates_decorated_section_headers():
+    # Header drift (## / ** / trailing count / dropped space) must still render items.
+    for header in ("## 새 소식", "**새 소식**", "새 소식 (3건)", "새소식", "새 소식:"):
+        report = f"{header}\n• (중요도 0.8) A 발표.\n## Graph updates\n"
+        lines = script._render_telegram(report, IgnoreList([]))
+        assert lines == ["새 소식", "• 0.80 A 발표"], f"header {header!r} not recognized"
+
+
+def test_render_telegram_attaches_meta_across_blank_and_wrapped_lines():
+    report = (
+        "새 소식\n"
+        "• (중요도 0.8) A 발표. 본문 첫 문장.\n"
+        "본문이 다음 줄로 이어짐.\n"        # wrapped body line (no bullet)
+        "\n"                               # blank line
+        "  엔티티: 엔비디아 / 출처: BBG\n"
+        "## Graph updates\n"
+    )
+    lines = script._render_telegram(report, IgnoreList([]))
+    assert "• 0.80 A 발표" in lines
+    assert "  엔티티: 엔비디아 / 출처: BBG" in lines   # meta survives the gap
+
+
+def test_render_telegram_drops_meta_line_with_ignored_entity():
+    report = (
+        "새 소식\n"
+        "• (중요도 0.8) 엔비디아 실적 상회.\n"
+        "  엔티티: 엔비디아, TSMC / 출처: BBG\n"
+        "## Graph updates\n"
+    )
+    ignore = IgnoreList([IgnoreEntry(kind="entity", target="TSMC")])
+    lines = script._render_telegram(report, ignore)
+    assert "• 0.80 엔비디아 실적 상회" in lines       # headline kept (not ignored)
+    assert all("TSMC" not in ln for ln in lines)      # ignored entity does not leak via meta
+
+
+def test_render_telegram_preserves_meta_when_higher_dup_has_none():
+    report = (
+        "새 소식\n"
+        "• (중요도 0.5) 환율 급등.\n"
+        "  엔티티: 원달러 / 출처: 한은\n"
+        "이어지는 흐름\n"
+        "• (중요도 0.8) 환율 급등. 추가 본문.\n"   # higher score, no meta line follows
+        "## Graph updates\n"
+    )
+    lines = script._render_telegram(report, IgnoreList([]))
+    assert lines == ["이어지는 흐름", "• 0.80 환율 급등", "  엔티티: 원달러 / 출처: 한은"]
+
+
+def test_render_telegram_warns_on_orphaned_scored_item(caplog):
+    import logging
+    # Well-formed scored item under a header that is NOT recognizable at all.
+    report = "헤더없는잡음\n• (중요도 0.8) A 발표.\n## Graph updates\n"
+    with caplog.at_level(logging.WARNING):
+        lines = script._render_telegram(report, IgnoreList([]), label="tech/slot")
+    assert lines == []                                       # orphaned item not rendered
+    assert any("format drift" in r.getMessage() for r in caplog.records)
+
+
+def test_render_telegram_omits_empty_and_none_sections():
+    report = (
+        "새 소식\n"
+        "• (중요도 0.8) A 발표.\n"
+        "조용한 영역\n"
+        "• 없음\n"
+        "오픈 스레드\n"
+        "• 없음\n"
+        "## Graph updates\n"
+    )
+    lines = script._render_telegram(report, IgnoreList([]))
+    assert "조용한 영역" not in lines      # `• 없음` placeholder → section omitted
+    assert "오픈 스레드" not in lines
+    assert "없음" not in "\n".join(lines)
 
 
 def test_render_telegram_does_not_truncate_at_abbreviations():
