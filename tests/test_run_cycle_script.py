@@ -6,6 +6,7 @@ from unittest.mock import patch
 import pytest
 
 from newsparser.store.sqlite import insert_article, get_unprocessed
+from newsparser.ignore import IgnoreList
 import newsparser.scripts.run_cycle as script
 
 
@@ -78,7 +79,7 @@ def test_run_cycle_writes_guids_file_before_calling_run_claude(tmp_path):
     assert guids_seen == [True], "guids file must exist when run_claude is called"
 
 
-def test_run_cycle_sends_digest_to_telegram(tmp_path):
+def test_run_cycle_sends_terse_importance_list(tmp_path):
     insert_article("g1", "src", "t1", "u1", None, "body", category="tech")
 
     sent: list[str] = []
@@ -90,19 +91,20 @@ def test_run_cycle_sends_digest_to_telegram(tmp_path):
         script.main("2026-05-08-12")
 
     assert len(sent) == 1
-    assert sent[0].startswith("[TECH]")
-    assert "## Graph updates" not in sent[0]
-    assert "(0.8) OpenAI 신모델 발표" in sent[0]   # terse stdout summary is what's sent
-    assert "(중요도 0.8)" not in sent[0]            # verbose file digest is NOT sent
+    msg = sent[0]
+    assert msg.startswith("[TECH]")
+    assert "## Graph updates" not in msg
+    assert "• 0.80 OpenAI 신모델 발표" in msg   # rendered from report file, score formatted 0.NN
+    assert "(중요도" not in msg                   # verbose file markup is NOT sent
 
 
-def test_run_cycle_falls_back_to_file_digest_when_stdout_empty(tmp_path):
+def test_run_cycle_renders_from_file_ignoring_stdout(tmp_path):
+    """Telegram is rendered from the report file; LLM stdout is irrelevant."""
     insert_article("g1", "src", "t1", "u1", None, "body", category="tech")
 
     sent: list[str] = []
 
-    def fake_empty_stdout(prompt, **kw):
-        # Skill wrote the report file but printed nothing usable to stdout.
+    def fake_garbage_stdout(prompt, **kw):
         import os as _os
         from pathlib import Path as _Path
         ws = _Path(_os.environ["WORKSPACE_DIR"])
@@ -110,9 +112,9 @@ def test_run_cycle_falls_back_to_file_digest_when_stdout_empty(tmp_path):
         report_dir = ws / "cycles" / category
         report_dir.mkdir(parents=True, exist_ok=True)
         (report_dir / f"{slot}.md").write_text(SAMPLE_REPORT)
-        return "   \n"  # whitespace-only stdout
+        return "ASDF 쓰레기 stdout 무시되어야 함"  # must be ignored
 
-    with patch("newsparser.scripts.run_cycle.run_claude", side_effect=fake_empty_stdout), \
+    with patch("newsparser.scripts.run_cycle.run_claude", side_effect=fake_garbage_stdout), \
          patch("newsparser.scripts.run_cycle.build_input_file"), \
          patch("newsparser.scripts.run_cycle.classify_article", return_value="tech"), \
          patch("newsparser.scripts.run_cycle.send_long_message", side_effect=lambda m: sent.append(m)):
@@ -121,8 +123,105 @@ def test_run_cycle_falls_back_to_file_digest_when_stdout_empty(tmp_path):
     assert len(sent) == 1
     msg = sent[0]
     assert msg.startswith("[TECH]")
-    assert "## Graph updates" not in msg
-    assert "OpenAI 신모델 발표" in msg   # full file digest used as fallback
+    assert "• 0.80 OpenAI 신모델 발표" in msg
+    assert "쓰레기 stdout" not in msg
+
+
+def test_run_cycle_drops_ignored_headline_from_telegram(tmp_path):
+    insert_article("g1", "src", "t1", "u1", None, "body", category="tech")
+
+    two_item_report = (
+        "사이클 2026-05-08 12:00 KST\n\n"
+        "새 소식\n"
+        "• (중요도 0.9) Claude Opus 4.8 API 미등장 추측 재확산. 본문.\n"
+        "• (중요도 0.7) 엔비디아 신규 GPU 공개. 본문.\n\n"
+        "## Graph updates\n"
+    )
+
+    def fake_claude(prompt, **kw):
+        import os as _os
+        from pathlib import Path as _Path
+        ws = _Path(_os.environ["WORKSPACE_DIR"])
+        slot, category = prompt.strip().split()[1:3]
+        (ws / "cycles" / category).mkdir(parents=True, exist_ok=True)
+        (ws / "cycles" / category / f"{slot}.md").write_text(two_item_report)
+        (ws / "me").mkdir(parents=True, exist_ok=True)
+        (ws / "me" / "ignore.md").write_text(
+            "| 종류 | 대상 | 추가일 | 메모 |\n"
+            "|------|------|--------|------|\n"
+            "| storyline | Opus 4.8 API 미등장 | 2026-06-28 |  |\n",
+            encoding="utf-8",
+        )
+        return ""
+
+    sent: list[str] = []
+    with patch("newsparser.scripts.run_cycle.run_claude", side_effect=fake_claude), \
+         patch("newsparser.scripts.run_cycle.build_input_file"), \
+         patch("newsparser.scripts.run_cycle.classify_article", return_value="tech"), \
+         patch("newsparser.scripts.run_cycle.send_long_message", side_effect=lambda m: sent.append(m)):
+        script.main("2026-05-08-12")
+
+    assert len(sent) == 1
+    msg = sent[0]
+    assert "미등장" not in msg                       # ignored storyline dropped
+    assert "• 0.70 엔비디아 신규 GPU 공개" in msg     # other item kept
+
+
+def test_render_telegram_keeps_highest_score_for_duplicate_headline():
+    report = (
+        "새 소식\n"
+        "• (중요도 0.6) 환율 급등.\n"
+        "이어지는 흐름\n"
+        "• (중요도 0.8) 환율 급등. 추가 본문.\n"
+        "## Graph updates\n"
+    )
+    # Dedup must keep the higher score, not the first-by-document-order one.
+    assert script._render_telegram(report, IgnoreList([])) == ["• 0.80 환율 급등"]
+
+
+def test_render_telegram_does_not_truncate_at_abbreviations():
+    report = (
+        "새 소식\n"
+        "• (중요도 0.8) U.S. 반도체 수출 통제 강화. 본문.\n"
+        "• (중요도 0.7) Apple Inc. 신제품 발표. 본문 문장.\n"
+        "• (중요도 0.6) 2026. 6. 28. 美 연준 동결. 본문.\n"
+        "## Graph updates\n"
+    )
+    lines = script._render_telegram(report, IgnoreList([]))
+    assert "• 0.80 U.S. 반도체 수출 통제 강화" in lines
+    assert "• 0.70 Apple Inc. 신제품 발표" in lines
+    assert "• 0.60 2026. 6. 28. 美 연준 동결" in lines
+
+
+def test_run_cycle_warns_when_report_has_items_but_render_empty(tmp_path, caplog):
+    import logging
+    insert_article("g1", "src", "t1", "u1", None, "body", category="tech")
+
+    drift_report = (
+        "새 소식\n"
+        "• (중요도: 0.8) 콜론 형식이라 regex 불일치.\n"   # colon → _CYCLE_ITEM_RE won't match
+        "## Graph updates\n"
+    )
+
+    def fake_claude(prompt, **kw):
+        import os as _os
+        from pathlib import Path as _Path
+        ws = _Path(_os.environ["WORKSPACE_DIR"])
+        slot, category = prompt.strip().split()[1:3]
+        (ws / "cycles" / category).mkdir(parents=True, exist_ok=True)
+        (ws / "cycles" / category / f"{slot}.md").write_text(drift_report)
+        return ""
+
+    sent: list[str] = []
+    with caplog.at_level(logging.WARNING), \
+         patch("newsparser.scripts.run_cycle.run_claude", side_effect=fake_claude), \
+         patch("newsparser.scripts.run_cycle.build_input_file"), \
+         patch("newsparser.scripts.run_cycle.classify_article", return_value="tech"), \
+         patch("newsparser.scripts.run_cycle.send_long_message", side_effect=lambda m: sent.append(m)):
+        script.main("2026-05-08-12")
+
+    assert sent == ["[TECH]\n새 소식 없음"]
+    assert any("format drift" in r.getMessage() for r in caplog.records)
 
 
 def test_run_cycle_skips_empty_category(tmp_path):

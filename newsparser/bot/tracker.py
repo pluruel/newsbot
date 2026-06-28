@@ -13,6 +13,18 @@ HISTORY_MAX_TURNS = 10
 
 _MCP_CONFIG = Path(__file__).parent.parent.parent / "mcp.json"
 
+# Answers containing one of these markers are workspace edits (interests,
+# manifesto, ignore list, history clears), not conversation — they must not be
+# persisted into the chat history.
+_ADMIN_MARKERS = (
+    "interests_tech.md updated",
+    "interests_markets.md updated",
+    "manifesto.md updated",
+    "ignore.md updated",
+    "cleared",
+    "interest-events.jsonl",
+)
+
 
 def _workspace() -> Path:
     return Path(os.environ.get("WORKSPACE_DIR", "workspace"))
@@ -125,6 +137,13 @@ def run_tracker(chat_id: str, query: str) -> str:
         "이 외에 호스트 환경을 만질 필요가 있으면 Bash 도구로 직접 명령을 실행할 수 있다 "
         "(docker, ls, cat, .venv/bin/python 등). 단, 파괴적 명령(rm -rf, drop, force push)은 "
         "사용자 확인을 받는다.\n\n"
+        "무시 목록 관리 권한도 있다. 사용자가 특정 엔티티/서사를 더는 다루지 말라고 하면"
+        "(\"무시: X\", \"X 무시해\"), `workspace/me/ignore.md` 표에 행을 추가한다. "
+        "단일 엔티티명이면 종류=entity, 서사·주장 문구면 종류=storyline, 추가일은 오늘(YYYY-MM-DD). "
+        "\"무시 해제: X\"면 해당 행을 삭제한다. 이렇게 ignore.md를 편집한 경우 답변에 "
+        "정확히 `ignore.md updated` 문구를 포함한다. "
+        "\"차단 리스트\"/\"무시 목록 보여줘\"면 `.venv/bin/python -m newsparser.ignore`를 "
+        "Bash로 실행해 그 출력(대상 + N일 경과)을 그대로 사용자에게 전달한다.\n\n"
         "Answer in plain conversational paragraphs — no markdown: no headers (#), "
         "no bold (**), no bullet lists (-/*), no tables, no horizontal rules (---). "
         "Separate sections with blank lines only."
@@ -139,13 +158,6 @@ def run_tracker(chat_id: str, query: str) -> str:
         permission_mode="bypassPermissions",
     )
 
-    _ADMIN_MARKERS = (
-        "interests_tech.md updated",
-        "interests_markets.md updated",
-        "manifesto.md updated",
-        "cleared",
-        "interest-events.jsonl",
-    )
     if not any(marker in answer for marker in _ADMIN_MARKERS):
         now = datetime.now(timezone.utc).isoformat()
         new_turns = history + [

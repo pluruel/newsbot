@@ -10,6 +10,7 @@ load_dotenv()
 from newsparser.claude.output_parser import parse_graph_updates
 from newsparser.graph.writer import apply_graph_updates
 from newsparser.market.annotate import maybe_annotate_impacts
+from newsparser.ignore import load_ignore
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +55,25 @@ def main(argv: list[str] | None = None) -> None:
              if guids_path.exists() else [])
     guids = [g.strip() for g in guids if g.strip()]
     _resolve_source_indices(relations, guids)
+
+    ignore = load_ignore(workspace)
+    if ignore.entries:
+        before_e, before_r = len(entities), len(relations)
+        # Names of entities dropped by the ignore filter (incl. alias-only hits).
+        # Relations are dropped if either endpoint is one of those names OR the
+        # endpoint name itself matches a target — so an alias-matched entity
+        # can't keep its relations (which reference it by canonical_name).
+        ignored = {e.name for e in entities
+                   if ignore.matches_entity(e.name, e.aliases)}
+        entities = [e for e in entities if e.name not in ignored]
+        relations = [r for r in relations
+                     if not (r.subject in ignored or r.obj in ignored
+                             or ignore.matches_entity(r.subject, [])
+                             or ignore.matches_entity(r.obj, []))]
+        dropped_e, dropped_r = before_e - len(entities), before_r - len(relations)
+        if dropped_e or dropped_r:
+            logger.info("ignore filter dropped %d entities, %d relations",
+                        dropped_e, dropped_r)
 
     cycle_id = f"{category}-{slot}"
     apply_graph_updates(entities, relations, cycle_id=cycle_id, category=category)
