@@ -81,3 +81,22 @@ def test_run_tracker_continues_if_classify_query_fails():
         # must not raise — the tracker should treat classification as best-effort
         result = run_tracker(chat_id="t1", query="anything")
     assert result == "answer"
+
+
+def test_ignore_marker_registered():
+    from newsparser.bot.tracker import _ADMIN_MARKERS
+    assert "ignore.md updated" in _ADMIN_MARKERS
+
+
+def test_ignore_marker_skips_history_save(tmp_path, monkeypatch):
+    monkeypatch.setenv("WORKSPACE_DIR", str(tmp_path / "workspace"))
+    import newsparser.bot.tracker as tracker
+
+    monkeypatch.setattr(tracker, "run_claude",
+                        lambda *a, **k: "추가했습니다. ignore.md updated")
+    monkeypatch.setattr(tracker, "classify_query", lambda *a, **k: "both")
+
+    tracker.run_tracker("chat-xyz", "무시: Opus 4.8 API 미등장")
+
+    # admin marker present → conversation history must NOT be saved
+    assert tracker.load_history("chat-xyz") == []
