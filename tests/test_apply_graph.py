@@ -179,3 +179,48 @@ def test_apply_graph_annotate_failure_doesnt_break_cycle(tmp_path, monkeypatch):
          patch.object(script, "maybe_annotate_impacts", side_effect=RuntimeError("boom")):
         # Must not raise
         script.main(["apply_graph.py", "markets", "2026-05-09-12"])
+
+
+SAMPLE_REPORT_WITH_IGNORED = """\
+## Graph updates
+### Entities
+- NEW | Company | OpenAI | aliases: []
+- NEW | Event | GPT-5 | aliases: []
+
+### Relations
+- NEW | OpenAI --ANNOUNCED[conf:0.9, impact:0.8]--> GPT-5 | announced new model
+"""
+
+
+def test_apply_graph_drops_ignored_entities_and_relations(tmp_path):
+    ws = Path(os.environ["WORKSPACE_DIR"])
+    (ws / "me").mkdir(parents=True, exist_ok=True)
+    (ws / "me" / "ignore.md").write_text(
+        "| 종류 | 대상 | 추가일 | 메모 |\n"
+        "|------|------|--------|------|\n"
+        "| entity | GPT-5 | 2026-06-28 |  |\n",
+        encoding="utf-8",
+    )
+    (ws / "cycles" / "tech" / "2026-05-08-12.md").write_text(SAMPLE_REPORT_WITH_IGNORED)
+
+    with patch("newsparser.scripts.apply_graph.apply_graph_updates") as mock_apply:
+        script.main(["apply_graph.py", "tech", "2026-05-08-12"])
+
+    entities, relations = mock_apply.call_args.args
+    # Ignored entity and the relation referencing it are dropped.
+    assert all(e.name != "GPT-5" for e in entities)
+    assert relations == []
+    # Non-ignored entity survives.
+    assert any(e.name == "OpenAI" for e in entities)
+
+
+def test_apply_graph_no_ignore_file_keeps_everything(tmp_path):
+    ws = Path(os.environ["WORKSPACE_DIR"])
+    (ws / "cycles" / "tech" / "2026-05-08-12.md").write_text(SAMPLE_REPORT_WITH_IGNORED)
+
+    with patch("newsparser.scripts.apply_graph.apply_graph_updates") as mock_apply:
+        script.main(["apply_graph.py", "tech", "2026-05-08-12"])
+
+    entities, relations = mock_apply.call_args.args
+    assert len(entities) == 2
+    assert len(relations) == 1

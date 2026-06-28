@@ -10,6 +10,7 @@ load_dotenv()
 from newsparser.claude.output_parser import parse_graph_updates
 from newsparser.graph.writer import apply_graph_updates
 from newsparser.market.annotate import maybe_annotate_impacts
+from newsparser.ignore import load_ignore
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +55,19 @@ def main(argv: list[str] | None = None) -> None:
              if guids_path.exists() else [])
     guids = [g.strip() for g in guids if g.strip()]
     _resolve_source_indices(relations, guids)
+
+    ignore = load_ignore(workspace)
+    if ignore.entries:
+        before_e, before_r = len(entities), len(relations)
+        entities = [e for e in entities
+                    if not ignore.matches_entity(e.name, e.aliases)]
+        relations = [r for r in relations
+                     if not (ignore.matches_entity(r.subject, [])
+                             or ignore.matches_entity(r.obj, []))]
+        dropped_e, dropped_r = before_e - len(entities), before_r - len(relations)
+        if dropped_e or dropped_r:
+            logger.info("ignore filter dropped %d entities, %d relations",
+                        dropped_e, dropped_r)
 
     cycle_id = f"{category}-{slot}"
     apply_graph_updates(entities, relations, cycle_id=cycle_id, category=category)
