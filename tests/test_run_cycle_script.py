@@ -175,8 +175,71 @@ def test_render_telegram_keeps_highest_score_for_duplicate_headline():
         "• (중요도 0.8) 환율 급등. 추가 본문.\n"
         "## Graph updates\n"
     )
-    # Dedup must keep the higher score, not the first-by-document-order one.
-    assert script._render_telegram(report, IgnoreList([])) == ["• 0.80 환율 급등"]
+    # Dedup must keep the higher score AND its section (이어지는 흐름, not 새 소식).
+    assert script._render_telegram(report, IgnoreList([])) == ["이어지는 흐름", "• 0.80 환율 급등"]
+
+
+def test_render_telegram_keeps_section_headers_and_groups_items():
+    report = (
+        "사이클 2026-05-08 12:00 KST\n\n"
+        "새 소식\n"
+        "• (중요도 0.8) A 발표.\n"
+        "이어지는 흐름\n"
+        "• (중요도 0.5) B 후속.\n"
+        "## Graph updates\n"
+    )
+    lines = script._render_telegram(report, IgnoreList([]))
+    assert lines[0] == "사이클 2026-05-08 12:00 KST"        # timestamp header (E)
+    assert "새 소식" in lines and "이어지는 흐름" in lines    # section grouping (D)
+    # 새 소식 group precedes 이어지는 흐름, each holding its own item
+    assert lines.index("• 0.80 A 발표") > lines.index("새 소식")
+    assert lines.index("• 0.50 B 후속") > lines.index("이어지는 흐름")
+    assert lines.index("새 소식") < lines.index("이어지는 흐름")
+
+
+def test_render_telegram_includes_entity_source_line():
+    report = (
+        "새 소식\n"
+        "• (중요도 0.8) 엔비디아 실적 상회. 본문 문장.\n"
+        "  엔티티: 엔비디아, TSMC / 출처: Bloomberg\n"
+        "## Graph updates\n"
+    )
+    lines = script._render_telegram(report, IgnoreList([]))
+    assert "• 0.80 엔비디아 실적 상회" in lines
+    assert "  엔티티: 엔비디아, TSMC / 출처: Bloomberg" in lines   # C restored
+
+
+def test_render_telegram_includes_quiet_and_open_threads():
+    report = (
+        "새 소식\n"
+        "• (중요도 0.8) A 발표.\n"
+        "조용한 영역\n"
+        "• 12시 사이클에 예상된 FOMC 코멘트 관측 안 됨\n"
+        "오픈 스레드\n"
+        "• 디든로보틱스 추가 수주 여부\n"
+        "## Graph updates\n"
+    )
+    lines = script._render_telegram(report, IgnoreList([]))
+    assert "조용한 영역" in lines                                  # A restored
+    assert "• 12시 사이클에 예상된 FOMC 코멘트 관측 안 됨" in lines
+    assert "오픈 스레드" in lines
+    assert "• 디든로보틱스 추가 수주 여부" in lines
+
+
+def test_render_telegram_omits_empty_and_none_sections():
+    report = (
+        "새 소식\n"
+        "• (중요도 0.8) A 발표.\n"
+        "조용한 영역\n"
+        "• 없음\n"
+        "오픈 스레드\n"
+        "• 없음\n"
+        "## Graph updates\n"
+    )
+    lines = script._render_telegram(report, IgnoreList([]))
+    assert "조용한 영역" not in lines      # `• 없음` placeholder → section omitted
+    assert "오픈 스레드" not in lines
+    assert "없음" not in "\n".join(lines)
 
 
 def test_render_telegram_does_not_truncate_at_abbreviations():

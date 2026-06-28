@@ -26,6 +26,17 @@ _KST = ZoneInfo("Asia/Seoul")
 
 _CYCLE_ITEM_RE = re.compile(r"^\s*[•\-\*]\s*\(중요도\s*([0-9]*\.?[0-9]+)\)\s*(.+)$")
 
+# Digest section headers in the report (cycle.md "Report file format").
+_SCORED_SECTIONS = ("새 소식", "이어지는 흐름")        # items carry a 중요도 score
+_UNSCORED_SECTIONS = ("조용한 영역", "오픈 스레드")     # items have no score
+_ALL_SECTIONS = _SCORED_SECTIONS + _UNSCORED_SECTIONS
+# Timestamp header line: "사이클 2026-05-08 12:00 KST".
+_TIMESTAMP_RE = re.compile(r"^\s*사이클\s+\d{4}-\d{2}-\d{2}.*KST\s*$")
+# Indented "엔티티: … / 출처: …" line that follows a scored item.
+_META_RE = re.compile(r"^\s*(엔티티|출처)\s*[:：]")
+# Any bullet item (used for the score-less quiet/open-thread sections).
+_BULLET_RE = re.compile(r"^\s*[•\-\*]\s*(.+)$")
+
 # Tokens that legitimately end with a period and must NOT be treated as the
 # headline/body sentence boundary when splitting on ". ".
 _ABBREV = {"inc.", "corp.", "co.", "ltd.", "vs.", "etc.", "e.g.", "i.e.", "no."}
@@ -50,28 +61,103 @@ def _headline_only(text: str) -> str:
 
 
 def _render_telegram(report_text: str, ignore) -> list[str]:
-    """Build the terse Telegram lines from a saved cycle report.
+    """Build the Telegram lines from a saved cycle report, preserving section
+    structure so context survives into the message.
 
-    Extract `• (중요도 0.NN) 헤드라인. 본문…` items from the digest (everything
-    before `## Graph updates`), keep only the headline, drop ignored ones, and
-    return `• 0.NN 헤드라인` sorted by importance descending. Duplicate headlines
-    collapse to their HIGHEST score. Items without a 중요도 score (조용한 영역 /
-    오픈 스레드) are naturally excluded.
+    From the digest (everything before `## Graph updates`) we keep:
+      - the `사이클 … KST` timestamp header,
+      - the four section headers (새 소식 / 이어지는 흐름 / 조용한 영역 / 오픈 스레드),
+      - for scored sections: `• 0.NN 헤드라인` (headline only, no body) plus the
+        following `엔티티: … / 출처: …` line, sorted by importance descending,
+      - for score-less sections: the bullet text as-is.
+
+    Ignored entities/storylines are dropped. Duplicate scored headlines collapse
+    to their HIGHEST score, keeping the section of that highest instance. Empty
+    sections (and `• 없음` placeholders) are omitted. Returns [] when no item
+    renders, so the caller can fall back to "새 소식 없음".
     """
     digest = report_text.split("## Graph updates", 1)[0]
-    best: dict[str, float] = {}
-    for line in digest.splitlines():
-        m = _CYCLE_ITEM_RE.match(line)
-        if not m:
+
+    header_line: str | None = None
+    # headline -> {"score", "headline", "meta": [..], "section"} (global dedup)
+    scored: dict[str, dict] = {}
+    # section -> list of bullet texts (quiet / open threads)
+    unscored: dict[str, list[str]] = {s: [] for s in _UNSCORED_SECTIONS}
+
+    section: str | None = None
+    pending: dict | None = None  # last scored item, to attach its meta line(s)
+
+    for raw in digest.splitlines():
+        line = raw.rstrip()
+        stripped = line.strip()
+
+        if header_line is None and _TIMESTAMP_RE.match(line):
+            header_line = stripped
             continue
-        headline = _headline_only(m.group(2))
-        if not headline or ignore.matches(headline):
+        if stripped in _ALL_SECTIONS:
+            section = stripped
+            pending = None
             continue
-        score = float(m.group(1))
-        if score > best.get(headline, -1.0):
-            best[headline] = score
-    items = sorted(best.items(), key=lambda kv: kv[1], reverse=True)
-    return [f"• {score:.2f} {headline}" for headline, score in items]
+        if section is None:
+            continue
+
+        if section in _SCORED_SECTIONS:
+            m = _CYCLE_ITEM_RE.match(line)
+            if m:
+                pending = None
+                headline = _headline_only(m.group(2))
+                if not headline or ignore.matches(headline):
+                    continue
+                score = float(m.group(1))
+                existing = scored.get(headline)
+                if existing is not None:
+                    if score > existing["score"]:
+                        existing.update(score=score, section=section, meta=[])
+                        pending = existing
+                    continue
+                item = {"score": score, "headline": headline, "meta": [], "section": section}
+                scored[headline] = item
+                pending = item
+                continue
+            if pending is not None and _META_RE.match(line):
+                pending["meta"].append(stripped)
+                continue
+            pending = None
+        else:  # score-less section
+            m = _BULLET_RE.match(line)
+            if not m:
+                continue
+            text = m.group(1).strip()
+            if not text or text == "없음" or ignore.matches(text):
+                continue
+            if text not in unscored[section]:
+                unscored[section].append(text)
+
+    body: list[str] = []
+    for name in _ALL_SECTIONS:
+        if name in _SCORED_SECTIONS:
+            items = sorted((it for it in scored.values() if it["section"] == name),
+                           key=lambda it: it["score"], reverse=True)
+            rendered: list[str] = []
+            for it in items:
+                rendered.append(f"• {it['score']:.2f} {it['headline']}")
+                rendered.extend(f"  {meta}" for meta in it["meta"])
+        else:
+            rendered = [f"• {text}" for text in unscored[name]]
+        if not rendered:
+            continue
+        if body:
+            body.append("")
+        body.append(name)
+        body.extend(rendered)
+
+    if not body:
+        return []
+    out: list[str] = []
+    if header_line:
+        out += [header_line, ""]
+    out += body
+    return out
 
 
 def _classify_pending() -> None:
