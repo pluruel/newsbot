@@ -122,7 +122,7 @@ def test_run_cycle_falls_back_to_file_digest_when_stdout_empty(tmp_path):
     msg = sent[0]
     assert msg.startswith("[TECH]")
     assert "## Graph updates" not in msg
-    assert "OpenAI 신모델 발표" in msg   # full file digest used as fallback
+    assert "OpenAI 신모델 발표" in msg   # terse extraction from file digest used as fallback
 
 
 def test_run_cycle_skips_empty_category(tmp_path):
@@ -158,7 +158,8 @@ def test_run_cycle_category_error_doesnt_stop_other(tmp_path):
         _fake_run_claude_writes_report(prompt, **kw)
         return ""
 
-    with patch("newsparser.scripts.run_cycle.run_claude", side_effect=fake_claude), \
+    with pytest.raises(RuntimeError, match="tech"), \
+         patch("newsparser.scripts.run_cycle.run_claude", side_effect=fake_claude), \
          patch("newsparser.scripts.run_cycle.build_input_file"), \
          patch("newsparser.scripts.run_cycle.classify_article", return_value="markets"), \
          patch("newsparser.scripts.run_cycle.send_long_message", side_effect=lambda m: sent.append(m)):

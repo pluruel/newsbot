@@ -1,7 +1,6 @@
 # newsparser/scripts/run_cycle.py
 import logging
 import os
-import sys
 from datetime import date, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -21,6 +20,18 @@ from newsparser.scheduler.workspace import ensure_workspace
 logger = logging.getLogger(__name__)
 
 _KST = ZoneInfo("Asia/Seoul")
+_GRAPH_UPDATES_HEADER = "## Graph updates"
+_SECTION_HEADERS = {"새 소식", "이어지는 흐름", "조용한 영역", "오픈 스레드"}
+
+
+def _terse_from_file(report_text: str) -> str:
+    """Extract section headers and bullet lines from a verbose report file."""
+    lines = [
+        line.strip()
+        for line in report_text.split("\n")
+        if line.strip() in _SECTION_HEADERS or line.strip().startswith("•")
+    ]
+    return "\n".join(lines)
 
 
 def _classify_pending() -> None:
@@ -45,7 +56,9 @@ def _run_for_category(slot: str, category: str, workspace: Path) -> None:
 
     guids_path = workspace / "input" / category / f"{slot}-guids.txt"
     guids_path.parent.mkdir(parents=True, exist_ok=True)
-    guids_path.write_text("\n".join(a["guid"] for a in articles))
+    if guids_path.exists():
+        logger.warning("[%s] stale guids file found — prior cycle may have crashed", category)
+    guids_path.write_text("\n".join(a["guid"] for a in articles), encoding="utf-8")
 
     build_input_file(slot, category)
     logger.info("[%s] Built input file (%d articles)", category, len(articles))
@@ -63,32 +76,41 @@ def _run_for_category(slot: str, category: str, workspace: Path) -> None:
         existing = input_path.read_text(encoding="utf-8")
         input_path.write_text(snapshot_block + "\n\n" + existing, encoding="utf-8")
 
-    summary = run_claude(f"/cycle {slot} {category}")
-    logger.info("[%s] Claude cycle complete", category)
+    try:
+        summary = run_claude(f"/cycle {slot} {category}")
+        logger.info("[%s] Claude cycle complete", category)
+    except Exception:
+        if guids_path.exists():
+            guids_path.unlink()
+        raise
 
     # Safety net: if the slash command's mark_processed.py call was skipped or failed,
     # the guids file still exists. Mark them here to prevent reprocessing on next cycle.
     if guids_path.exists():
         logger.warning("[%s] guids file still present after run_claude — marking processed directly", category)
-        guids = [g for g in guids_path.read_text().splitlines() if g.strip()]
+        guids = [g for g in guids_path.read_text(encoding="utf-8").splitlines() if g.strip()]
         if guids:
             mark_processed(guids)
         guids_path.unlink()
 
-    # Telegram gets the terse keyword summary the skill prints to stdout (same pattern as
-    # /weekly and /reflect). The full digest stays in the report file for /weekly, /reflect
-    # and graph context — it is NOT sent. Fall back to the file digest only if stdout is empty.
+    # Telegram gets the terse keyword summary the skill prints to stdout. Strip the graph
+    # block defensively in case the LLM included it. Fall back to terse extraction from the
+    # report file only if stdout is empty.
     report_path = workspace / "cycles" / category / f"{slot}.md"
     summary = summary.strip()
+    if _GRAPH_UPDATES_HEADER in summary:
+        summary = summary.split(_GRAPH_UPDATES_HEADER, 1)[0].strip()
     if not summary and report_path.exists():
         logger.warning("[%s] empty cycle stdout — falling back to file digest", category)
         report = report_path.read_text(encoding="utf-8")
-        summary = report.split("## Graph updates", 1)[0].strip()
+        summary = _terse_from_file(report.split(_GRAPH_UPDATES_HEADER, 1)[0])
     if summary:
         try:
             send_long_message(f"[{category.upper()}] {summary}")
         except Exception as e:
             logger.error("Telegram send failed for %s/%s: %s", category, slot, e)
+    else:
+        logger.warning("[%s] cycle produced no summary for slot=%s", category, slot)
 
     log_path = workspace / "logs" / f"{slot[:10]}.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -106,11 +128,15 @@ def main(slot: str | None = None) -> None:
     except Exception as exc:
         logger.warning("classify_pending failed: %s", exc)
 
+    failures: list[str] = []
     for category in CATEGORIES:
         try:
             _run_for_category(slot, category, workspace)
         except Exception as exc:
             logger.error("[%s] cycle failed: %s", category, exc)
+            failures.append(category)
+    if failures:
+        raise RuntimeError(f"Cycle failed for: {', '.join(failures)}")
 
 
 if __name__ == "__main__":
