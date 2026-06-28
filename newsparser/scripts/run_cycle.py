@@ -37,6 +37,24 @@ _META_RE = re.compile(r"^\s*(엔티티|출처)\s*[:：]")
 # Any bullet item (used for the score-less quiet/open-thread sections).
 _BULLET_RE = re.compile(r"^\s*[•\-\*]\s*(.+)$")
 
+# Section-header matching tolerant of LLM drift. The report (cycle.md) emits bare
+# headers, but a stray `## `, `**…**`, a trailing `(3건)` count, a colon, or a
+# dropped inner space must still be recognized — otherwise a whole section's
+# items silently vanish from Telegram.
+_SECTION_BY_NOSPACE = {name.replace(" ", ""): name for name in _ALL_SECTIONS}
+_HEADER_SUFFIX_RE = re.compile(r"\s*[（(].*$")
+
+
+def _section_of(line: str) -> str | None:
+    """Return the canonical section name for a header line, tolerating `## `,
+    `**…**`, a trailing `(…)` count, a trailing colon, or a missing inner space.
+    Returns None when the line is not a recognizable section header."""
+    s = line.strip().strip("#*").strip()
+    s = _HEADER_SUFFIX_RE.sub("", s).rstrip(":：").strip()
+    if s in _ALL_SECTIONS:
+        return s
+    return _SECTION_BY_NOSPACE.get(s.replace(" ", ""))
+
 # Tokens that legitimately end with a period and must NOT be treated as the
 # headline/body sentence boundary when splitting on ". ".
 _ABBREV = {"inc.", "corp.", "co.", "ltd.", "vs.", "etc.", "e.g.", "i.e.", "no."}
@@ -60,7 +78,7 @@ def _headline_only(text: str) -> str:
         return text[:idx].rstrip(". ").strip()
 
 
-def _render_telegram(report_text: str, ignore) -> list[str]:
+def _render_telegram(report_text: str, ignore, label: str = "") -> list[str]:
     """Build the Telegram lines from a saved cycle report, preserving section
     structure so context survives into the message.
 
@@ -71,10 +89,16 @@ def _render_telegram(report_text: str, ignore) -> list[str]:
         following `엔티티: … / 출처: …` line, sorted by importance descending,
       - for score-less sections: the bullet text as-is.
 
-    Ignored entities/storylines are dropped. Duplicate scored headlines collapse
-    to their HIGHEST score, keeping the section of that highest instance. Empty
-    sections (and `• 없음` placeholders) are omitted. Returns [] when no item
-    renders, so the caller can fall back to "새 소식 없음".
+    Ignored entities/storylines are dropped (including when an ignored entity
+    appears only on a scored item's 엔티티/출처 line). Duplicate scored headlines
+    collapse to their HIGHEST score, keeping the section of that highest instance
+    and its richest meta. Empty sections (and `• 없음` placeholders) are omitted.
+    Returns [] when no item renders, so the caller can fall back to "새 소식 없음".
+
+    Scored items lost to format drift — a `(중요도 …)` bullet that fails the strict
+    parse, or a well-formed scored item orphaned under an unrecognized header — are
+    counted and logged (with ``label`` for context), since the message itself can
+    no longer signal their absence once score-less sections also populate it.
     """
     digest = report_text.split("## Graph updates", 1)[0]
 
@@ -86,6 +110,7 @@ def _render_telegram(report_text: str, ignore) -> list[str]:
 
     section: str | None = None
     pending: dict | None = None  # last scored item, to attach its meta line(s)
+    drift = 0                     # scored items lost to malformed format / bad header
 
     for raw in digest.splitlines():
         line = raw.rstrip()
@@ -94,15 +119,15 @@ def _render_telegram(report_text: str, ignore) -> list[str]:
         if header_line is None and _TIMESTAMP_RE.match(line):
             header_line = stripped
             continue
-        if stripped in _ALL_SECTIONS:
-            section = stripped
+        sec = _section_of(line)
+        if sec is not None:
+            section = sec
             pending = None
             continue
-        if section is None:
-            continue
+
+        m = _CYCLE_ITEM_RE.match(line)
 
         if section in _SCORED_SECTIONS:
-            m = _CYCLE_ITEM_RE.match(line)
             if m:
                 pending = None
                 headline = _headline_only(m.group(2))
@@ -112,26 +137,44 @@ def _render_telegram(report_text: str, ignore) -> list[str]:
                 existing = scored.get(headline)
                 if existing is not None:
                     if score > existing["score"]:
-                        existing.update(score=score, section=section, meta=[])
-                        pending = existing
+                        existing["score"] = score
+                        existing["section"] = section
+                        pending = existing  # keep prior meta; new meta lines append
                     continue
-                item = {"score": score, "headline": headline, "meta": [], "section": section}
-                scored[headline] = item
-                pending = item
+                scored[headline] = {"score": score, "headline": headline,
+                                    "meta": [], "section": section}
+                pending = scored[headline]
                 continue
             if pending is not None and _META_RE.match(line):
-                pending["meta"].append(stripped)
+                if not ignore.matches(stripped):    # drop meta carrying an ignored entity
+                    pending["meta"].append(stripped)
                 continue
-            pending = None
-        else:  # score-less section
-            m = _BULLET_RE.match(line)
-            if not m:
-                continue
-            text = m.group(1).strip()
-            if not text or text == "없음" or ignore.matches(text):
-                continue
-            if text not in unscored[section]:
-                unscored[section].append(text)
+            if _BULLET_RE.match(line):
+                if "중요도" in line:                  # a malformed scored bullet
+                    drift += 1
+                pending = None                       # a non-scored bullet ends the meta window
+            # blank line / wrapped body: keep `pending` so a later 엔티티 line still attaches
+            continue
+
+        # Not inside a scored section.
+        if m:
+            drift += 1   # well-formed scored item orphaned by an unrecognized header
+            continue
+        if section is None:
+            continue
+        bm = _BULLET_RE.match(line)  # score-less quiet / open-thread bullet
+        if not bm:
+            continue
+        text = bm.group(1).strip()
+        if not text or text == "없음" or ignore.matches(text):
+            continue
+        if text not in unscored[section]:
+            unscored[section].append(text)
+
+    if drift:
+        logger.warning("[%s] cycle render: %d scored item(s) lost to format drift "
+                       "(malformed 중요도 line or unrecognized section header)",
+                       label or "?", drift)
 
     body: list[str] = []
     for name in _ALL_SECTIONS:
@@ -141,7 +184,7 @@ def _render_telegram(report_text: str, ignore) -> list[str]:
             rendered: list[str] = []
             for it in items:
                 rendered.append(f"• {it['score']:.2f} {it['headline']}")
-                rendered.extend(f"  {meta}" for meta in it["meta"])
+                rendered.extend(f"  {meta}" for meta in dict.fromkeys(it["meta"]))
         else:
             rendered = [f"• {text}" for text in unscored[name]]
         if not rendered:
@@ -219,13 +262,11 @@ def _run_for_category(slot: str, category: str, workspace: Path) -> None:
     if report_path.exists():
         report_text = report_path.read_text(encoding="utf-8")
         ignore = load_ignore(workspace)
-        lines = _render_telegram(report_text, ignore)
-        # If the digest clearly has scored items but none rendered, the report
-        # likely drifted from the expected `• (중요도 0.NN)` format — surface it
-        # instead of silently sending an empty "새 소식 없음".
-        if not lines and "중요도" in report_text.split("## Graph updates", 1)[0]:
-            logger.warning("[%s] %s: report has 중요도 items but render produced 0 lines "
-                           "— possible format drift", category, slot)
+        # _render_telegram logs precisely which scored items (if any) were lost to
+        # format drift — it can detect malformed/orphaned items that a coarse
+        # "0 lines rendered" check misses now that score-less sections also populate
+        # the message.
+        lines = _render_telegram(report_text, ignore, label=f"{category}/{slot}")
         body = "\n".join(lines) if lines else "새 소식 없음"
         try:
             send_long_message(f"[{category.upper()}]\n{body}")
