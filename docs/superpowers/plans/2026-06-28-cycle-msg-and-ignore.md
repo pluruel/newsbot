@@ -14,27 +14,124 @@
 - Claude는 헤드리스 `claude -p`만. Anthropic API 직접 호출 금지.
 - 크론 사이클이 저장하는 파일(리포트 `.md`, input, guids, logs)과 Neo4j 스키마는 **형식·동작 불변**. DB 스키마/마이그레이션 변경 없음.
 - 무시 목록의 유일한 신규 영속 데이터는 `workspace/me/ignore.md` 한 파일.
-- 표 파서는 `newsparser/collector/sources.py` 패턴(관용·헤더 소문자 매핑)을 따른다.
+- 마크다운 표 셀 분리/구분선 판별은 공유 모듈 `newsparser/_mdtable.py`(`split_row`/`is_separator`)를 사용하고 `ignore.py`·`sources.py` 모두 이를 import한다(중복 금지). 헤더는 소문자 매핑·관용 파싱.
 - 날짜 계산("N일 경과")은 Python(`date.today()`)에서만. LLM 날짜 산술에 의존하지 않는다.
 - `RelationUpdate`의 객체 필드명은 `.obj`(not `.object`), 주어는 `.subject`. `EntityUpdate`는 `.name`, `.aliases`.
 
 ---
 
-### Task 1: `newsparser/ignore.py` — 무시 목록 로더
+### Task 1: 공유 표 파서 `_mdtable.py` + `sources.py` 정리 + `ignore.py` 로더
 
-무시 목록의 파싱·매칭·목록 출력을 담당하는 기반 모듈. 이후 모든 태스크가 이걸 소비한다.
+무시 목록의 파싱·매칭·목록 출력을 담당하는 기반 모듈. 마크다운 표 파싱 헬퍼는 `sources.py`와 중복되지 않도록 공유 모듈 `newsparser/_mdtable.py`로 추출하고 `sources.py`도 이를 쓰도록 정리한다. 이후 모든 태스크가 `ignore.py`를 소비한다.
+
+이 태스크는 두 부분으로 진행한다: **Part A**(공유 파서 추출 + sources 리팩터, 자체 커밋), **Part B**(ignore.py 로더, 자체 커밋).
 
 **Files:**
-- Create: `newsparser/ignore.py`
-- Test: `tests/test_ignore.py`
+- Create: `newsparser/_mdtable.py`, `newsparser/ignore.py`
+- Modify: `newsparser/collector/sources.py` (공유 파서 사용)
+- Test: `tests/test_mdtable.py`, `tests/test_ignore.py`
 
 **Interfaces:**
 - Produces:
+  - `newsparser/_mdtable.py`: `split_row(line: str) -> list[str]`, `is_separator(cells: list[str]) -> bool` — `ignore.py`·`sources.py` 공용.
   - `IgnoreEntry(kind: str, target: str, added: date | None = None, note: str = "")` — `kind`은 `"entity"` 또는 `"storyline"`.
   - `class IgnoreList` with `entries: list[IgnoreEntry]`, `entity_names() -> set[str]`(casefold), `storylines() -> list[str]`, `matches(text: str) -> bool`, `matches_entity(name: str, aliases: list[str]) -> bool`.
   - `load_ignore(workspace: Path | str | None = None) -> IgnoreList` — 파일 없으면 빈 목록.
   - `format_list(ignore: IgnoreList, today: date) -> str` — "N일 경과" 포함 사람용 목록.
   - `python -m newsparser.ignore` 실행 시 `format_list(load_ignore(), date.today())` 출력.
+
+**Part A — 공유 표 파서 + sources 정리**
+
+- [ ] **Step A1: Write the failing test for `_mdtable.py`**
+
+Create `tests/test_mdtable.py`:
+
+```python
+from newsparser._mdtable import split_row, is_separator
+
+
+def test_split_row_strips_outer_pipes_and_cells():
+    assert split_row("| a | b | c |") == ["a", "b", "c"]
+
+
+def test_split_row_preserves_empty_cells():
+    assert split_row("| a |  | c |") == ["a", "", "c"]
+
+
+def test_split_row_without_outer_pipes():
+    assert split_row("a | b") == ["a", "b"]
+
+
+def test_is_separator_true_for_dashes_and_colons():
+    assert is_separator(["---", ":--", "--:"]) is True
+
+
+def test_is_separator_false_for_content():
+    assert is_separator(["a", "b"]) is False
+
+
+def test_is_separator_false_for_empty_cell():
+    assert is_separator(["---", ""]) is False
+```
+
+- [ ] **Step A2: Run to verify it fails**
+
+Run: `.venv/bin/pytest tests/test_mdtable.py -v`
+Expected: FAIL — `ModuleNotFoundError: No module named 'newsparser._mdtable'`.
+
+- [ ] **Step A3: Implement `newsparser/_mdtable.py`**
+
+```python
+"""Tolerant markdown-table cell parsing shared by the ignore list and source
+loaders. A data row is ``| a | b | c |``; a separator row is ``|---|:--|``."""
+
+
+def split_row(line: str) -> list[str]:
+    """Split a markdown table row into stripped cells.
+
+    Drops the leading and trailing pipe before splitting so empty cells survive.
+    """
+    inner = line.strip()
+    if inner.startswith("|"):
+        inner = inner[1:]
+    if inner.endswith("|"):
+        inner = inner[:-1]
+    return [cell.strip() for cell in inner.split("|")]
+
+
+def is_separator(cells: list[str]) -> bool:
+    """True if every cell is a non-empty run of ``-``/``:`` (a ``|---|:--|`` row)."""
+    return all(set(c) <= set("-:") and c for c in cells)
+```
+
+- [ ] **Step A4: Refactor `sources.py` to use the shared parser, keep tests green**
+
+In `newsparser/collector/sources.py`, add the import below the existing imports:
+
+```python
+from newsparser._mdtable import split_row, is_separator
+```
+
+Delete the local `_split_row` (lines 17-25) and `_is_separator` (lines 28-29) definitions, and update their two call sites inside `load_sources`:
+
+```python
+        cells = split_row(line)
+```
+```python
+        if is_separator(cells):
+```
+
+Run: `.venv/bin/pytest tests/test_mdtable.py tests/test_sources.py -v`
+Expected: PASS — `test_sources.py` behavior is unchanged (it already covers the parser end-to-end).
+
+- [ ] **Step A5: Commit Part A**
+
+```bash
+git add newsparser/_mdtable.py tests/test_mdtable.py newsparser/collector/sources.py
+git commit -m "refactor: extract shared markdown-table parser (_mdtable)"
+```
+
+**Part B — `ignore.py` 로더**
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -180,6 +277,8 @@ from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
+from newsparser._mdtable import is_separator, split_row
+
 VALID_KINDS = ("entity", "storyline")
 
 
@@ -189,20 +288,6 @@ class IgnoreEntry:
     target: str
     added: date | None = None
     note: str = ""
-
-
-def _split_row(line: str) -> list[str]:
-    """Split a markdown table row into stripped cells (sources.py convention)."""
-    inner = line.strip()
-    if inner.startswith("|"):
-        inner = inner[1:]
-    if inner.endswith("|"):
-        inner = inner[:-1]
-    return [cell.strip() for cell in inner.split("|")]
-
-
-def _is_separator(cells: list[str]) -> bool:
-    return all(set(c) <= set("-:") and c for c in cells)
 
 
 def _parse_date(s: str) -> date | None:
@@ -263,11 +348,11 @@ def load_ignore(workspace: Path | str | None = None) -> IgnoreList:
     for line in text.splitlines():
         if not line.strip().startswith("|"):
             continue
-        cells = _split_row(line)
+        cells = split_row(line)
         if header is None:
             header = [h.lower() for h in cells]
             continue
-        if _is_separator(cells):
+        if is_separator(cells):
             continue
         if len(cells) < len(header):
             cells += [""] * (len(header) - len(cells))
@@ -930,6 +1015,9 @@ Expected: prints
 
 | 파일 | 태스크 | 변경 |
 |------|:--:|------|
+| `newsparser/_mdtable.py` | 1 | 신규 — 공유 마크다운 표 파서 |
+| `tests/test_mdtable.py` | 1 | 신규 |
+| `newsparser/collector/sources.py` | 1 | 공유 파서로 리팩터(동작 불변) |
 | `newsparser/ignore.py` | 1 | 신규 — 로더/매칭/목록 CLI |
 | `tests/test_ignore.py` | 1 | 신규 |
 | `newsparser/scheduler/workspace.py` | 2 | `ignore.md` 시드 |
@@ -948,3 +1036,4 @@ Expected: prints
 - **타입 일관성**: `RelationUpdate.obj`(not `.object`), `.subject`; `EntityUpdate.name/.aliases`; `parse_graph_updates -> (entities, relations)`; `send_long_message(text)`; `load_ignore(workspace)`/`IgnoreList.matches`/`.matches_entity`/`format_list(ignore, today)` 전 태스크 동일.
 - **회귀**: `test_run_cycle_script.py`의 옛 동작 검증 2개를 Task 4 Step 1에서 명시적으로 교체.
 - **storyline 매칭 한계**: `matches()`는 casefold 부분일치(결정적 백스톱). 서사의 의미적 배제는 Task 5의 SOFT cycle.md 지시가 주력 — 두 경로 병행이 의도된 설계.
+- **표 파서 중복 해소(pre-flight)**: `_split_row`/`_is_separator`를 공유 `newsparser/_mdtable.py`로 추출(Task 1 Part A)하고 `sources.py`도 같은 모듈을 import — 동작 불변, 기존 `test_sources.py`가 보증.
