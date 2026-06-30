@@ -21,7 +21,7 @@ services:
         max-file: "5"
 
   poller:
-    image: ${NEWSPARSER_IMAGE:-newsparser:latest}
+    image: ${NEWSPARSER_IMAGE:-ghcr.io/pluruel/newsparser:latest}
     build: .
     command: .venv/bin/python -m newsparser.collector.run_poller
     env_file: .env
@@ -40,7 +40,7 @@ services:
         max-file: "5"
 
   dispatcher:
-    image: ${NEWSPARSER_IMAGE:-newsparser:latest}
+    image: ${NEWSPARSER_IMAGE:-ghcr.io/pluruel/newsparser:latest}
     build: .
     command: .venv/bin/python -m newsparser.dispatcher
     env_file: .env
