@@ -23,6 +23,19 @@ Context for working on this codebase with Claude Code.
 
 ---
 
+## State & Backups
+
+- All non-git runtime state = SQLite DBs + docs under `workspace/`, the Neo4j graph (docker volume), and `.env`. `backup.sh` / `restore.sh` snapshot and rebuild this as one gzip archive; see README "Backup & Restore".
+- `backup.sh` snapshots **every** `*.db` under `workspace/` automatically (via `find`), so adding a new SQLite DB there needs no script change.
+- **When the storage layout changes, update `backup.sh` AND `restore.sh` together, then re-verify.** Required whenever a change:
+  - adds state **outside** `workspace/`, or a new backend/volume (another graph store, Redis, a second docker volume);
+  - moves/renames a DB or changes a path convention (`DB_PATH`, `MARKET_DB_PATH`, `WORKSPACE_DIR`);
+  - adds new transient files to exclude, or new secrets beyond `.env`.
+- Re-verify after such a change (snapshot → restore into a throwaway dir → diff row counts):
+  `WORKSPACE_DIR=/tmp/ws ./backup.sh -o /tmp/bk && WORKSPACE_DIR=/tmp/ws2 ./restore.sh -y /tmp/bk/newsparser-backup-*.tar.gz`
+
+---
+
 ## Slash Command Behavior (runtime reference)
 
 What `/cycle` does at runtime is defined by `.claude/commands/cycle.md` — that is the source of truth, not this file.
