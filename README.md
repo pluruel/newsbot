@@ -100,7 +100,8 @@ to overwrite), and loads the Neo4j graph when docker is available. Then:
 uv sync && docker compose up -d   # install deps, start neo4j + poller + dispatcher
 ```
 
-Run `./backup.sh -h` / `./restore.sh -h` for all flags.
+Run `./backup.sh -h` / `./restore.sh -h` for all flags. Moving the whole system to a new
+host? See `migration.md`.
 
 ---
 
