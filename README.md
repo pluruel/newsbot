@@ -65,6 +65,36 @@ Clear conversation history
 
 ---
 
+## Backup & Restore
+
+All accumulated state lives outside git, so back it up regularly.
+
+```bash
+./backup.sh                 # one gzip snapshot -> backups/newsparser-backup-<ts>.tar.gz (+ .sha256)
+./restore.sh                # restore the newest archive in backups/
+./restore.sh path/to.tar.gz # restore a specific archive
+```
+
+`backup.sh` captures, in a single archive:
+
+- every SQLite DB under `workspace/` (`newsparser.db`, `market.db`, `state/claude_runs.db`, …) via a
+  **consistent online snapshot** — safe to run while the poller/dispatcher are writing
+- all runtime documents (`cycles/`, `briefs/`, `me/`, `input/`, `logs/`, `sessions/`)
+- the Neo4j knowledge graph (`neo4j-admin database dump`, best effort — needs docker)
+- `.env` (so a blank checkout runs identically). Pass `--no-secrets` to exclude it; **keep archives private**.
+
+`restore.sh` rebuilds that state into a fresh checkout. It prompts before overwriting existing data
+(`-y` to skip), takes a pre-restore safety snapshot, restores `.env` only if missing (`--restore-env`
+to overwrite), and loads the Neo4j graph when docker is available. Then:
+
+```bash
+uv sync && docker compose up -d   # install deps, start neo4j + poller + dispatcher
+```
+
+Run `./backup.sh -h` / `./restore.sh -h` for all flags.
+
+---
+
 ## Architecture
 
 ```
