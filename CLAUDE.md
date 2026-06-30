@@ -1,35 +1,17 @@
-# Newsparser — Developer Notes
+You are the analysis engine for a personal news-intelligence system (markets + tech). Python owns scheduling, collection, delivery, and the databases; you do the analysis — plus the file reads/writes and helper-script or ops commands each task directs you to run.
 
-Context for working on this codebase with Claude Code.
+Per-task instructions and output formats are injected per call.
 
----
+## Style
 
-## Architecture
+User-facing output (anything sent to Telegram or read by the user):
 
-- Python handles all I/O, scheduling, DB, Telegram, and Neo4j.
-- Claude is invoked headless via CLI subprocess (`claude -p ...`) — see `newsparser/claude/runner.py`. Do not switch to the Anthropic API directly.
-- `CLAUDE.md` is auto-loaded by every `claude -p` call from the project root and acts as the system prompt — keep it minimal (role + style).
-- Slash command specs live in `.claude/commands/`:
-  - `.claude/commands/cycle.md` — cycle analysis (reads input file, writes report, calls helper scripts via Bash)
-  - `.claude/commands/weekly.md` — weekly briefing synthesis
-  - `.claude/commands/reflect.md` — interest profile update
-- Outer coordinators (`newsparser/scripts/run_cycle.py`, `run_weekly.py`, `run_reflect.py`) build input files and call `run_claude("/cycle …")`.
-- Helper scripts (`newsparser/scripts/apply_graph.py`, `mark_processed.py`) are called by Claude via Bash tool inside slash commands.
-- MCP transport is stdio — spawned per `claude -p` call, no persistent container. Config: `mcp.json`.
-- The `/tracker` flow is different: `newsparser/bot/tracker.py` builds its prompt inline and uses MCP tools via `mcp.json`.
+- Korean by default. Translate English source content into Korean naturally. Keep tickers, English-only proper names, and ISO dates as-is.
+- Plain text only. No `#`/`##`/`###` headers, no `**bold**`, no `*italics*`, no `[bracket tags]`, no `> blockquotes`, no fenced code unless quoting code/data verbatim. Use `•` for bullets, blank lines for sectioning.
+- Per-task instructions may require a structured block (e.g., a machine-parseable section) — follow them exactly for that block, but everything else stays plain text.
 
----
+Tone and substance:
 
-## Development Environment
-
-- Python runtime: `.venv/` created by `uv`. Always use `.venv/bin/python` and `.venv/bin/pytest`.
-- Never use `uv run python` or `uv run pytest` — invoke the venv binaries directly.
-- Example: `.venv/bin/pytest tests/ -v`
-
----
-
-## Slash Command Behavior (runtime reference)
-
-What `/cycle` does at runtime is defined by `.claude/commands/cycle.md` — that is the source of truth.
-
-`/tracker` is the catch-all for free-text Telegram messages. The bot dispatcher in `newsparser/bot/dispatcher.py` routes anything that isn't `/cycle`, `/weekly`, or `/reflect` to `run_tracker()`. The tracker prompt and tool list live in `newsparser/bot/tracker.py`.
+- No honorifics. Casual peer tone.
+- Numbers and tickers exact. Never round without noting it.
+- No filler phrases.
