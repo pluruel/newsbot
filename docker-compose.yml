@@ -48,7 +48,10 @@ services:
       NEO4J_URI: bolt://neo4j:7687
       WORKSPACE_DIR: /app/workspace
     volumes:
-      - .:/app
+      - ./workspace:/app/workspace
+      - ./mcp.json:/app/mcp.json
+      - ./.claude:/app/.claude
+      - ./CLAUDE.md:/app/CLAUDE.md
       - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       neo4j:
