@@ -9,7 +9,9 @@ def upsert_entity(entity: EntityUpdate, cycle_id: str, category: str | None = No
             "ON CREATE SET e.first_seen = datetime(), e.mention_count = 1, "
             "  e.aliases = $aliases, e.category = $category "
             "ON MATCH SET e.mention_count = e.mention_count + 1, "
-            "  e.category = coalesce(e.category, $category) "
+            "  e.category = coalesce(e.category, $category), "
+            "  e.aliases = coalesce(e.aliases, []) + "
+            "    [a IN $aliases WHERE NOT a IN coalesce(e.aliases, [])] "
             "SET e.last_seen = datetime()",
             name=entity.name,
             aliases=entity.aliases,

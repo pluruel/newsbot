@@ -30,7 +30,7 @@ def test_run_claude_includes_model_flag():
         run_claude("query")
     cmd = mock_run.call_args[0][0]
     assert "--model" in cmd
-    assert "claude-sonnet-4-6" in cmd
+    assert "claude-sonnet-5" in cmd
 
 def test_run_claude_includes_mcp_config_when_given():
     mock_result = MagicMock(returncode=0, stdout="ok", stderr="")

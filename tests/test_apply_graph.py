@@ -226,6 +226,42 @@ def test_apply_graph_no_ignore_file_keeps_everything(tmp_path):
     assert len(relations) == 1
 
 
+SAMPLE_REPORT_RENAMEABLE = """\
+## Graph updates
+### Entities
+- NEW | Company | 테슬라 | aliases: []
+
+### Relations
+- NEW | 테슬라 --ANNOUNCED[conf:0.9, impact:0.8]--> Robotaxi | launch
+"""
+
+
+def test_apply_graph_renames_entities_and_relations_via_resolver(tmp_path):
+    ws = Path(os.environ["WORKSPACE_DIR"])
+    (ws / "cycles" / "tech" / "2026-05-08-12.md").write_text(SAMPLE_REPORT_RENAMEABLE)
+
+    with patch("newsparser.scripts.apply_graph.apply_graph_updates") as mock_apply, \
+         patch("newsparser.scripts.apply_graph.resolve_entities",
+               return_value={"테슬라": "Tesla"}):
+        script.main(["apply_graph.py", "tech", "2026-05-08-12"])
+
+    entities, relations = mock_apply.call_args.args
+    assert entities[0].name == "Tesla"
+    assert relations[0].subject == "Tesla"
+
+
+def test_apply_graph_resolver_noop_when_no_renames(tmp_path):
+    ws = Path(os.environ["WORKSPACE_DIR"])
+    (ws / "cycles" / "tech" / "2026-05-08-12.md").write_text(SAMPLE_REPORT)
+
+    with patch("newsparser.scripts.apply_graph.apply_graph_updates") as mock_apply, \
+         patch("newsparser.scripts.apply_graph.resolve_entities", return_value={}):
+        script.main(["apply_graph.py", "tech", "2026-05-08-12"])
+
+    entities, relations = mock_apply.call_args.args
+    assert entities[0].name == "OpenAI"
+
+
 SAMPLE_REPORT_ALIAS_IGNORED = """\
 ## Graph updates
 ### Entities

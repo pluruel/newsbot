@@ -74,6 +74,16 @@ def test_upsert_entity_sets_category():
     assert row["c"] == "tech"
 
 
+def test_upsert_entity_unions_aliases_on_match():
+    entity1 = EntityUpdate(op="NEW", label="Company", name="Tesla", aliases=["TSLA"])
+    entity2 = EntityUpdate(op="NEW", label="Company", name="Tesla", aliases=["테슬라"])
+    apply_graph_updates([entity1], [], "cycle-001")
+    apply_graph_updates([entity2], [], "cycle-002")
+    with get_driver().session() as s:
+        row = s.run("MATCH (e:Company {canonical_name: 'Tesla'}) RETURN e.aliases AS aliases").single()
+    assert sorted(row["aliases"]) == ["TSLA", "테슬라"]
+
+
 def test_upsert_entity_does_not_overwrite_existing_category():
     entity = EntityUpdate(op="NEW", label="Company", name="OpenAI", aliases=[])
     apply_graph_updates([entity], [], "tech-2026-05-07-12", category="tech")

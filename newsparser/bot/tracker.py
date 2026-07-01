@@ -83,7 +83,7 @@ def _needed_history_depth(query: str, history: list[dict], max_depth: int) -> in
         result = run_claude(
             prompt,
             timeout=30,
-            model="claude-haiku-4-5-20251001",
+            model="claude-haiku-4-5",
             system_prompt=(
                 f"Reply with only a single integer between 0 and {max_depth}. No other text."
             ),

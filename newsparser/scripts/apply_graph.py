@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from newsparser.claude.output_parser import parse_graph_updates
+from newsparser.graph.resolver import resolve_entities
 from newsparser.graph.writer import apply_graph_updates
 from newsparser.market.annotate import maybe_annotate_impacts
 from newsparser.ignore import load_ignore
@@ -49,6 +50,18 @@ def main(argv: list[str] | None = None) -> None:
 
     report = report_path.read_text(encoding="utf-8")
     entities, relations = parse_graph_updates(report)
+
+    rename = resolve_entities(entities)
+    if rename:
+        for e in entities:
+            if e.name in rename:
+                e.name = rename[e.name]
+        for r in relations:
+            if r.subject in rename:
+                r.subject = rename[r.subject]
+            if r.obj in rename:
+                r.obj = rename[r.obj]
+        logger.info("entity resolver renamed %d candidate(s) to existing canonical names", len(rename))
 
     guids_path = workspace / "input" / category / f"{slot}-guids.txt"
     guids = (guids_path.read_text().splitlines()
