@@ -1,6 +1,7 @@
 from unittest.mock import patch, MagicMock
 import json
-from newsparser.claude.runner import run_claude, ClaudeError
+import subprocess
+from newsparser.claude.runner import run_claude, run_claude_json, ClaudeError
 
 def test_run_claude_returns_stdout():
     mock_result = MagicMock(returncode=0, stdout="analysis output", stderr="")
@@ -47,6 +48,26 @@ def test_run_claude_omits_mcp_config_by_default():
         run_claude("query")
     cmd = mock_run.call_args[0][0]
     assert "--mcp-config" not in cmd
+
+def test_run_claude_raises_claude_error_on_timeout():
+    """subprocess.TimeoutExpired must surface as ClaudeError, not raw —
+    callers only catch ClaudeError/RuntimeError/OSError to fail safe."""
+    with patch("newsparser.claude.runner.subprocess.run",
+               side_effect=subprocess.TimeoutExpired(cmd="claude", timeout=30)):
+        try:
+            run_claude("query", timeout=30)
+            assert False, "should have raised"
+        except ClaudeError as e:
+            assert "30" in str(e)
+
+def test_run_claude_json_raises_claude_error_on_timeout():
+    with patch("newsparser.claude.runner.subprocess.run",
+               side_effect=subprocess.TimeoutExpired(cmd="claude", timeout=30)):
+        try:
+            run_claude_json("query", timeout=30)
+            assert False, "should have raised"
+        except ClaudeError as e:
+            assert "30" in str(e)
 
 def test_run_claude_json_returns_text_and_meta():
     from unittest.mock import MagicMock, patch

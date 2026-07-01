@@ -38,14 +38,17 @@ def run_claude(
     allowed_tools: list[str] | None = None,
     permission_mode: str | None = None,
 ) -> str:
-    """Invoke claude CLI headless and return stdout. Raises ClaudeError on failure."""
+    """Invoke claude CLI headless and return stdout. Raises ClaudeError on failure (including timeout)."""
     cmd = [_claude_bin(), "-p", prompt, "--output-format", "text", "--model", model]
     if mcp_config is not None:
         cmd += ["--mcp-config", mcp_config]
     if system_prompt is not None:
         cmd += ["--system-prompt", system_prompt]
     cmd += _extra_perm_args(allowed_tools, permission_mode)
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, cwd=_PROJECT_ROOT)
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, cwd=_PROJECT_ROOT)
+    except subprocess.TimeoutExpired as exc:
+        raise ClaudeError(f"claude timed out after {timeout}s") from exc
     if result.returncode != 0:
         raise ClaudeError(f"claude exited {result.returncode}: stderr={result.stderr[:500]} stdout={result.stdout[:500]}")
     return result.stdout
@@ -60,14 +63,17 @@ def run_claude_json(
     allowed_tools: list[str] | None = None,
     permission_mode: str | None = None,
 ) -> tuple[str, dict]:
-    """Like run_claude() but uses --output-format json. Returns (text, meta)."""
+    """Like run_claude() but uses --output-format json. Returns (text, meta). Raises ClaudeError on failure (including timeout)."""
     cmd = [_claude_bin(), "-p", prompt, "--output-format", "json", "--model", model]
     if mcp_config is not None:
         cmd += ["--mcp-config", mcp_config]
     if system_prompt is not None:
         cmd += ["--system-prompt", system_prompt]
     cmd += _extra_perm_args(allowed_tools, permission_mode)
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, cwd=_PROJECT_ROOT)
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, cwd=_PROJECT_ROOT)
+    except subprocess.TimeoutExpired as exc:
+        raise ClaudeError(f"claude timed out after {timeout}s") from exc
     if result.returncode != 0:
         raise ClaudeError(f"claude exited {result.returncode}: stderr={result.stderr[:500]}")
     try:

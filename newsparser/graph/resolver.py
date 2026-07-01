@@ -11,7 +11,9 @@ fragmentation, recoverable later) rather than risking a wrong merge (hard to
 undo once relations are combined into one node).
 """
 import logging
+import random
 import re
+import time
 from pathlib import Path
 
 from newsparser.claude.output_parser import EntityUpdate, RelationUpdate
@@ -25,6 +27,14 @@ logger = logging.getLogger(__name__)
 HAIKU_MODEL = "claude-haiku-4-5"
 
 _REGISTRY_LIMIT = 300
+# Haiku 4.5 doesn't support adaptive thinking (this is plain generation
+# latency — subprocess/CLI overhead plus a registry that can run to
+# _REGISTRY_LIMIT entries), so a single 30s attempt isn't reliable once the
+# registry grows. Retry a few times with backoff instead of failing the
+# whole label group on one slow call.
+_HAIKU_TIMEOUT = 60
+_RETRIES = 3
+_BACKOFF_BASE = 1.0  # seconds
 
 _SYSTEM_PROMPT = (
     "You match candidate entity names against a registry of existing entities "
@@ -88,6 +98,27 @@ def _parse_response(
     return rename
 
 
+def _run_claude_with_retry(prompt: str) -> str | None:
+    """Retry the resolver's Haiku call a few times with backoff before giving
+    up. Returns None (not raises) on exhaustion so the caller's existing
+    fail-safe fallback (keep names as-is) still applies."""
+    last_exc: Exception | None = None
+    for attempt in range(_RETRIES):
+        try:
+            return run_claude(prompt, timeout=_HAIKU_TIMEOUT, model=HAIKU_MODEL,
+                               system_prompt=_SYSTEM_PROMPT)
+        except (ClaudeError, RuntimeError, OSError) as exc:
+            last_exc = exc
+            if attempt == _RETRIES - 1:
+                break
+            wait = _BACKOFF_BASE * (2 ** attempt) + random.uniform(0, 0.25)
+            logger.warning("haiku resolver attempt %d failed (%s); retrying in %.2fs",
+                           attempt + 1, exc, wait)
+            time.sleep(wait)
+    logger.warning("haiku resolver gave up after %d attempts: %s", _RETRIES, last_exc)
+    return None
+
+
 def resolve_entities(entities: list[EntityUpdate]) -> dict[str, str]:
     """Return {original_name: existing_canonical_name} for candidates Haiku
     matched to an existing entity of the same label. Names absent from the
@@ -106,10 +137,9 @@ def resolve_entities(entities: list[EntityUpdate]) -> dict[str, str]:
         if not registry:
             continue
         prompt = _build_prompt(label, registry, candidates)
-        try:
-            raw = run_claude(prompt, timeout=30, model=HAIKU_MODEL, system_prompt=_SYSTEM_PROMPT)
-        except (ClaudeError, RuntimeError, OSError) as exc:
-            logger.warning("entity resolution failed for label=%s (%s); keeping names as-is", label, exc)
+        raw = _run_claude_with_retry(prompt)
+        if raw is None:
+            logger.warning("entity resolution failed for label=%s after retries; keeping names as-is", label)
             continue
         registry_names = {r["name"] for r in registry}
         rename.update(_parse_response(raw, candidates, registry_names))

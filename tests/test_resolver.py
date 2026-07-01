@@ -93,12 +93,25 @@ def test_resolve_entities_applies_rename_from_haiku_response():
     assert rename == {"테슬라": "Tesla"}
 
 
-def test_resolve_entities_tolerates_haiku_failure():
+def test_resolve_entities_tolerates_haiku_failure_after_retries_exhausted():
     with patch("newsparser.graph.resolver.fetch_registry",
                return_value=[{"name": "Tesla", "aliases": []}]), \
-         patch("newsparser.graph.resolver.run_claude", side_effect=ClaudeError("boom")):
+         patch("newsparser.graph.resolver.run_claude", side_effect=ClaudeError("boom")) as mock_run, \
+         patch("newsparser.graph.resolver.time.sleep"):
         rename = resolve_entities([_entity("테슬라")])
     assert rename == {}
+    assert mock_run.call_count == 3  # _RETRIES
+
+
+def test_resolve_entities_retries_then_succeeds():
+    with patch("newsparser.graph.resolver.fetch_registry",
+               return_value=[{"name": "Tesla", "aliases": []}]), \
+         patch("newsparser.graph.resolver.run_claude",
+               side_effect=[ClaudeError("timed out"), "C1: Tesla"]) as mock_run, \
+         patch("newsparser.graph.resolver.time.sleep"):
+        rename = resolve_entities([_entity("테슬라")])
+    assert rename == {"테슬라": "Tesla"}
+    assert mock_run.call_count == 2
 
 
 def test_resolve_entities_tolerates_registry_fetch_failure():
