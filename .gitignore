@@ -19,3 +19,6 @@ workspace/me/*.md
 
 # Claude Code local settings
 .claude/settings.local.json
+
+# Local state backups (backup.sh / restore.sh)
+backups/
