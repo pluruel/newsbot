@@ -23,8 +23,82 @@ Context for working on this codebase with Claude Code.
 
 ---
 
+## Deployment
+
+Three Compose services: `neo4j`, `poller` (`python -m newsparser.collector.run_poller`, a
+continuous 600s loop), `dispatcher` (`python -m newsparser.dispatcher`). `docker compose up -d`
+is the whole deploy — there is no `run.sh` and no system cron. See README "Deployment".
+
+Gotchas that bite, none obvious from the file tree:
+
+- **The real entrypoint is `newsparser/dispatcher.py`.** Two decoys ship in the image but are
+  unwired — don't run them: `newsparser/bot/dispatcher.py` (a dead `classify_message` enum) and
+  `newsparser/bot/telegram_bot.py` (a stale `__main__` launcher).
+- **All scheduling is APScheduler inside the dispatcher** (PTB JobQueue + `CronTrigger`), not
+  system cron. Cron strings + `tz="Asia/Seoul"` live in each `newsparser/bots/*/bot.py` `Cron(...)`;
+  `dispatcher._register_cron_jobs` registers them. Drop a `*/bot.py` with a `Cron` trigger and
+  `registry.load()` globs it in (`/reload` re-globs at runtime).
+- **The image is intentionally not self-contained.** The Dockerfile bakes only `.venv`,
+  `newsparser/`, and `sources.md`. `mcp.json`, `.claude/` (commands + settings.json + hooks), and
+  `CLAUDE.md` are excluded by `.dockerignore` and reach the dispatcher only through its `- .:/app`
+  bind mount (the CLI runs with `cwd=/app`). The poller mounts only `./workspace`, so it must
+  never need those files. Running the dispatcher image standalone breaks the tracker's MCP tools
+  and the `/cycle` `/reflect` `/weekly` slash commands.
+- **Build `./.venv` on the deploy host** (`uv sync`). The `.:/app` mount shadows the baked
+  `/app/.venv` with the host one, whose interpreter symlink points into the host uv cache — copy
+  it from elsewhere and `.venv/bin/python` dangles and the dispatcher won't start. (The MCP server,
+  spawned by the CLI as `.venv/bin/python -m newsparser.mcp_server`, has the same dependency.)
+- **`IS_SANDBOX=1` is required, not optional.** The container runs as root and calls `claude` with
+  `bypassPermissions`; the CLI hard-exits under root unless `IS_SANDBOX=1`.
+- The dispatcher drives the **host** Docker daemon via the mounted `/var/run/docker.sock`
+  (`docker.io` is baked in): the `service_status` / `restart_service` / `tail_logs` MCP tools and
+  `/rebuild` shell out to `docker`/`docker compose`. They no-op if the socket or CLI is absent.
+- Auth is the env token (`CLAUDE_CODE_OAUTH_TOKEN` from `claude setup-token`), so in-container
+  `~/.claude` is ephemeral and fine to lose. Persistent state is exactly `neo4j_data` + `workspace/`
+  (see State & Backups below).
+
+### Known deploy gaps (verified, not yet fixed)
+
+- **`TELEGRAM_CHAT_ID` missing from `.env.example`.** `newsparser/bot/sender.py` reads it via
+  `os.environ["TELEGRAM_CHAT_ID"]` for all report/alert delivery, but the template ships only
+  `ALLOWED_CHAT_ID` (inbound auth gate) + `TELEGRAM_ALERT_CHAT_ID`. Every send site is `try/except`,
+  so the system looks alive but delivers nothing. Add it to `.env.example`.
+- **`IS_SANDBOX` ships blank** in `.env.example` while the docs' old auto-export (`run.sh`) is gone
+  — must be set to `1` by hand or every `claude -p` call exits 1.
+- **`neo4j` has no `restart:` policy** while poller/dispatcher are `restart: unless-stopped`. After
+  a host/daemon reboot neo4j stays down and the apps crash-loop against an unreachable bolt. Add
+  `restart: unless-stopped` to neo4j in `docker-compose.yml`.
+- **`.claude/hooks` are dead.** `block_env_read.py` / `block_secret_bash.py` are never registered
+  under a `hooks` key in `settings.json`, so with `bypassPermissions` the .env-leak guard is off.
+- **`.gitignore` omits `workspace/market.db` and `workspace/state/`** (only `newsparser.db` is
+  ignored) — risk of committing binary state.
+- Minor: dispatcher/poller call `init_db()` but not `ensure_workspace()`, so `me/` interest /
+  manifesto / ignore templates aren't seeded until the first `/cycle` (non-crash — writers self-mkdir).
+
+---
+
+## State & Backups
+
+- All non-git runtime state = SQLite DBs + docs under `workspace/`, the Neo4j graph (docker volume), and `.env`. `backup.sh` / `restore.sh` snapshot and rebuild this as one gzip archive; see README "Backup & Restore".
+- `backup.sh` snapshots **every** `*.db` under `workspace/` automatically (via `find`), so adding a new SQLite DB there needs no script change.
+- **When the storage layout changes, update `backup.sh` AND `restore.sh` together, then re-verify.** Required whenever a change:
+  - adds state **outside** `workspace/`, or a new backend/volume (another graph store, Redis, a second docker volume);
+  - moves/renames a DB or changes a path convention (`DB_PATH`, `MARKET_DB_PATH`, `WORKSPACE_DIR`);
+  - adds new transient files to exclude, or new secrets beyond `.env`.
+- Re-verify after such a change (snapshot → restore into a throwaway dir → diff row counts):
+  `WORKSPACE_DIR=/tmp/ws ./backup.sh -o /tmp/bk && WORKSPACE_DIR=/tmp/ws2 ./restore.sh -y /tmp/bk/newsparser-backup-*.tar.gz`
+
+---
+
 ## Slash Command Behavior (runtime reference)
 
-What `/cycle` does at runtime is defined by `.claude/commands/cycle.md` — that is the source of truth, not this file.
+`/cycle`, `/weekly`, `/reflect` are **not** user-typed Telegram commands — they are prompts the
+scheduled jobs hand to `claude -p` (e.g. `run_cycle.py` runs `run_claude("/cycle {slot} {category}")`),
+resolved from `.claude/commands/*.md`. That `.md` is the source of truth for behavior, not this file.
 
-`/tracker` is the catch-all for free-text Telegram messages. The bot dispatcher in `newsparser/bot/dispatcher.py` routes anything that isn't `/cycle`, `/weekly`, or `/reflect` to `run_tracker()`. The tracker prompt and tool list live in `newsparser/bot/tracker.py`.
+Inbound Telegram routing lives in `newsparser/dispatcher.py`: `registry.telegram_bots()` regex-matches
+each bot's `TelegramMatch` trigger against the message; the tracker bot's catch-all `.*` (sorted last)
+handles everything else. The only true user-typed commands are `/reload` (rebuild the bot registry — a
+`CommandHandler` in `dispatcher.py`) and `/rebuild` (rebuild the image — special-cased inside
+`newsparser/bots/tracker/bot.py`). The tracker prompt and MCP tool list live in `newsparser/bot/tracker.py`
+(invoked via `bots/tracker/bot.py`); `newsparser/bot/dispatcher.py`'s `classify_message` is a dead leftover.
