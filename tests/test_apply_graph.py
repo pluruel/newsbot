@@ -241,7 +241,7 @@ def test_apply_graph_renames_entities_and_relations_via_resolver(tmp_path):
     (ws / "cycles" / "tech" / "2026-05-08-12.md").write_text(SAMPLE_REPORT_RENAMEABLE)
 
     with patch("newsparser.scripts.apply_graph.apply_graph_updates") as mock_apply, \
-         patch("newsparser.scripts.apply_graph.resolve_entities",
+         patch("newsparser.graph.resolver.resolve_entities",
                return_value={"테슬라": "Tesla"}):
         script.main(["apply_graph.py", "tech", "2026-05-08-12"])
 
@@ -255,7 +255,7 @@ def test_apply_graph_resolver_noop_when_no_renames(tmp_path):
     (ws / "cycles" / "tech" / "2026-05-08-12.md").write_text(SAMPLE_REPORT)
 
     with patch("newsparser.scripts.apply_graph.apply_graph_updates") as mock_apply, \
-         patch("newsparser.scripts.apply_graph.resolve_entities", return_value={}):
+         patch("newsparser.graph.resolver.resolve_entities", return_value={}):
         script.main(["apply_graph.py", "tech", "2026-05-08-12"])
 
     entities, relations = mock_apply.call_args.args

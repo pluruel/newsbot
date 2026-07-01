@@ -1,17 +1,23 @@
 from unittest.mock import MagicMock, patch
 
-from newsparser.claude.output_parser import EntityUpdate
+from newsparser.claude.output_parser import EntityUpdate, RelationUpdate
 from newsparser.claude.runner import ClaudeError
 from newsparser.graph.resolver import (
     _build_prompt,
     _parse_response,
     fetch_registry,
+    prepare_graph_updates,
     resolve_entities,
 )
 
 
 def _entity(name, label="Company", aliases=None):
     return EntityUpdate(op="NEW", label=label, name=name, aliases=aliases or [])
+
+
+def _relation(subject, obj, predicate="ANNOUNCED"):
+    return RelationUpdate(op="NEW", subject=subject, predicate=predicate, obj=obj,
+                           confidence=0.9, impact_score=0.8)
 
 
 def test_parse_response_maps_matched_candidate():
@@ -114,3 +120,48 @@ def test_fetch_registry_queries_by_label(monkeypatch):
     assert rows == [{"name": "Tesla", "aliases": ["TSLA"]}]
     args, _ = fake_session.run.call_args
     assert "Company" in args[0]
+
+
+def test_prepare_graph_updates_renames_entities_and_relations(tmp_path):
+    entities = [_entity("테슬라")]
+    relations = [_relation("테슬라", "Robotaxi")]
+    with patch("newsparser.graph.resolver.resolve_entities",
+               return_value={"테슬라": "Tesla"}):
+        entities, relations = prepare_graph_updates(entities, relations, tmp_path)
+    assert entities[0].name == "Tesla"
+    assert relations[0].subject == "Tesla"
+
+
+def test_prepare_graph_updates_noop_when_no_rename(tmp_path):
+    entities = [_entity("OpenAI")]
+    relations = [_relation("OpenAI", "GPT-5")]
+    with patch("newsparser.graph.resolver.resolve_entities", return_value={}):
+        entities, relations = prepare_graph_updates(entities, relations, tmp_path)
+    assert entities[0].name == "OpenAI"
+    assert relations[0].subject == "OpenAI"
+
+
+def test_prepare_graph_updates_drops_ignored_entities_and_relations(tmp_path):
+    (tmp_path / "me").mkdir(parents=True)
+    (tmp_path / "me" / "ignore.md").write_text(
+        "| 종류 | 대상 | 추가일 | 메모 |\n"
+        "|------|------|--------|------|\n"
+        "| entity | GPT-5 | 2026-06-28 |  |\n",
+        encoding="utf-8",
+    )
+    entities = [_entity("OpenAI"), _entity("GPT-5", label="Event")]
+    relations = [_relation("OpenAI", "GPT-5")]
+    with patch("newsparser.graph.resolver.resolve_entities", return_value={}):
+        entities, relations = prepare_graph_updates(entities, relations, tmp_path)
+    assert all(e.name != "GPT-5" for e in entities)
+    assert relations == []
+    assert any(e.name == "OpenAI" for e in entities)
+
+
+def test_prepare_graph_updates_no_ignore_file_keeps_everything(tmp_path):
+    entities = [_entity("OpenAI"), _entity("GPT-5", label="Event")]
+    relations = [_relation("OpenAI", "GPT-5")]
+    with patch("newsparser.graph.resolver.resolve_entities", return_value={}):
+        entities, relations = prepare_graph_updates(entities, relations, tmp_path)
+    assert len(entities) == 2
+    assert len(relations) == 1

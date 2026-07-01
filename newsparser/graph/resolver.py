@@ -12,10 +12,12 @@ undo once relations are combined into one node).
 """
 import logging
 import re
+from pathlib import Path
 
-from newsparser.claude.output_parser import EntityUpdate
+from newsparser.claude.output_parser import EntityUpdate, RelationUpdate
 from newsparser.claude.runner import ClaudeError, run_claude
 from newsparser.graph.neo4j_client import get_driver
+from newsparser.ignore import load_ignore
 
 logger = logging.getLogger(__name__)
 
@@ -113,3 +115,43 @@ def resolve_entities(entities: list[EntityUpdate]) -> dict[str, str]:
         rename.update(_parse_response(raw, candidates, registry_names))
 
     return rename
+
+
+def prepare_graph_updates(
+    entities: list[EntityUpdate],
+    relations: list[RelationUpdate],
+    workspace: Path,
+) -> tuple[list[EntityUpdate], list[RelationUpdate]]:
+    """Resolve entity names against the existing graph registry, then drop
+    ignore-listed entities/relations. Shared by apply_graph.py (per-cycle)
+    and restore_graph_from_cycles.py (full replay) so both take the same
+    path onto the graph — a replay that skipped this would just reproduce
+    whatever fragmentation already exists."""
+    rename = resolve_entities(entities)
+    if rename:
+        for e in entities:
+            if e.name in rename:
+                e.name = rename[e.name]
+        for r in relations:
+            if r.subject in rename:
+                r.subject = rename[r.subject]
+            if r.obj in rename:
+                r.obj = rename[r.obj]
+        logger.info("entity resolver renamed %d candidate(s) to existing canonical names", len(rename))
+
+    ignore = load_ignore(workspace)
+    if ignore.entries:
+        before_e, before_r = len(entities), len(relations)
+        ignored = {e.name for e in entities
+                   if ignore.matches_entity(e.name, e.aliases)}
+        entities = [e for e in entities if e.name not in ignored]
+        relations = [r for r in relations
+                     if not (r.subject in ignored or r.obj in ignored
+                             or ignore.matches_entity(r.subject, [])
+                             or ignore.matches_entity(r.obj, []))]
+        dropped_e, dropped_r = before_e - len(entities), before_r - len(relations)
+        if dropped_e or dropped_r:
+            logger.info("ignore filter dropped %d entities, %d relations",
+                        dropped_e, dropped_r)
+
+    return entities, relations

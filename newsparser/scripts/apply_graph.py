@@ -8,10 +8,9 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from newsparser.claude.output_parser import parse_graph_updates
-from newsparser.graph.resolver import resolve_entities
+from newsparser.graph.resolver import prepare_graph_updates
 from newsparser.graph.writer import apply_graph_updates
 from newsparser.market.annotate import maybe_annotate_impacts
-from newsparser.ignore import load_ignore
 
 logger = logging.getLogger(__name__)
 
@@ -51,42 +50,13 @@ def main(argv: list[str] | None = None) -> None:
     report = report_path.read_text(encoding="utf-8")
     entities, relations = parse_graph_updates(report)
 
-    rename = resolve_entities(entities)
-    if rename:
-        for e in entities:
-            if e.name in rename:
-                e.name = rename[e.name]
-        for r in relations:
-            if r.subject in rename:
-                r.subject = rename[r.subject]
-            if r.obj in rename:
-                r.obj = rename[r.obj]
-        logger.info("entity resolver renamed %d candidate(s) to existing canonical names", len(rename))
-
     guids_path = workspace / "input" / category / f"{slot}-guids.txt"
     guids = (guids_path.read_text().splitlines()
              if guids_path.exists() else [])
     guids = [g.strip() for g in guids if g.strip()]
     _resolve_source_indices(relations, guids)
 
-    ignore = load_ignore(workspace)
-    if ignore.entries:
-        before_e, before_r = len(entities), len(relations)
-        # Names of entities dropped by the ignore filter (incl. alias-only hits).
-        # Relations are dropped if either endpoint is one of those names OR the
-        # endpoint name itself matches a target — so an alias-matched entity
-        # can't keep its relations (which reference it by canonical_name).
-        ignored = {e.name for e in entities
-                   if ignore.matches_entity(e.name, e.aliases)}
-        entities = [e for e in entities if e.name not in ignored]
-        relations = [r for r in relations
-                     if not (r.subject in ignored or r.obj in ignored
-                             or ignore.matches_entity(r.subject, [])
-                             or ignore.matches_entity(r.obj, []))]
-        dropped_e, dropped_r = before_e - len(entities), before_r - len(relations)
-        if dropped_e or dropped_r:
-            logger.info("ignore filter dropped %d entities, %d relations",
-                        dropped_e, dropped_r)
+    entities, relations = prepare_graph_updates(entities, relations, workspace)
 
     cycle_id = f"{category}-{slot}"
     apply_graph_updates(entities, relations, cycle_id=cycle_id, category=category)
