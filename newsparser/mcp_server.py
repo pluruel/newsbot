@@ -298,6 +298,101 @@ def search_articles(keyword: str, category: str | None = None, n: int = 5) -> st
     return "\n".join(out)
 
 
+# --- Job tools ---------------------------------------------------------------
+# Background jobs (cycle/weekly/reflect) run inside the dispatcher process; it
+# mirrors their state to workspace/jobs.json (see bots/core/jobs.py). These tools
+# read that file — they run in a separate process and cannot touch the
+# dispatcher's memory.
+
+
+def _fmt_elapsed(seconds: int) -> str:
+    m, s = divmod(max(0, int(seconds)), 60)
+    if m >= 60:
+        h, m = divmod(m, 60)
+        return f"{h}시간 {m}분"
+    if m:
+        return f"{m}분 {s}초"
+    return f"{s}초"
+
+
+@mcp.tool()
+def job_status() -> str:
+    """현재 실행 중인 백그라운드 작업(cycle/weekly/reflect 등)과 최근 완료 이력.
+    사용자가 "지금 뭐 돌아가?", "cycle 잘 되고 있어?" 같이 작업 진행 상황을 물으면 호출한다.
+    running 항목의 activity.idle_s(마지막 활동 후 경과 초)가 크면 작업이 멈춰 있을 가능성이 있다."""
+    path = _workspace() / "jobs.json"
+    if not path.exists():
+        return "작업 상태 파일(jobs.json)이 없다 — 아직 실행된 작업이 없거나 디스패처가 구버전이다."
+    try:
+        state = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError) as e:
+        return f"jobs.json 읽기 실패: {e}"
+
+    lines: list[str] = [f"상태 갱신 시각: {state.get('updated_at', '?')}"]
+    running = state.get("running", [])
+    if running:
+        lines.append("\n실행 중:")
+        for j in running:
+            line = (f"• #{j['id']} {j['bot']} ({j['trigger']}) — "
+                    f"{j['started_at']} 시작, {_fmt_elapsed(j.get('elapsed_s', 0))} 경과")
+            act = j.get("activity")
+            if act:
+                line += (f"\n  마지막 활동: {act['desc']} — {_fmt_elapsed(act.get('idle_s', 0))} 전"
+                         f" (턴 {act.get('turns', '?')}, pid {act.get('pid', '?')})")
+            else:
+                line += "\n  (활성 claude 서브프로세스 없음 — python 단계 실행 중일 수 있음)"
+            lines.append(line)
+    else:
+        lines.append("\n실행 중인 작업 없음.")
+    recent = state.get("recent", [])
+    if recent:
+        lines.append("\n최근 완료:")
+        for j in recent[:5]:
+            line = (f"• #{j['id']} {j['bot']} — {j['status']}, "
+                    f"{j.get('finished_at', '?')} 종료, {_fmt_elapsed(j.get('elapsed_s', 0))} 소요")
+            if j.get("error"):
+                line += f"\n  error: {j['error'][:200]}"
+            lines.append(line)
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def kill_job(job_id: int) -> str:
+    """실행 중인 백그라운드 작업을 강제 중단한다. job_status()로 id를 확인하고,
+    사용자에게 확인을 받은 뒤에만 호출한다."""
+    ws = _workspace()
+    path = ws / "jobs.json"
+    try:
+        state = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError) as e:
+        return f"jobs.json 읽기 실패: {e}"
+    job = next((j for j in state.get("running", []) if j.get("id") == job_id), None)
+    if job is None:
+        return f"실행 중인 작업 중 id={job_id}가 없다. job_status()로 확인해라."
+
+    # Mark the kill as intentional first, so the dispatcher reports 🛑 중단 (not ❌ 실패).
+    kill_path = ws / "jobs.kill"
+    try:
+        ids = json.loads(kill_path.read_text())
+    except (OSError, json.JSONDecodeError):
+        ids = []
+    if job_id not in ids:
+        ids.append(job_id)
+    kill_path.write_text(json.dumps(ids))
+
+    pid = (job.get("activity") or {}).get("pid")
+    if pid is None:
+        return (f"#{job_id} {job['bot']}: 지금 활성 claude 서브프로세스가 없어 즉시 중단할 수 없다 "
+                "(python 단계 실행 중). 다음 claude 호출이 끝나기를 기다리거나 dispatcher를 재시작해라.")
+    try:
+        os.kill(int(pid), 9)
+    except ProcessLookupError:
+        return f"#{job_id} {job['bot']}: pid {pid} 프로세스가 이미 종료됐다."
+    except OSError as e:
+        return f"#{job_id} {job['bot']}: kill 실패 — {e}"
+    return f"#{job_id} {job['bot']} 중단 요청 완료 (pid {pid} kill). 디스패처가 🛑 메시지로 확인해줄 것이다."
+
+
 # --- Ops tools -------------------------------------------------------------
 
 _ALLOWED_SERVICES = {"neo4j", "poller", "dispatcher"}

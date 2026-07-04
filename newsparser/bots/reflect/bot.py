@@ -9,8 +9,6 @@ _KST = ZoneInfo("Asia/Seoul")
 
 async def run(ctx: Context) -> None:
     date = datetime.now(_KST).strftime("%Y-%m-%d")
-    if ctx.message:
-        await ctx.telegram.send(f"⚙️ /reflect 시작: {date}")
     await ctx.run_in_thread(_run_reflect, date)
     if ctx.message:
         await ctx.telegram.send("✅ Reflect 완료")
@@ -23,4 +21,5 @@ BOT = Bot(
         TelegramMatch(r"^/reflect\b"),
     ],
     run=run,
+    background=True,
 )

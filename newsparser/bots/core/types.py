@@ -26,3 +26,6 @@ class Bot:
     triggers: list[Trigger]
     run: Callable[["Context"], Awaitable[None]]
     enabled: bool = True
+    # Long-running bots run as background jobs (JobManager) instead of inline,
+    # so the dispatcher stays responsive while they work.
+    background: bool = False

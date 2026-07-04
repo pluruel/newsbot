@@ -1,6 +1,7 @@
 import logging
 import os
 import re
+import time
 import traceback
 from pathlib import Path
 
@@ -10,6 +11,7 @@ from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandl
 from apscheduler.triggers.cron import CronTrigger
 
 from newsparser.bots.core.context import Context, TelegramSender
+from newsparser.bots.core.jobs import JobManager
 from newsparser.bots.core.registry import BotRegistry
 from newsparser.bots.core.types import Bot, Cron
 
@@ -18,6 +20,7 @@ logger = logging.getLogger(__name__)
 
 _WORKSPACE = Path(os.environ.get("WORKSPACE_DIR", "workspace"))
 registry = BotRegistry()
+jobs = JobManager(_WORKSPACE)
 
 
 def _make_ctx(bot_name: str, ptb_bot, chat_id: str | None = None, message=None) -> Context:
@@ -66,6 +69,12 @@ async def _handle_message(update: Update, ptb_ctx: ContextTypes.DEFAULT_TYPE) ->
         return
 
     ctx = _make_ctx(matched.name, ptb_ctx.bot, chat_id=chat_id, message=update.message)
+    if matched.background:
+        if jobs.start(matched, ctx, trigger="telegram") is None:
+            running = jobs.running_for(matched.name)
+            elapsed = int(time.time() - running.started_at) // 60 if running else 0
+            await ctx.telegram.send(f"⚠️ {matched.name} 이미 실행 중 ({elapsed}분 경과)")
+        return
     await _run_with_guard(matched, ctx)
 
 
@@ -106,7 +115,8 @@ async def _handle_reload(update: Update, ptb_ctx: ContextTypes.DEFAULT_TYPE) -> 
 def _make_cron_callback(bot: Bot):
     async def _cb(ptb_ctx: ContextTypes.DEFAULT_TYPE) -> None:
         ctx = _make_ctx(bot.name, ptb_ctx.bot)
-        await _run_with_guard(bot, ctx)
+        if jobs.start(bot, ctx, trigger="cron") is None:
+            logger.warning("Cron trigger skipped — %s already running", bot.name)
     return _cb
 
 
@@ -134,6 +144,7 @@ def start() -> None:
         .token(token)
         .read_timeout(30)
         .connect_timeout(10)
+        .concurrent_updates(True)
         .build()
     )
 
