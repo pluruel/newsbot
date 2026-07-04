@@ -3,7 +3,7 @@ import logging
 import os
 import time
 from collections import defaultdict
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -60,9 +60,9 @@ def run() -> None:
         # 볼륨 스파이크 감지
         spiking = detect_spike(recent, BASELINE)
         cooldown = timedelta(hours=SPIKE_COOLDOWN_HOURS)
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         for source in spiking:
-            if now - _spike_alerted_at.get(source, datetime.min) < cooldown:
+            if now - _spike_alerted_at.get(source, datetime.min.replace(tzinfo=timezone.utc)) < cooldown:
                 continue
             source_articles = [a for a in recent if a["source"] == source]
             titles = "\n".join(f"· {a['title'][:60]}" for a in source_articles[:3])

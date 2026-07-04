@@ -1,5 +1,5 @@
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 
 import feedparser
 
@@ -26,7 +26,7 @@ def poll_source(source: Source) -> list[dict]:
 
         title = getattr(entry, "title", "")
         url = getattr(entry, "link", "")
-        published = getattr(entry, "published", datetime.utcnow().isoformat())
+        published = getattr(entry, "published", datetime.now(timezone.utc).isoformat())
         summary = getattr(entry, "summary", "")
 
         if source.paywall:
@@ -37,7 +37,7 @@ def poll_source(source: Source) -> list[dict]:
         insert_article(guid, source.name, title, url, published, body,
                        category=source.category)
         mark_seen(guid)
-        new_articles.append({"guid": guid, "source": source.name, "title": title, "fetched_at": datetime.utcnow().isoformat()})
+        new_articles.append({"guid": guid, "source": source.name, "title": title, "fetched_at": datetime.now(timezone.utc).isoformat()})
         logger.info("New article: [%s] %s", source.name, title)
 
     return new_articles
