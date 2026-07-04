@@ -216,6 +216,11 @@ class JobManager:
                 "idle_s": int(time.time() - activity["last_event_at"]),
                 "pid": activity["pid"],
             }
+            # Surface allowlist gaps: a denied tool call means the whitelist is
+            # missing a rule — visible here (and via job_status) instead of a run
+            # that silently produced degraded output.
+            if activity.get("denials"):
+                d["activity"]["denials"] = activity["denials"]
         return d
 
     def persist(self) -> None:

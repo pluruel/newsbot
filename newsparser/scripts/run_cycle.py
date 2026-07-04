@@ -12,6 +12,7 @@ load_dotenv()
 
 from newsparser.bot.sender import send_long_message
 from newsparser.claude.input_builder import build_input_file
+from newsparser.claude.policy import CYCLE_TOOLS
 from newsparser.claude.runner import ClaudeKilled, run_claude
 from newsparser.classifier import classify_article, CATEGORIES
 from newsparser.market import snapshot as market_snapshot
@@ -243,7 +244,10 @@ def _run_for_category(slot: str, category: str, workspace: Path) -> None:
         existing = input_path.read_text(encoding="utf-8")
         input_path.write_text(snapshot_block + "\n\n" + existing, encoding="utf-8")
 
-    run_claude(f"/cycle {slot} {category}")
+    # Input file is scraped article text — run with the cycle allowlist so a
+    # prompt-injected instruction can't reach arbitrary Bash/network tools.
+    run_claude(f"/cycle {slot} {category}",
+               allowed_tools=CYCLE_TOOLS, permission_mode="default")
     logger.info("[%s] Claude cycle complete", category)
 
     # Safety net: if the slash command's mark_processed.py call was skipped or failed,

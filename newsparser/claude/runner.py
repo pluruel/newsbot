@@ -1,6 +1,8 @@
 import itertools
 import json
+import logging
 import os
+import re
 import subprocess
 import threading
 import time
@@ -8,6 +10,8 @@ from collections import deque
 from contextvars import ContextVar
 from pathlib import Path
 from typing import Callable
+
+logger = logging.getLogger(__name__)
 
 # Project root: two levels above this file (newsparser/claude/runner.py → project root)
 _PROJECT_ROOT = Path(__file__).parent.parent.parent
@@ -46,7 +50,7 @@ def _claude_bin() -> str:
 class _Run:
     __slots__ = ("run_id", "job_id", "pid", "prompt_head", "started_at",
                  "last_event_at", "activity", "turns", "proc", "killed",
-                 "_last_notify")
+                 "denials", "_last_notify")
 
     def __init__(self, run_id: int, job_id: int | None, proc: subprocess.Popen, prompt: str):
         self.run_id = run_id
@@ -59,6 +63,7 @@ class _Run:
         self.activity = "시작 대기"
         self.turns = 0
         self.killed = False
+        self.denials: list[str] = []
         self._last_notify = 0.0
 
 
@@ -81,6 +86,7 @@ def active_runs() -> list[dict]:
             "last_event_at": r.last_event_at,
             "activity": r.activity,
             "turns": r.turns,
+            "denials": list(r.denials),
         }
         for r in runs
     ]
@@ -101,6 +107,31 @@ def kill_job(job_id: int) -> int:
     return len(runs)
 
 
+# Headless runs auto-deny tools outside the allowlist; the model just sees an
+# error tool_result and moves on. Detect those so a whitelist gap surfaces in
+# logs/jobs.json instead of silently degrading output quality.
+_DENIAL_RE = re.compile(
+    r"permission|denied|not allowed|haven't granted|requires approval", re.IGNORECASE)
+
+
+def _extract_denials(event: dict) -> list[str]:
+    if event.get("type") != "user":
+        return []
+    blocks = (event.get("message") or {}).get("content") or []
+    denials: list[str] = []
+    for b in blocks:
+        if not (isinstance(b, dict) and b.get("type") == "tool_result" and b.get("is_error")):
+            continue
+        content = b.get("content")
+        if isinstance(content, list):
+            text = " ".join(c.get("text", "") for c in content if isinstance(c, dict))
+        else:
+            text = str(content or "")
+        if _DENIAL_RE.search(text):
+            denials.append(text.strip()[:200])
+    return denials
+
+
 def _describe_event(event: dict) -> str | None:
     if event.get("type") != "assistant":
         return None
@@ -116,6 +147,10 @@ def _note_event(run: _Run, event: dict) -> None:
     run.last_event_at = time.time()
     if event.get("type") == "assistant":
         run.turns += 1
+    for text in _extract_denials(event):
+        run.denials.append(text)
+        logger.warning("Tool call denied (run %d, job %s, prompt %r): %s",
+                       run.run_id, run.job_id, run.prompt_head, text)
     desc = _describe_event(event)
     if desc:
         run.activity = desc

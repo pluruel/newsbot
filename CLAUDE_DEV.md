@@ -25,42 +25,38 @@ Context for working on this codebase with Claude Code.
 
 ## Deployment
 
-Three Compose services: `neo4j`, `poller` (`python -m newsparser.collector.run_poller`, a
-continuous 600s loop), `dispatcher` (`python -m newsparser.dispatcher`). `docker compose up -d`
-is the whole deploy — there is no `run.sh` and no system cron. See README "Deployment".
+Two host systemd units — `newsbot-poller` (`python -m newsparser.collector.run_poller`, a
+continuous 600s loop) and `newsbot-dispatcher` (`python -m newsparser.dispatcher`) — plus one
+container: `neo4j` (the only compose service, ports bound to 127.0.0.1). Provisioning is
+`sudo ./deploy/install.sh`; there is no Dockerfile, no image build, no system cron.
+See README "Deployment" and `plan-host-migration.md`.
 
 Gotchas that bite, none obvious from the file tree:
 
-- **The real entrypoint is `newsparser/dispatcher.py`.** Two decoys ship in the image but are
-  unwired — don't run them: `newsparser/bot/dispatcher.py` (a dead `classify_message` enum) and
-  `newsparser/bot/telegram_bot.py` (a stale `__main__` launcher).
+- **The real entrypoint is `newsparser/dispatcher.py`.** A decoy ships in the tree but is
+  unwired — don't run it: `newsparser/bot/dispatcher.py` (a dead `classify_message` enum).
 - **All scheduling is APScheduler inside the dispatcher** (PTB JobQueue + `CronTrigger`), not
   system cron. Cron strings + `tz="Asia/Seoul"` live in each `newsparser/bots/*/bot.py` `Cron(...)`;
   `dispatcher._register_cron_jobs` registers them. Drop a `*/bot.py` with a `Cron` trigger and
   `registry.load()` globs it in (`/reload` re-globs at runtime).
-- **The image bakes its own `.venv`, but not `mcp.json`/`.claude/`/`CLAUDE.md`.** The Dockerfile
-  builds `.venv` at image build time (`uv sync --frozen`) and copies `newsparser/` + `sources.md` —
-  fully self-contained for the interpreter, independent of the host. `mcp.json`, `.claude/`
-  (commands + settings.json + hooks), and `CLAUDE.md` are excluded by `.dockerignore` and reach the
-  dispatcher only via individual bind mounts in `docker-compose.yml`
-  (`./mcp.json`, `./.claude`, `./CLAUDE.md`) — there's no `.:/app` full-repo mount (dropped since
-  PR #12's "ghcr로 경로 변경" / "배포방식 개선"). The poller mounts only `./workspace`, so it must
-  never need those files. Running the dispatcher image standalone (without those three mounts)
-  breaks the tracker's MCP tools and the `/cycle` `/reflect` `/weekly` slash commands.
-- **Host `.venv` is NOT needed for deploy.** Before PR #12 the dispatcher bind-mounted the whole
-  repo (`.:/app`), which shadowed the image's baked `/app/.venv` with the host one — a copied
-  `.venv` with a dangling interpreter symlink would keep the dispatcher (and its
-  `.venv/bin/python -m newsparser.mcp_server` MCP server) from starting, so `uv sync` on the deploy
-  host was mandatory. That full mount is gone now, so the image's own venv is what runs in both
-  services. `uv sync` on the host is only for local dev (pytest, ad hoc scripts) — see
-  "Development Environment" above.
-- **`IS_SANDBOX=1` is required, not optional.** The container runs as root and calls `claude` with
-  `bypassPermissions`; the CLI hard-exits under root unless `IS_SANDBOX=1`.
-- The dispatcher drives the **host** Docker daemon via the mounted `/var/run/docker.sock`
-  (`docker.io` is baked in): the `service_status` / `restart_service` / `tail_logs` MCP tools and
-  `/rebuild` shell out to `docker`/`docker compose`. They no-op if the socket or CLI is absent.
-- Auth is the env token (`CLAUDE_CODE_OAUTH_TOKEN` from `claude setup-token`), so in-container
-  `~/.claude` is ephemeral and fine to lose. Persistent state is exactly `neo4j_data` + `workspace/`
+- **Everything runs the host `.venv` directly** (`WorkingDirectory=<repo>`, `ExecStart=
+  <repo>/.venv/bin/python`), so `uv sync` on the deploy host is mandatory and code changes are
+  live after a unit restart — no rebuild step. `mcp.json`'s `.venv/bin/python` is relative, which
+  is why `WorkingDirectory` must stay the repo root.
+- **Privileged ops go through `/usr/local/sbin/newsbot-ops`** (root-owned, sudoers NOPASSWD,
+  installed by `deploy/install.sh`): the `service_status` / `restart_service` / `tail_logs` MCP
+  tools shell out to `sudo -n newsbot-ops`. The repo copy `deploy/newsbot-ops` is a template —
+  editing it does nothing until a human re-runs install.sh (that's the security gate).
+  `restart dispatcher` is detached (~5s delay + import guard) so a claude run can trigger it and
+  still deliver its reply.
+- **systemd gives units a minimal PATH** — the dispatcher unit sets `CLAUDE_BIN` (wired by
+  install.sh) so `runner.py` finds the CLI.
+- **Headless tool policy lives in `newsparser/claude/policy.py`** (see `plan-tool-policy.md`):
+  news-tainted runs (cycle/reflect/weekly, classifier, resolver) get `permission_mode="default"`
+  + allowlists; only the tracker (trusted telegram input) runs `bypassPermissions`. Denied tool
+  calls are logged by `runner.py` and surface in `workspace/jobs.json` under `activity.denials`.
+- Auth is the env token (`CLAUDE_CODE_OAUTH_TOKEN` from `claude setup-token`) loaded via
+  `EnvironmentFile=.env`. Persistent state is exactly `neo4j_data` + `workspace/`
   (see State & Backups below).
 
 ### Known deploy gaps (verified, not yet fixed)
@@ -69,13 +65,9 @@ Gotchas that bite, none obvious from the file tree:
   `os.environ["TELEGRAM_CHAT_ID"]` for all report/alert delivery, but the template ships only
   `ALLOWED_CHAT_ID` (inbound auth gate) + `TELEGRAM_ALERT_CHAT_ID`. Every send site is `try/except`,
   so the system looks alive but delivers nothing. Add it to `.env.example`.
-- **`IS_SANDBOX` ships blank** in `.env.example` while the docs' old auto-export (`run.sh`) is gone
-  — must be set to `1` by hand or every `claude -p` call exits 1.
-- **`neo4j` has no `restart:` policy** while poller/dispatcher are `restart: unless-stopped`. After
-  a host/daemon reboot neo4j stays down and the apps crash-loop against an unreachable bolt. Add
-  `restart: unless-stopped` to neo4j in `docker-compose.yml`.
 - **`.claude/hooks` are dead.** `block_env_read.py` / `block_secret_bash.py` are never registered
-  under a `hooks` key in `settings.json`, so with `bypassPermissions` the .env-leak guard is off.
+  under a `hooks` key in `settings.json`. Partially superseded by the `permissions.deny` Read rules
+  (`.env`, `~/.claude`, backups), but registering them would add a second layer for Bash-based leaks.
 - **`.gitignore` omits `workspace/market.db` and `workspace/state/`** (only `newsparser.db` is
   ignored) — risk of committing binary state.
 - Minor: dispatcher/poller call `init_db()` but not `ensure_workspace()`, so `me/` interest /

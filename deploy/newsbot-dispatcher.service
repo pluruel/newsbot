@@ -1,0 +1,24 @@
+# Template — installed by deploy/install.sh with @USER@/@ROOT@/@CLAUDE_BIN@ substituted.
+[Unit]
+Description=newsbot dispatcher (telegram + cron + jobs + claude subprocesses)
+After=network-online.target docker.service
+Wants=network-online.target
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
+[Service]
+User=@USER@
+WorkingDirectory=@ROOT@
+EnvironmentFile=@ROOT@/.env
+# Fallbacks when .env doesn't set them. NOTE: EnvironmentFile overrides Environment,
+# so a leftover compose-era NEO4J_URI=bolt://neo4j:7687 in .env must be removed.
+Environment=NEO4J_URI=bolt://localhost:7687
+Environment=WORKSPACE_DIR=@ROOT@/workspace
+# systemd units get a minimal PATH; runner.py resolves the claude CLI via CLAUDE_BIN.
+Environment=CLAUDE_BIN=@CLAUDE_BIN@
+ExecStart=@ROOT@/.venv/bin/python -m newsparser.dispatcher
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

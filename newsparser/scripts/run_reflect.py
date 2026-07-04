@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from newsparser.bot.sender import send_long_message
+from newsparser.claude.policy import TAINTED_FILE_TOOLS
 from newsparser.claude.runner import run_claude
 from newsparser.scheduler.workspace import ensure_workspace
 
@@ -20,7 +21,9 @@ def main(date: str | None = None) -> None:
     ensure_workspace()
     # Failures propagate to the JobManager, which notifies ❌ (or 🛑 on kill) —
     # swallowing them here would make the job look successful.
-    stdout = run_claude(f"/reflect {date}")
+    # Cycle reports are news-derived (taint propagates) — file tools only.
+    stdout = run_claude(f"/reflect {date}",
+                        allowed_tools=TAINTED_FILE_TOOLS, permission_mode="default")
     if stdout.strip():
         send_long_message(f"[REFLECT] {stdout}")
 
