@@ -135,6 +135,12 @@ sudo ./deploy/install.sh    # systemd units + /usr/local/sbin/newsbot-ops + sudo
 sudo systemctl start newsbot-poller newsbot-dispatcher
 ```
 
+`install.sh` validates `.env` before installing anything and exits with an error if
+`ALLOWED_CHAT_ID` is missing or a compose-era `NEO4J_URI=bolt://neo4j:7687` is still
+present — fix `.env` and re-run. The dispatcher unit waits for the neo4j bolt port
+(`ExecStartPre`, up to 120s) before starting, so `systemctl start` right after
+`docker compose up -d` is safe even on a cold boot.
+
 Code deploys are `git pull && uv sync` + `sudo -n newsbot-ops restart dispatcher`
 (detached restart with an import guard — safe to trigger from inside a claude run).
 `.venv` must be built on the deploy host: a copied one has a dangling interpreter
@@ -151,15 +157,15 @@ re-install is the intended security gate.
 |---|---|
 | `TELEGRAM_BOT_TOKEN` | BotFather token |
 | `TELEGRAM_CHAT_ID` | where reports/alerts are **sent** (without it the bot runs but delivers nothing) |
-| `ALLOWED_CHAT_ID` | only this chat may command the bot (inbound auth gate) |
+| `ALLOWED_CHAT_ID` | only this chat may command the bot (inbound auth gate, fail-closed — the dispatcher refuses to start without it) |
 | `TELEGRAM_ALERT_CHAT_ID` | target for poller alerts |
 | `CLAUDE_CODE_OAUTH_TOKEN` | from `claude setup-token` (see Authentication) — the only Anthropic auth |
 | `NEO4J_PASSWORD` | set **before** the first `up`; neo4j bakes it into `neo4j_data`, so changing it later means resetting that volume |
 
 Optional overrides (safe defaults, leave unset for a standard deploy): `CLAUDE_BIN`
 (the units set it via `deploy/install.sh`), `NEO4J_URI` (`bolt://localhost:7687`;
-remove any compose-era `bolt://neo4j:7687` leftover — `EnvironmentFile` beats the
-unit's fallback), `NEO4J_USER` (`neo4j`), `DB_PATH`, `MARKET_DB_PATH`,
+a compose-era `bolt://neo4j:7687` leftover makes `install.sh` fail — `EnvironmentFile`
+beats the unit's fallback), `NEO4J_USER` (`neo4j`), `DB_PATH`, `MARKET_DB_PATH`,
 `WORKSPACE_DIR`, `POLL_INTERVAL_SECONDS` (`600`). `IS_SANDBOX` is no longer needed —
 claude runs as the service user, not root.
 
