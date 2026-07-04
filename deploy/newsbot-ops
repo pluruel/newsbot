@@ -69,9 +69,14 @@ case "$action" in
       rm -f "$err_file"
       # Detached restart: the requesting claude run is a child of the dispatcher,
       # so give it ~5s to deliver its reply before its parent goes down.
-      systemd-run --on-active=5s --timer-property=AccuracySec=1s \
-        systemctl restart newsbot-dispatcher.service >/dev/null 2>&1
-      echo "dispatcher: restart scheduled in ~5s (detached)"
+      # --collect garbage-collects the transient unit even if it fails.
+      if systemd-run --collect --on-active=5s --timer-property=AccuracySec=1s \
+          systemctl restart newsbot-dispatcher.service >/dev/null 2>&1; then
+        echo "dispatcher: restart scheduled in ~5s (detached)"
+      else
+        echo "systemd-run failed — dispatcher restart NOT scheduled" >&2
+        exit 1
+      fi
     else
       systemctl "$action" "$(unit_for "$service")"
       echo "$service: $action ok"

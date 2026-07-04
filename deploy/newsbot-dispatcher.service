@@ -16,6 +16,10 @@ Environment=NEO4J_URI=bolt://localhost:7687
 Environment=WORKSPACE_DIR=@ROOT@/workspace
 # systemd units get a minimal PATH; runner.py resolves the claude CLI via CLAUDE_BIN.
 Environment=CLAUDE_BIN=@CLAUDE_BIN@
+# After=docker.service only waits for the docker daemon, not for the neo4j
+# container to be healthy — wait for bolt to actually accept before starting
+# (replaces compose's depends_on: service_healthy).
+ExecStartPre=@ROOT@/.venv/bin/python -m newsparser.scripts.wait_neo4j
 ExecStart=@ROOT@/.venv/bin/python -m newsparser.dispatcher
 Restart=on-failure
 RestartSec=10

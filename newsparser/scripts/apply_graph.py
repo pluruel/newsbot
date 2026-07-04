@@ -15,6 +15,14 @@ from newsparser.market.annotate import maybe_annotate_impacts
 logger = logging.getLogger(__name__)
 
 
+def marker_path(workspace: Path, category: str, slot: str) -> Path:
+    """Success marker written after the graph update lands. run_cycle checks it
+    to detect a cycle run where the whitelisted apply_graph call never ran
+    (e.g. the model phrased the command slightly differently and it was
+    auto-denied) and re-applies directly."""
+    return workspace / "cycles" / category / f"{slot}.graph-applied"
+
+
 def _resolve_source_indices(relations, guids: list[str]) -> None:
     """Mutate each relation's source_article_guids based on its source_indices."""
     for r in relations:
@@ -60,6 +68,7 @@ def main(argv: list[str] | None = None) -> None:
 
     cycle_id = f"{category}-{slot}"
     apply_graph_updates(entities, relations, cycle_id=cycle_id, category=category)
+    marker_path(workspace, category, slot).touch()
     print(f"Graph updated: {len(entities)} entities, {len(relations)} relations")
 
     try:

@@ -7,7 +7,7 @@ import os
 import threading
 import time
 import traceback
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -40,6 +40,9 @@ class Job:
     finished_at: float | None = None
     error: str | None = None
     task: asyncio.Task | None = None
+    # Tool denials copied from the runner when the job finishes, so they survive
+    # into the "recent" list (post-hoc audit) instead of dying with the run.
+    denials: list[str] = field(default_factory=list)
 
 
 class JobManager:
@@ -108,6 +111,7 @@ class JobManager:
         finally:
             runner.CURRENT_JOB.reset(token)
             job.finished_at = time.time()
+            job.denials = runner.consume_job_denials(job.id)
             with self._lock:
                 self._running.pop(job.id, None)
                 self._recent.insert(0, job)
@@ -221,6 +225,11 @@ class JobManager:
             # that silently produced degraded output.
             if activity.get("denials"):
                 d["activity"]["denials"] = activity["denials"]
+        # Denials at the job level: finished jobs carry their own copy; running
+        # jobs surface what their already-finished claude runs recorded.
+        denials = job.denials or runner.job_denials(job.id)
+        if denials:
+            d["denials"] = denials
         return d
 
     def persist(self) -> None:

@@ -23,6 +23,14 @@ registry = BotRegistry()
 jobs = JobManager(_WORKSPACE)
 
 
+def _authorized(chat_id: str) -> bool:
+    """Fail-closed chat gate: with ALLOWED_CHAT_ID unset, nobody is authorized.
+    (The tracker runs claude with bypassPermissions as the service user — an open
+    gate would hand shell access to anyone who can message the bot.)"""
+    allowed = os.environ.get("ALLOWED_CHAT_ID")
+    return bool(allowed) and chat_id == allowed
+
+
 def _make_ctx(bot_name: str, ptb_bot, chat_id: str | None = None, message=None) -> Context:
     return Context(
         bot_name=bot_name,
@@ -54,8 +62,7 @@ async def _handle_message(update: Update, ptb_ctx: ContextTypes.DEFAULT_TYPE) ->
     text = update.message.text.strip()
     chat_id = str(update.message.chat_id)
 
-    allowed = os.environ.get("ALLOWED_CHAT_ID")
-    if allowed and chat_id != allowed:
+    if not _authorized(chat_id):
         logger.warning("Unauthorized chat_id %s — ignoring", chat_id)
         return
 
@@ -79,9 +86,8 @@ async def _handle_message(update: Update, ptb_ctx: ContextTypes.DEFAULT_TYPE) ->
 
 
 async def _handle_reload(update: Update, ptb_ctx: ContextTypes.DEFAULT_TYPE) -> None:
-    allowed = os.environ.get("ALLOWED_CHAT_ID")
     chat_id = str(update.message.chat_id)
-    if allowed and chat_id != allowed:
+    if not _authorized(chat_id):
         logger.warning("Unauthorized /reload attempt from %s", chat_id)
         return
     before = set(registry.names())
@@ -159,6 +165,10 @@ def _register_cron_jobs(app: Application) -> None:
 
 
 def start() -> None:
+    if not os.environ.get("ALLOWED_CHAT_ID"):
+        raise SystemExit(
+            "ALLOWED_CHAT_ID is not set — refusing to start with an open chat gate. "
+            "Set it in .env and restart.")
     from newsparser.store.sqlite import init_db
     init_db()
     registry.load()
