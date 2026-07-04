@@ -28,7 +28,7 @@ def _init(conn: sqlite3.Connection) -> None:
 def record_run(
     bot: str,
     meta: dict,
-    model: str = "claude-sonnet-4-6",
+    model: str = "claude-sonnet-5",
     ok: bool = True,
     error: str | None = None,
 ) -> None:

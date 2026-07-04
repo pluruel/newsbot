@@ -7,9 +7,7 @@ logger = logging.getLogger(__name__)
 
 CATEGORIES: tuple[str, str] = ("tech", "markets")
 
-# Resolve at implementation time. We pin to the same haiku snapshot tracker.py
-# uses so classifier behavior matches the rest of the system.
-HAIKU_MODEL = "claude-haiku-4-5-20251001"
+HAIKU_MODEL = "claude-haiku-4-5"
 
 _BODY_EXCERPT_CHARS = 500
 

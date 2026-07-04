@@ -1,0 +1,187 @@
+"""Haiku-backed entity name resolution.
+
+Each cycle's LLM extracts entities blind to what's already in Neo4j, so the
+same real-world entity can fragment across nodes ("Tesla" vs "테슬라" vs
+"TSLA"). Before writing new entities, resolve each candidate against the
+existing registry (same label) via a single batched Haiku call and rename it
+to the existing canonical_name when it's the same entity.
+
+Fails safe: any parse/lookup/call failure leaves names as-is (status quo
+fragmentation, recoverable later) rather than risking a wrong merge (hard to
+undo once relations are combined into one node).
+"""
+import logging
+import random
+import re
+import time
+from pathlib import Path
+
+from newsparser.claude.output_parser import EntityUpdate, RelationUpdate
+from newsparser.claude.runner import ClaudeError, run_claude
+from newsparser.graph.neo4j_client import get_driver
+from newsparser.ignore import load_ignore
+
+logger = logging.getLogger(__name__)
+
+# Same alias classifier.py/tracker.py use.
+HAIKU_MODEL = "claude-haiku-4-5"
+
+_REGISTRY_LIMIT = 300
+# Haiku 4.5 doesn't support adaptive thinking (this is plain generation
+# latency — subprocess/CLI overhead plus a registry that can run to
+# _REGISTRY_LIMIT entries), so a single 30s attempt isn't reliable once the
+# registry grows. Retry a few times with backoff instead of failing the
+# whole label group on one slow call.
+_HAIKU_TIMEOUT = 60
+_RETRIES = 3
+_BACKOFF_BASE = 1.0  # seconds
+
+_SYSTEM_PROMPT = (
+    "You match candidate entity names against a registry of existing entities "
+    "that may already represent the same real-world thing under a different "
+    "name (language, abbreviation, ticker). Reply with exactly one line per "
+    "candidate, format '<id>: <answer>', no explanations. <answer> is either "
+    "a canonical_name copied EXACTLY (character-for-character) from the "
+    "registry, or the literal word NEW."
+)
+
+_RESPONSE_LINE_RE = re.compile(r"^\s*([A-Za-z0-9]+)\s*:\s*(.+?)\s*$")
+
+
+def fetch_registry(label: str) -> list[dict]:
+    """Existing canonical_name/aliases for a label, ordered by mention_count desc."""
+    with get_driver().session() as session:
+        result = session.run(
+            f"MATCH (e:{label}) RETURN e.canonical_name AS name, "
+            "  coalesce(e.aliases, []) AS aliases "
+            "ORDER BY e.mention_count DESC LIMIT $limit",
+            limit=_REGISTRY_LIMIT,
+        )
+        return [dict(r) for r in result]
+
+
+def _build_prompt(label: str, registry: list[dict], candidates: list[EntityUpdate]) -> str:
+    reg_lines = [
+        f"{i + 1}. {r['name']} | aliases: {', '.join(r['aliases'])}"
+        for i, r in enumerate(registry)
+    ]
+    cand_lines = [
+        f"C{i + 1}. {c.name} | aliases: {', '.join(c.aliases)}"
+        for i, c in enumerate(candidates)
+    ]
+    return (
+        f"기존 {label} 엔티티 목록:\n" + "\n".join(reg_lines) +
+        f"\n\n후보 (이번 사이클 신규 추출, label={label}):\n" + "\n".join(cand_lines) +
+        "\n\n각 후보가 기존 목록의 항목과 같은 실체를 가리키면 그 canonical_name을 "
+        "정확히 그대로 적고, 새로운 실체면 NEW라고 적어. "
+        "형식: 'C1: <canonical_name 또는 NEW>' 한 줄씩, 후보 전부에 대해."
+    )
+
+
+def _parse_response(
+    raw: str, candidates: list[EntityUpdate], registry_names: set[str]
+) -> dict[str, str]:
+    by_id = {f"c{i + 1}": c.name for i, c in enumerate(candidates)}
+    rename: dict[str, str] = {}
+    for line in (raw or "").splitlines():
+        m = _RESPONSE_LINE_RE.match(line)
+        if not m:
+            continue
+        cid, answer = m.group(1).lower(), m.group(2).strip()
+        name = by_id.get(cid)
+        if name is None or answer == "NEW":
+            continue
+        # Reject hallucinated names not literally in the registry — a wrong
+        # merge is worse than a missed one.
+        if answer in registry_names and answer != name:
+            rename[name] = answer
+    return rename
+
+
+def _run_claude_with_retry(prompt: str) -> str | None:
+    """Retry the resolver's Haiku call a few times with backoff before giving
+    up. Returns None (not raises) on exhaustion so the caller's existing
+    fail-safe fallback (keep names as-is) still applies."""
+    last_exc: Exception | None = None
+    for attempt in range(_RETRIES):
+        try:
+            return run_claude(prompt, timeout=_HAIKU_TIMEOUT, model=HAIKU_MODEL,
+                               system_prompt=_SYSTEM_PROMPT)
+        except (ClaudeError, RuntimeError, OSError) as exc:
+            last_exc = exc
+            if attempt == _RETRIES - 1:
+                break
+            wait = _BACKOFF_BASE * (2 ** attempt) + random.uniform(0, 0.25)
+            logger.warning("haiku resolver attempt %d failed (%s); retrying in %.2fs",
+                           attempt + 1, exc, wait)
+            time.sleep(wait)
+    logger.warning("haiku resolver gave up after %d attempts: %s", _RETRIES, last_exc)
+    return None
+
+
+def resolve_entities(entities: list[EntityUpdate]) -> dict[str, str]:
+    """Return {original_name: existing_canonical_name} for candidates Haiku
+    matched to an existing entity of the same label. Names absent from the
+    map are left as-is (new entity, empty registry, or resolution failure)."""
+    rename: dict[str, str] = {}
+    by_label: dict[str, list[EntityUpdate]] = {}
+    for e in entities:
+        by_label.setdefault(e.label, []).append(e)
+
+    for label, candidates in by_label.items():
+        try:
+            registry = fetch_registry(label)
+        except Exception as exc:
+            logger.warning("registry fetch failed for label=%s (%s); skipping resolution", label, exc)
+            continue
+        if not registry:
+            continue
+        prompt = _build_prompt(label, registry, candidates)
+        raw = _run_claude_with_retry(prompt)
+        if raw is None:
+            logger.warning("entity resolution failed for label=%s after retries; keeping names as-is", label)
+            continue
+        registry_names = {r["name"] for r in registry}
+        rename.update(_parse_response(raw, candidates, registry_names))
+
+    return rename
+
+
+def prepare_graph_updates(
+    entities: list[EntityUpdate],
+    relations: list[RelationUpdate],
+    workspace: Path,
+) -> tuple[list[EntityUpdate], list[RelationUpdate]]:
+    """Resolve entity names against the existing graph registry, then drop
+    ignore-listed entities/relations. Shared by apply_graph.py (per-cycle)
+    and restore_graph_from_cycles.py (full replay) so both take the same
+    path onto the graph — a replay that skipped this would just reproduce
+    whatever fragmentation already exists."""
+    rename = resolve_entities(entities)
+    if rename:
+        for e in entities:
+            if e.name in rename:
+                e.name = rename[e.name]
+        for r in relations:
+            if r.subject in rename:
+                r.subject = rename[r.subject]
+            if r.obj in rename:
+                r.obj = rename[r.obj]
+        logger.info("entity resolver renamed %d candidate(s) to existing canonical names", len(rename))
+
+    ignore = load_ignore(workspace)
+    if ignore.entries:
+        before_e, before_r = len(entities), len(relations)
+        ignored = {e.name for e in entities
+                   if ignore.matches_entity(e.name, e.aliases)}
+        entities = [e for e in entities if e.name not in ignored]
+        relations = [r for r in relations
+                     if not (r.subject in ignored or r.obj in ignored
+                             or ignore.matches_entity(r.subject, [])
+                             or ignore.matches_entity(r.obj, []))]
+        dropped_e, dropped_r = before_e - len(entities), before_r - len(relations)
+        if dropped_e or dropped_r:
+            logger.info("ignore filter dropped %d entities, %d relations",
+                        dropped_e, dropped_r)
+
+    return entities, relations
