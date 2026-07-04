@@ -1,9 +1,12 @@
 import asyncio
 import json
 
+import pytest
+
 from newsparser.bots.core.context import Context, TelegramSender
 from newsparser.bots.core.jobs import JobManager
 from newsparser.bots.core.types import Bot
+from newsparser.claude import runner
 
 
 class _FakeTelegram(TelegramSender):
@@ -121,3 +124,83 @@ async def test_init_clears_stale_state(tmp_path):
         {"running": [{"id": 1, "bot": "cycle"}], "recent": []}))
     JobManager(tmp_path)
     assert _state(tmp_path)["running"] == []
+
+
+async def test_init_clears_stale_kill_marker(tmp_path):
+    """Job ids restart at 1 per process, so a marker surviving a restart would
+    relabel an unrelated new job's failure as 🛑."""
+    (tmp_path / "jobs.kill").write_text("[2]")
+    JobManager(tmp_path)
+    assert not (tmp_path / "jobs.kill").exists()
+
+
+async def test_process_kill_requests_kills_running_and_prunes_stale(tmp_path, monkeypatch):
+    release = asyncio.Event()
+
+    async def run(ctx):
+        await release.wait()
+
+    bot = Bot(name="cycle", triggers=[], run=run, background=True)
+    jm = JobManager(tmp_path)
+    job = jm.start(bot, _ctx(tmp_path), trigger="telegram")
+
+    killed: list[int] = []
+    monkeypatch.setattr(runner, "kill_job", lambda jid: (killed.append(jid), 1)[1])
+    (tmp_path / "jobs.kill").write_text(json.dumps([job.id, 99]))
+
+    jm.process_kill_requests()
+    assert killed == [job.id]
+    # The live id stays for _run to consume (🛑 labelling); the stale 99 is pruned.
+    assert json.loads((tmp_path / "jobs.kill").read_text()) == [job.id]
+
+    release.set()
+    await job.task
+
+
+async def test_cancelled_job_not_left_running(tmp_path):
+    """Dispatcher shutdown cancels job tasks; the job must land in `recent` as
+    cancelled, not linger with status='running'."""
+    started = asyncio.Event()
+
+    async def run(ctx):
+        started.set()
+        await asyncio.Event().wait()
+
+    bot = Bot(name="cycle", triggers=[], run=run, background=True)
+    jm = JobManager(tmp_path)
+    job = jm.start(bot, _ctx(tmp_path), trigger="cron")
+    await asyncio.wait_for(started.wait(), 5)
+
+    job.task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await job.task
+    state = _state(tmp_path)
+    assert state["running"] == []
+    assert state["recent"][0]["status"] == "cancelled"
+
+
+async def test_persisted_state_readable_by_mcp_job_status(tmp_path, monkeypatch):
+    """Producer/consumer contract: the file persist() writes must be readable by
+    the MCP job_status tool (separate process in prod, same file format)."""
+    monkeypatch.setenv("WORKSPACE_DIR", str(tmp_path))
+    from newsparser.mcp_server import job_status
+
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def run(ctx):
+        started.set()
+        await release.wait()
+
+    bot = Bot(name="cycle", triggers=[], run=run, background=True)
+    jm = JobManager(tmp_path)
+    job = jm.start(bot, _ctx(tmp_path), trigger="cron")
+    await asyncio.wait_for(started.wait(), 5)
+    out = job_status()
+    assert f"#{job.id} cycle" in out
+    assert "실행 중" in out
+
+    release.set()
+    await job.task
+    out = job_status()
+    assert "done" in out

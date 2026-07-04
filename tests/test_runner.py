@@ -5,7 +5,7 @@ import time
 import pytest
 
 from newsparser.claude import runner
-from newsparser.claude.runner import run_claude, run_claude_json, ClaudeError
+from newsparser.claude.runner import run_claude, run_claude_json, ClaudeError, ClaudeKilled
 
 
 def _fake_claude(tmp_path, monkeypatch, body: str):
@@ -45,6 +45,15 @@ def test_run_claude_raises_on_nonzero_exit(tmp_path, monkeypatch):
     _fake_claude(tmp_path, monkeypatch,
                  "import sys\nsys.stderr.write('error message')\nsys.exit(1)\n")
     with pytest.raises(ClaudeError, match="error message"):
+        run_claude("/cycle")
+
+
+def test_run_claude_nonzero_exit_includes_stdout_diagnostics(tmp_path, monkeypatch):
+    """When claude crashes with an empty stderr but a traceback on stdout (e.g. a
+    skill/tool crash), that stdout tail is the only clue and must not be lost."""
+    _fake_claude(tmp_path, monkeypatch,
+                 "import sys\nprint('Traceback: skill exploded')\nsys.exit(1)\n")
+    with pytest.raises(ClaudeError, match="skill exploded"):
         run_claude("/cycle")
 
 
@@ -123,7 +132,8 @@ def test_run_claude_json_raises_claude_error_on_timeout(tmp_path, monkeypatch):
 
 def test_active_runs_tagged_with_job_and_kill_job(tmp_path, monkeypatch):
     """A run started under CURRENT_JOB shows up in active_runs() with that job id,
-    and kill_job() terminates its subprocess (surfacing as ClaudeError)."""
+    and kill_job() terminates its subprocess, surfacing as ClaudeKilled — the
+    marker type run_cycle re-raises to abort the remaining categories."""
     _fake_claude(tmp_path, monkeypatch, "import time\ntime.sleep(30)\n")
     errors: list[Exception] = []
 
@@ -147,7 +157,8 @@ def test_active_runs_tagged_with_job_and_kill_job(tmp_path, monkeypatch):
     assert runner.kill_job(7) == 1
     t.join(timeout=10)
     assert not t.is_alive()
-    assert errors, "killed run must raise ClaudeError"
+    assert errors, "killed run must raise ClaudeKilled"
+    assert isinstance(errors[0], ClaudeKilled)
     assert not any(r["job_id"] == 7 for r in runner.active_runs())
 
 

@@ -113,8 +113,10 @@ async def _handle_reload(update: Update, ptb_ctx: ContextTypes.DEFAULT_TYPE) -> 
 
 
 async def _poll_job_requests(ptb_ctx: ContextTypes.DEFAULT_TYPE) -> None:
-    """Pick up job requests written by the MCP start_job tool (separate process)
-    and launch them as background jobs."""
+    """Pick up start/kill requests written by the MCP job tools (separate
+    process): kill the claude subprocesses of jobs marked in jobs.kill, and
+    launch requested bots as background jobs."""
+    jobs.process_kill_requests()
     for req in jobs.consume_requests():
         name = req["bot"]
         bot = next((b for b in registry.all() if b.name == name), None)
@@ -132,7 +134,15 @@ def _make_cron_callback(bot: Bot):
     async def _cb(ptb_ctx: ContextTypes.DEFAULT_TYPE) -> None:
         ctx = _make_ctx(bot.name, ptb_ctx.bot)
         if jobs.start(bot, ctx, trigger="cron") is None:
-            logger.warning("Cron trigger skipped — %s already running", bot.name)
+            running = jobs.running_for(bot.name)
+            elapsed = int(time.time() - running.started_at) // 60 if running else 0
+            logger.warning("Cron trigger skipped — %s already running (%d min)",
+                           bot.name, elapsed)
+            # A hung job would otherwise silently eat every future cron tick —
+            # tell the user so they can kill_job / restart.
+            await ctx.telegram.send(
+                f"⚠️ {bot.name} 정기 실행 건너뜀 — 이전 작업이 아직 실행 중 ({elapsed}분 경과). "
+                "멈춘 것 같으면 kill_job으로 중단해라.")
     return _cb
 
 

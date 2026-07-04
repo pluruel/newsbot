@@ -56,6 +56,12 @@ class JobManager:
         # Heartbeat: re-persist whenever an active claude run makes progress,
         # so "last activity" in jobs.json stays fresh. Called from worker threads.
         runner.on_activity = self.persist
+        # Job ids restart at 1 every process start, so a leftover kill marker
+        # would relabel an unrelated new job's failure as 🛑.
+        try:
+            (workspace / KILL_FILE).unlink()
+        except OSError:
+            pass
         self.persist()  # clear stale state from a previous process
 
     def running_for(self, bot_name: str) -> Job | None:
@@ -84,6 +90,10 @@ class JobManager:
         try:
             await bot.run(ctx)
             job.status = "done"
+        except asyncio.CancelledError:
+            job.status = "cancelled"
+            logger.warning("Job #%s (%s) cancelled", job.id, job.bot_name)
+            raise
         except Exception as exc:
             if self._consume_kill_request(job.id):
                 job.status = "killed"
@@ -131,6 +141,39 @@ class JobManager:
             if isinstance(req, dict) and req.get("bot"):
                 requests.append(req)
         return requests
+
+    def process_kill_requests(self) -> None:
+        """Act on jobs.kill (written by the MCP kill_job tool): kill the claude
+        subprocesses of every listed job that is still running in-process — the
+        resulting ClaudeKilled propagates to _run, which consumes the marker and
+        reports 🛑. Ids that no longer match a running job are pruned so a stale
+        marker can't relabel a later job's failure."""
+        path = self._workspace / KILL_FILE
+        try:
+            ids = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            return
+        with self._lock:
+            running_ids = {job.id for job in self._running.values()}
+        live = [i for i in ids if i in running_ids]
+        if live != ids:
+            try:
+                if live:
+                    path.write_text(json.dumps(live))
+                else:
+                    path.unlink()
+            except OSError:
+                pass
+        for job_id in live:
+            killed = runner.kill_job(job_id)
+            if killed:
+                logger.warning("Kill request: terminated %d claude subprocess(es) of job #%s",
+                               killed, job_id)
+            else:
+                # Python phase — no subprocess yet; the marker stays and the next
+                # poll tick kills the job's next claude call.
+                logger.info("Kill request for job #%s pending (no active claude subprocess)",
+                            job_id)
 
     def _consume_kill_request(self, job_id: int) -> bool:
         """True if `job_id` is in the kill-request file (written by the MCP

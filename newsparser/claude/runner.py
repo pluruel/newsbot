@@ -4,6 +4,7 @@ import os
 import subprocess
 import threading
 import time
+from collections import deque
 from contextvars import ContextVar
 from pathlib import Path
 from typing import Callable
@@ -16,6 +17,12 @@ class ClaudeError(RuntimeError):
     pass
 
 
+class ClaudeKilled(ClaudeError):
+    """The subprocess was terminated by kill_job() — an intentional user kill,
+    not a failure. Scripts that swallow per-step errors must re-raise this so
+    the JobManager can stop the job and report 🛑."""
+
+
 # Job id set by the JobManager before a bot runs. asyncio.to_thread copies the
 # context, so worker threads (and every run_claude call inside them) inherit it —
 # that is how an active claude subprocess gets correlated back to its job.
@@ -24,7 +31,10 @@ CURRENT_JOB: ContextVar[int | None] = ContextVar("newsparser_current_job", defau
 # Optional hook (set by the JobManager) invoked — throttled — whenever an active
 # run makes progress, so job state can be re-persisted with fresh activity info.
 on_activity: Callable[[], None] | None = None
-_NOTIFY_INTERVAL = 2.0
+# Each hook call rewrites jobs.json in full; consumers recompute idle/elapsed
+# from last_event_at at read time, so the heartbeat only needs to keep the
+# activity description roughly fresh.
+_NOTIFY_INTERVAL = 30.0
 
 
 # Resolve at call time. Override with `CLAUDE_BIN` env var when PATH lookup fails
@@ -35,7 +45,8 @@ def _claude_bin() -> str:
 
 class _Run:
     __slots__ = ("run_id", "job_id", "pid", "prompt_head", "started_at",
-                 "last_event_at", "activity", "turns", "proc", "_last_notify")
+                 "last_event_at", "activity", "turns", "proc", "killed",
+                 "_last_notify")
 
     def __init__(self, run_id: int, job_id: int | None, proc: subprocess.Popen, prompt: str):
         self.run_id = run_id
@@ -47,6 +58,7 @@ class _Run:
         self.last_event_at = self.started_at
         self.activity = "시작 대기"
         self.turns = 0
+        self.killed = False
         self._last_notify = 0.0
 
 
@@ -75,15 +87,18 @@ def active_runs() -> list[dict]:
 
 
 def kill_job(job_id: int) -> int:
-    """Kill every active claude subprocess tagged with `job_id`. Returns count killed."""
+    """Kill every active claude subprocess tagged with `job_id`. Returns count killed.
+    The killed runs raise ClaudeKilled (not a generic ClaudeError) so callers can
+    distinguish an intentional kill from a crash."""
     with _ACTIVE_LOCK:
-        procs = [r.proc for r in _ACTIVE.values() if r.job_id == job_id]
-    for proc in procs:
+        runs = [r for r in _ACTIVE.values() if r.job_id == job_id]
+    for run in runs:
+        run.killed = True
         try:
-            proc.kill()
+            run.proc.kill()
         except OSError:
             pass
-    return len(procs)
+    return len(runs)
 
 
 def _describe_event(event: dict) -> str | None:
@@ -169,6 +184,9 @@ def _run_stream(cmd: list[str], timeout: int, prompt: str) -> dict:
     timer.start()
 
     result_event: dict | None = None
+    # Non-JSON stdout lines are diagnostics (tracebacks, partial output) — keep a
+    # tail so a nonzero exit with an empty stderr still surfaces a clue.
+    stdout_tail: deque[str] = deque(maxlen=20)
     try:
         for line in proc.stdout:
             line = line.strip()
@@ -177,6 +195,7 @@ def _run_stream(cmd: list[str], timeout: int, prompt: str) -> dict:
             try:
                 event = json.loads(line)
             except json.JSONDecodeError:
+                stdout_tail.append(line)
                 continue
             _note_event(run, event)
             if event.get("type") == "result":
@@ -190,9 +209,14 @@ def _run_stream(cmd: list[str], timeout: int, prompt: str) -> dict:
 
     if timed_out.is_set():
         raise ClaudeError(f"claude timed out after {timeout}s")
+    if run.killed:
+        raise ClaudeKilled(f"claude run killed by kill request (job #{run.job_id})")
     stderr = (stderr_chunks[0] if stderr_chunks else "") or ""
     if proc.returncode != 0:
-        raise ClaudeError(f"claude exited {proc.returncode}: stderr={stderr[:500]}")
+        detail = f"stderr={stderr[:500]}"
+        if stdout_tail:
+            detail += f" stdout={' | '.join(stdout_tail)[-500:]}"
+        raise ClaudeError(f"claude exited {proc.returncode}: {detail}")
     if result_event is None:
         raise ClaudeError(f"claude produced no result event: stderr={stderr[:300]}")
     if result_event.get("is_error"):

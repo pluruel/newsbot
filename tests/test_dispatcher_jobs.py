@@ -1,6 +1,6 @@
 import asyncio
 import json
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import newsparser.dispatcher as dispatcher
 from newsparser.bots.core.jobs import JobManager
@@ -55,3 +55,43 @@ async def test_poll_job_requests_ignores_unknown_bot(tmp_path, monkeypatch):
     await dispatcher._poll_job_requests(MagicMock())
     state = json.loads((tmp_path / "jobs.json").read_text())
     assert state["running"] == []
+
+
+async def test_poll_job_requests_processes_kill_requests(tmp_path, monkeypatch):
+    """The poll is the only consumer of jobs.kill markers — it must invoke the
+    in-process kill on every tick."""
+    jm = JobManager(tmp_path)
+    called = []
+    monkeypatch.setattr(jm, "process_kill_requests", lambda: called.append(1))
+    monkeypatch.setattr(dispatcher, "jobs", jm)
+    monkeypatch.setattr(dispatcher, "registry", _Registry([]))
+
+    await dispatcher._poll_job_requests(MagicMock())
+    assert called == [1]
+
+
+async def test_cron_skip_notifies_telegram(tmp_path, monkeypatch):
+    """A hung job silently eating cron ticks must at least alert the user."""
+    monkeypatch.setenv("TELEGRAM_ALERT_CHAT_ID", "999")
+    release = asyncio.Event()
+
+    async def run(ctx):
+        await release.wait()
+
+    bot = Bot(name="cycle", triggers=[], run=run, background=True)
+    jm = JobManager(tmp_path)
+    monkeypatch.setattr(dispatcher, "jobs", jm)
+
+    ptb_ctx = MagicMock()
+    ptb_ctx.bot.send_message = AsyncMock()
+    cb = dispatcher._make_cron_callback(bot)
+    await cb(ptb_ctx)                 # starts the job
+    ptb_ctx.bot.send_message.reset_mock()
+    await cb(ptb_ctx)                 # skipped — must warn
+    assert ptb_ctx.bot.send_message.called
+    text = ptb_ctx.bot.send_message.call_args.kwargs["text"]
+    assert "⚠️" in text
+    assert "cycle" in text
+
+    release.set()
+    await jm.running_for("cycle").task

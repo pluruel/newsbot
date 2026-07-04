@@ -8,6 +8,7 @@ from pathlib import Path
 from mcp.server.fastmcp import FastMCP
 
 from newsparser.graph.traversal import get_context, get_influence_chain, format_context_for_claude
+from newsparser.bots.core.jobs import KILL_FILE, REQUEST_DIR, STATE_FILE
 from newsparser.classifier import classify_query as _classify_query_impl
 from newsparser.market import store as _market_store
 from newsparser.market.fetcher import TICKERS as _MARKET_TICKERS
@@ -315,29 +316,49 @@ def _fmt_elapsed(seconds: int) -> str:
     return f"{s}초"
 
 
+def _age_s(iso: str | None) -> int | None:
+    """Seconds elapsed since an ISO timestamp, or None if unparseable."""
+    if not iso:
+        return None
+    try:
+        then = datetime.fromisoformat(iso)
+    except ValueError:
+        return None
+    return max(0, int(datetime.now(timezone.utc).timestamp() - then.timestamp()))
+
+
 @mcp.tool()
 def job_status() -> str:
     """현재 실행 중인 백그라운드 작업(cycle/weekly/reflect 등)과 최근 완료 이력.
     사용자가 "지금 뭐 돌아가?", "cycle 잘 되고 있어?" 같이 작업 진행 상황을 물으면 호출한다.
-    running 항목의 activity.idle_s(마지막 활동 후 경과 초)가 크면 작업이 멈춰 있을 가능성이 있다."""
-    path = _workspace() / "jobs.json"
+    running 항목의 "마지막 활동 … 전"이 수 분을 넘으면 작업이 멈춰 있을 가능성이 있다."""
+    path = _workspace() / STATE_FILE
     if not path.exists():
-        return "작업 상태 파일(jobs.json)이 없다 — 아직 실행된 작업이 없거나 디스패처가 구버전이다."
+        return f"작업 상태 파일({STATE_FILE})이 없다 — 아직 실행된 작업이 없거나 디스패처가 구버전이다."
     try:
         state = json.loads(path.read_text())
     except (OSError, json.JSONDecodeError) as e:
-        return f"jobs.json 읽기 실패: {e}"
+        return f"{STATE_FILE} 읽기 실패: {e}"
 
     lines: list[str] = [f"상태 갱신 시각: {state.get('updated_at', '?')}"]
     running = state.get("running", [])
     if running:
         lines.append("\n실행 중:")
         for j in running:
+            # elapsed/idle are recomputed from the persisted timestamps at read
+            # time — the stored values are only as fresh as the last heartbeat,
+            # which stops entirely when claude hangs (the case we must surface).
+            elapsed = _age_s(j.get("started_at"))
+            if elapsed is None:
+                elapsed = j.get("elapsed_s", 0)
             line = (f"• #{j['id']} {j['bot']} ({j['trigger']}) — "
-                    f"{j['started_at']} 시작, {_fmt_elapsed(j.get('elapsed_s', 0))} 경과")
+                    f"{j['started_at']} 시작, {_fmt_elapsed(elapsed)} 경과")
             act = j.get("activity")
             if act:
-                line += (f"\n  마지막 활동: {act['desc']} — {_fmt_elapsed(act.get('idle_s', 0))} 전"
+                idle = _age_s(act.get("last_event_at"))
+                if idle is None:
+                    idle = act.get("idle_s", 0)
+                line += (f"\n  마지막 활동: {act['desc']} — {_fmt_elapsed(idle)} 전"
                          f" (턴 {act.get('turns', '?')}, pid {act.get('pid', '?')})")
             else:
                 line += "\n  (활성 claude 서브프로세스 없음 — python 단계 실행 중일 수 있음)"
@@ -369,7 +390,7 @@ def start_job(bot: str, chat_id: str | None = None) -> str:
         return f"'{bot}'은 시작할 수 없는 작업이다. 허용: {sorted(_STARTABLE_BOTS)}."
     ws = _workspace()
     try:
-        state = json.loads((ws / "jobs.json").read_text())
+        state = json.loads((ws / STATE_FILE).read_text())
     except (OSError, json.JSONDecodeError):
         state = {}
     running = next((j for j in state.get("running", []) if j.get("bot") == bot), None)
@@ -378,7 +399,7 @@ def start_job(bot: str, chat_id: str | None = None) -> str:
                 f"{running.get('started_at', '?')} 시작). job_status()로 확인해라.")
 
     import uuid
-    req_dir = ws / "job-requests"
+    req_dir = ws / REQUEST_DIR
     req_dir.mkdir(parents=True, exist_ok=True)
     req = {"bot": bot, "chat_id": chat_id,
            "requested_at": datetime.now(timezone.utc).isoformat()}
@@ -394,17 +415,18 @@ def kill_job(job_id: int) -> str:
     """실행 중인 백그라운드 작업을 강제 중단한다. job_status()로 id를 확인하고,
     사용자에게 확인을 받은 뒤에만 호출한다."""
     ws = _workspace()
-    path = ws / "jobs.json"
     try:
-        state = json.loads(path.read_text())
+        state = json.loads((ws / STATE_FILE).read_text())
     except (OSError, json.JSONDecodeError) as e:
-        return f"jobs.json 읽기 실패: {e}"
+        return f"{STATE_FILE} 읽기 실패: {e}"
     job = next((j for j in state.get("running", []) if j.get("id") == job_id), None)
     if job is None:
         return f"실행 중인 작업 중 id={job_id}가 없다. job_status()로 확인해라."
 
-    # Mark the kill as intentional first, so the dispatcher reports 🛑 중단 (not ❌ 실패).
-    kill_path = ws / "jobs.kill"
+    # This process only records the request; the dispatcher's poll picks it up
+    # and kills the job's claude subprocesses in-process (killing a pid from
+    # here would risk a stale/reused pid or a different container's namespace).
+    kill_path = ws / KILL_FILE
     try:
         ids = json.loads(kill_path.read_text())
     except (OSError, json.JSONDecodeError):
@@ -412,18 +434,8 @@ def kill_job(job_id: int) -> str:
     if job_id not in ids:
         ids.append(job_id)
     kill_path.write_text(json.dumps(ids))
-
-    pid = (job.get("activity") or {}).get("pid")
-    if pid is None:
-        return (f"#{job_id} {job['bot']}: 지금 활성 claude 서브프로세스가 없어 즉시 중단할 수 없다 "
-                "(python 단계 실행 중). 다음 claude 호출이 끝나기를 기다리거나 dispatcher를 재시작해라.")
-    try:
-        os.kill(int(pid), 9)
-    except ProcessLookupError:
-        return f"#{job_id} {job['bot']}: pid {pid} 프로세스가 이미 종료됐다."
-    except OSError as e:
-        return f"#{job_id} {job['bot']}: kill 실패 — {e}"
-    return f"#{job_id} {job['bot']} 중단 요청 완료 (pid {pid} kill). 디스패처가 🛑 메시지로 확인해줄 것이다."
+    return (f"#{job_id} {job['bot']} 중단 요청 접수 — 디스패처가 수 초 내에 작업을 종료하고 "
+            "🛑 메시지로 확인해줄 것이다.")
 
 
 # --- Ops tools -------------------------------------------------------------
