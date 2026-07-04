@@ -87,6 +87,7 @@ def _needed_history_depth(query: str, history: list[dict], max_depth: int) -> in
             system_prompt=(
                 f"Reply with only a single integer between 0 and {max_depth}. No other text."
             ),
+            permission_mode="default",  # history text is news-derived; no tools needed
         )
         token = result.strip().split()[0].strip(".,!?") if result.strip() else "1"
         n = int(token)
@@ -147,10 +148,12 @@ def run_tracker(chat_id: str, query: str) -> str:
         "`kill_job(job_id)`를 사용자 확인 후에만 호출한다.\n\n"
         "운영(ops) 권한도 있다. 사용자가 봇/서비스 상태나 재시작·로그를 묻거나 "
         "지시하면 `service_status`, `tail_logs(service, n)`, `restart_service(service)` "
-        "MCP 도구를 쓴다. 허용 서비스: neo4j, poller, dispatcher. "
-        "`restart_service('dispatcher')`는 현재 프로세스를 죽이므로 반드시 사용자 확인 후에만 호출한다. "
-        "이 외에 호스트 환경을 만질 필요가 있으면 Bash 도구로 직접 명령을 실행할 수 있다 "
-        "(docker, ls, cat, .venv/bin/python 등). 단, 파괴적 명령(rm -rf, drop, force push)은 "
+        "MCP 도구를 쓴다. 허용 서비스: neo4j, poller, dispatcher — 이 도구들은 sudo로 "
+        "설치된 newsbot-ops를 경유하므로 Bash로 docker/systemctl을 직접 치지 말고 도구를 쓴다. "
+        "`restart_service('dispatcher')`는 ~5초 뒤 지연 재시작이라 답장은 전달되지만 "
+        "실행 중인 백그라운드 작업이 죽으므로 반드시 사용자 확인 후에만 호출한다. "
+        "이 외에 호스트 환경을 볼 필요가 있으면 Bash 도구로 직접 명령을 실행할 수 있다 "
+        "(ls, cat, journalctl, .venv/bin/python 등). 단, 파괴적 명령(rm -rf, drop, force push)은 "
         "사용자 확인을 받는다.\n\n"
         "무시 목록 관리 권한도 있다. 사용자가 특정 엔티티/서사를 더는 다루지 말라고 하면"
         "(\"무시: X\", \"X 무시해\"), `workspace/me/ignore.md` 표에 행을 추가한다. "

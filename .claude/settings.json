@@ -1,8 +1,18 @@
 {
   "permissions": {
-    "defaultMode": "bypassPermissions",
+    "defaultMode": "default",
     "allow": [],
-    "deny": []
+    "deny": [
+      "Read(.env)",
+      "Read(./.env)",
+      "Read(.env.*)",
+      "Read(./.env.*)",
+      "Read(~/.claude/**)",
+      "Read(backups/**)",
+      "Read(./backups/**)",
+      "Read(*.tar.gz)",
+      "Read(./*.tar.gz)"
+    ]
   },
   "model": "sonnet",
   "effortLevel": "high"

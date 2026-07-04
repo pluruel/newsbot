@@ -439,100 +439,70 @@ def kill_job(job_id: int) -> str:
 
 
 # --- Ops tools -------------------------------------------------------------
+# All privileged operations go through /usr/local/sbin/newsbot-ops — a
+# root-owned script installed OUTSIDE the repo by deploy/install.sh and
+# whitelisted in sudoers with NOPASSWD. That script (not this code) validates
+# actions/services, so a compromised or injected claude run editing this repo
+# cannot escalate: changing the repo copy does nothing until a human re-runs
+# install.sh with sudo.
 
 _ALLOWED_SERVICES = {"neo4j", "poller", "dispatcher"}
+_OPS_BIN = os.environ.get("NEWSBOT_OPS_BIN", "/usr/local/sbin/newsbot-ops")
 
 
-def _docker_ps_name(service: str) -> str | None:
-    """Find a running container whose compose service label matches `service`.
-    Returns the container name, or None if not found."""
+def _run_ops(args: list[str], timeout: int = 30) -> tuple[str | None, str | None]:
+    """Run `sudo -n newsbot-ops <args>`. Returns (stdout, error) — exactly one is set."""
     import subprocess
+    cmd = ["sudo", "-n", _OPS_BIN, *args]
     try:
-        out = subprocess.run(
-            ["docker", "ps", "--filter", f"label=com.docker.compose.service={service}",
-             "--format", "{{.Names}}"],
-            capture_output=True, text=True, timeout=10, check=True,
-        ).stdout.strip()
-    except (subprocess.SubprocessError, FileNotFoundError):
-        return None
-    name = out.splitlines()[0].strip() if out else ""
-    return name or None
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    except FileNotFoundError:
+        return None, "sudo 또는 newsbot-ops가 없다 — 이 호스트에서 deploy/install.sh를 먼저 실행해야 한다."
+    except subprocess.SubprocessError as e:
+        return None, f"newsbot-ops 실행 실패: {e}"
+    if result.returncode != 0:
+        err = (result.stderr or result.stdout).strip()
+        return None, f"newsbot-ops 실패 (exit {result.returncode}): {err[:500]}"
+    return result.stdout.strip(), None
 
 
 @mcp.tool()
 def service_status() -> str:
-    """List the project's docker compose services and their state.
-    Use this before restarting anything or when the user asks about system health."""
-    import subprocess
-    try:
-        result = subprocess.run(
-            ["docker", "ps", "-a",
-             "--filter", "label=com.docker.compose.project",
-             "--format", "{{.Names}}\t{{.Status}}\t{{.Label \"com.docker.compose.service\"}}"],
-            capture_output=True, text=True, timeout=10, check=True,
-        )
-    except FileNotFoundError:
-        return "docker CLI not available inside this container."
-    except subprocess.CalledProcessError as e:
-        return f"docker ps failed: {e.stderr.strip()}"
-    lines = result.stdout.strip().splitlines()
-    if not lines:
-        return "No compose-managed containers found."
-    out = ["| service | container | status |", "|---|---|---|"]
-    for line in lines:
-        parts = line.split("\t")
-        if len(parts) < 3:
-            continue
-        name, status, svc = parts[0], parts[1], parts[2]
-        out.append(f"| {svc} | {name} | {status} |")
-    return "\n".join(out)
+    """List the project's services (poller/dispatcher systemd units + neo4j container)
+    and their state. Use this before restarting anything or when the user asks about
+    system health."""
+    out, err = _run_ops(["status"])
+    if err:
+        return err
+    return out or "(no status output)"
 
 
 @mcp.tool()
 def restart_service(service: str) -> str:
-    """Restart one compose service (allowed: neo4j, poller, dispatcher).
+    """Restart one service (allowed: neo4j, poller, dispatcher).
     Use when the user explicitly asks to restart or reload a service.
-    Restarting `dispatcher` will kill this very process — confirm with the user first."""
-    import subprocess
+    `dispatcher` restarts are detached with a ~5s delay (an import check runs first),
+    so the current answer still gets delivered — but any running background job's
+    claude subprocess dies with it. Confirm with the user first."""
     if service not in _ALLOWED_SERVICES:
         return f"Service '{service}' not allowed. Allowed: {sorted(_ALLOWED_SERVICES)}."
-    container = _docker_ps_name(service)
-    if not container:
-        return f"No running container found for service '{service}'."
-    try:
-        subprocess.run(
-            ["docker", "restart", container],
-            capture_output=True, text=True, timeout=60, check=True,
-        )
-    except FileNotFoundError:
-        return "docker CLI not available inside this container."
-    except subprocess.CalledProcessError as e:
-        return f"docker restart failed: {e.stderr.strip()}"
-    return f"Restarted service '{service}' (container={container})."
+    out, err = _run_ops(["restart", service], timeout=90)
+    if err:
+        return err
+    return out or f"Restarted service '{service}'."
 
 
 @mcp.tool()
 def tail_logs(service: str, n: int = 50) -> str:
-    """Tail the last n log lines of a compose service (allowed: neo4j, poller, dispatcher).
+    """Tail the last n log lines of a service (allowed: neo4j, poller, dispatcher).
     Use when diagnosing a problem the user reports."""
-    import subprocess
     if service not in _ALLOWED_SERVICES:
         return f"Service '{service}' not allowed. Allowed: {sorted(_ALLOWED_SERVICES)}."
-    container = _docker_ps_name(service)
-    if not container:
-        return f"No running container found for service '{service}'."
     n = max(1, min(int(n), 500))
-    try:
-        result = subprocess.run(
-            ["docker", "logs", "--tail", str(n), container],
-            capture_output=True, text=True, timeout=30, check=True,
-        )
-    except FileNotFoundError:
-        return "docker CLI not available inside this container."
-    except subprocess.CalledProcessError as e:
-        return f"docker logs failed: {e.stderr.strip()}"
-    body = (result.stdout + result.stderr).strip()
-    return body or f"(no log output for {service})"
+    out, err = _run_ops(["logs", service, str(n)])
+    if err:
+        return err
+    return out or f"(no log output for {service})"
 
 
 if __name__ == "__main__":

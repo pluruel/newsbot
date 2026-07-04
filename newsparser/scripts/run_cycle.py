@@ -12,10 +12,12 @@ load_dotenv()
 
 from newsparser.bot.sender import send_long_message
 from newsparser.claude.input_builder import build_input_file
+from newsparser.claude.policy import CYCLE_TOOLS
 from newsparser.claude.runner import ClaudeKilled, run_claude
 from newsparser.classifier import classify_article, CATEGORIES
 from newsparser.market import snapshot as market_snapshot
 from newsparser.market import store as market_store
+from newsparser.scripts import apply_graph
 from newsparser.store.sqlite import get_unclassified, get_unprocessed, mark_processed, update_category
 from newsparser.scheduler.workspace import ensure_workspace
 from newsparser.ignore import load_ignore
@@ -243,8 +245,27 @@ def _run_for_category(slot: str, category: str, workspace: Path) -> None:
         existing = input_path.read_text(encoding="utf-8")
         input_path.write_text(snapshot_block + "\n\n" + existing, encoding="utf-8")
 
-    run_claude(f"/cycle {slot} {category}")
+    # Input file is scraped article text — run with the cycle allowlist so a
+    # prompt-injected instruction can't reach arbitrary Bash/network tools.
+    run_claude(f"/cycle {slot} {category}",
+               allowed_tools=CYCLE_TOOLS, permission_mode="default")
     logger.info("[%s] Claude cycle complete", category)
+
+    # Safety net: the CYCLE_TOOLS whitelist only matches the exact apply_graph
+    # invocation cycle.md dictates — if the model phrased it differently the call
+    # was auto-denied and the slot's graph update would be silently lost. The
+    # success marker tells us whether it ran; if not, apply directly. Must happen
+    # BEFORE the mark_processed net below, which deletes the guids file
+    # apply_graph needs to resolve source indices.
+    report_path = workspace / "cycles" / category / f"{slot}.md"
+    if report_path.exists() and not apply_graph.marker_path(workspace, category, slot).exists():
+        logger.warning("[%s] apply_graph did not run during the claude cycle — applying directly", category)
+        try:
+            apply_graph.main(["apply_graph.py", category, slot])
+        except SystemExit as exc:
+            logger.error("[%s] direct apply_graph exited %s", category, exc.code)
+        except Exception as exc:
+            logger.error("[%s] direct apply_graph failed: %s", category, exc)
 
     # Safety net: if the slash command's mark_processed.py call was skipped or failed,
     # the guids file still exists. Mark them here to prevent reprocessing on next cycle.
@@ -258,7 +279,6 @@ def _run_for_category(slot: str, category: str, workspace: Path) -> None:
     # Telegram gets a terse, importance-sorted list rendered deterministically
     # from the saved report file (NOT the LLM stdout), with ignored
     # entities/storylines dropped. The full digest stays in the report file.
-    report_path = workspace / "cycles" / category / f"{slot}.md"
     if report_path.exists():
         report_text = report_path.read_text(encoding="utf-8")
         ignore = load_ignore(workspace)

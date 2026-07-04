@@ -184,4 +184,6 @@ echo
 echo "  Next steps for a blank checkout:"
 echo "    1. uv sync                       # install deps into .venv"
 echo "    2. cp .env.example .env          # only if .env was NOT in the backup"
-echo "    3. docker compose up -d          # start neo4j + poller + dispatcher"
+echo "    3. docker compose up -d          # start neo4j"
+echo "    4. sudo ./deploy/install.sh      # systemd units + newsbot-ops (first time)"
+echo "    5. sudo systemctl start newsbot-poller newsbot-dispatcher"

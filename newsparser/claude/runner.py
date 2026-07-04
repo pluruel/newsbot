@@ -1,5 +1,6 @@
 import itertools
 import json
+import logging
 import os
 import subprocess
 import threading
@@ -8,6 +9,8 @@ from collections import deque
 from contextvars import ContextVar
 from pathlib import Path
 from typing import Callable
+
+logger = logging.getLogger(__name__)
 
 # Project root: two levels above this file (newsparser/claude/runner.py → project root)
 _PROJECT_ROOT = Path(__file__).parent.parent.parent
@@ -46,7 +49,7 @@ def _claude_bin() -> str:
 class _Run:
     __slots__ = ("run_id", "job_id", "pid", "prompt_head", "started_at",
                  "last_event_at", "activity", "turns", "proc", "killed",
-                 "_last_notify")
+                 "denials", "_last_notify")
 
     def __init__(self, run_id: int, job_id: int | None, proc: subprocess.Popen, prompt: str):
         self.run_id = run_id
@@ -59,12 +62,31 @@ class _Run:
         self.activity = "시작 대기"
         self.turns = 0
         self.killed = False
+        self.denials: list[str] = []
         self._last_notify = 0.0
 
 
 _ACTIVE: dict[int, _Run] = {}
 _ACTIVE_LOCK = threading.Lock()
 _RUN_IDS = itertools.count(1)
+
+# Denials from finished runs, keyed by job id, so they outlive the _Run and the
+# JobManager can attach them to the completed Job (jobs.json "recent" audit).
+_JOB_DENIALS: dict[int, list[str]] = {}
+_MAX_JOB_DENIALS = 50
+
+
+def job_denials(job_id: int) -> list[str]:
+    """Denials accumulated so far by `job_id`'s finished runs (non-destructive)."""
+    with _ACTIVE_LOCK:
+        return list(_JOB_DENIALS.get(job_id, ()))
+
+
+def consume_job_denials(job_id: int) -> list[str]:
+    """Pop and return every denial recorded for `job_id` — called by the
+    JobManager when the job finishes, so the entry can't leak."""
+    with _ACTIVE_LOCK:
+        return _JOB_DENIALS.pop(job_id, [])
 
 
 def active_runs() -> list[dict]:
@@ -81,6 +103,7 @@ def active_runs() -> list[dict]:
             "last_event_at": r.last_event_at,
             "activity": r.activity,
             "turns": r.turns,
+            "denials": list(r.denials),
         }
         for r in runs
     ]
@@ -101,6 +124,26 @@ def kill_job(job_id: int) -> int:
     return len(runs)
 
 
+# Headless runs auto-deny tools outside the allowlist; the model just sees an
+# error tool_result and moves on. The CLI reports every auto-denied call
+# structurally in the final result event's `permission_denials` — use that
+# (not error-text matching, which false-positives on OS "Permission denied",
+# PermissionError tracebacks, git failures, and breaks silently if the CLI
+# wording changes) so a whitelist gap surfaces in logs/jobs.json instead of
+# silently degrading output quality.
+def _extract_denials(event: dict) -> list[str]:
+    if event.get("type") != "result":
+        return []
+    denials: list[str] = []
+    for d in event.get("permission_denials") or []:
+        if not isinstance(d, dict):
+            continue
+        name = d.get("tool_name", "?")
+        args = json.dumps(d.get("tool_input", {}), ensure_ascii=False)
+        denials.append(f"{name} {args}"[:200])
+    return denials
+
+
 def _describe_event(event: dict) -> str | None:
     if event.get("type") != "assistant":
         return None
@@ -116,6 +159,10 @@ def _note_event(run: _Run, event: dict) -> None:
     run.last_event_at = time.time()
     if event.get("type") == "assistant":
         run.turns += 1
+    for text in _extract_denials(event):
+        run.denials.append(text)
+        logger.warning("Tool call denied (run %d, job %s, prompt %r): %s",
+                       run.run_id, run.job_id, run.prompt_head, text)
     desc = _describe_event(event)
     if desc:
         run.activity = desc
@@ -134,7 +181,7 @@ def _build_cmd(
     model: str,
     system_prompt: str | None,
     allowed_tools: list[str] | None,
-    permission_mode: str | None,
+    permission_mode: str,
 ) -> list[str]:
     # stream-json (with -p it requires --verbose) so progress is observable while
     # the run is in flight; the final "result" event carries text + usage/cost.
@@ -146,8 +193,10 @@ def _build_cmd(
         cmd += ["--system-prompt", system_prompt]
     if allowed_tools:
         cmd += ["--allowedTools", ",".join(allowed_tools)]
-    if permission_mode is not None:
-        cmd += ["--permission-mode", permission_mode]
+    # Always passed explicitly — never fall through to the settings.json
+    # defaultMode, so a call site that forgets the kwarg gets deny-by-default,
+    # not a silent escalation to whatever the settings file says.
+    cmd += ["--permission-mode", permission_mode]
     return cmd
 
 
@@ -206,6 +255,10 @@ def _run_stream(cmd: list[str], timeout: int, prompt: str) -> dict:
         timer.cancel()
         with _ACTIVE_LOCK:
             _ACTIVE.pop(run.run_id, None)
+            if run.denials and run.job_id is not None:
+                bucket = _JOB_DENIALS.setdefault(run.job_id, [])
+                bucket.extend(run.denials)
+                del bucket[_MAX_JOB_DENIALS:]
 
     if timed_out.is_set():
         raise ClaudeError(f"claude timed out after {timeout}s")
@@ -234,9 +287,12 @@ def run_claude(
     model: str = "claude-sonnet-5",
     system_prompt: str | None = None,
     allowed_tools: list[str] | None = None,
-    permission_mode: str | None = None,
+    permission_mode: str = "default",
 ) -> str:
-    """Invoke claude CLI headless and return the result text. Raises ClaudeError on failure (including timeout)."""
+    """Invoke claude CLI headless and return the result text. Raises ClaudeError on failure (including timeout).
+
+    permission_mode defaults to "default" (auto-deny outside allowed_tools) —
+    trusted-input call sites must opt UP to bypassPermissions explicitly."""
     cmd = _build_cmd(prompt, mcp_config, model, system_prompt, allowed_tools, permission_mode)
     event = _run_stream(cmd, timeout, prompt)
     return event.get("result", "")
@@ -249,9 +305,10 @@ def run_claude_json(
     model: str = "claude-sonnet-5",
     system_prompt: str | None = None,
     allowed_tools: list[str] | None = None,
-    permission_mode: str | None = None,
+    permission_mode: str = "default",
 ) -> tuple[str, dict]:
-    """Like run_claude() but also returns run metadata. Returns (text, meta). Raises ClaudeError on failure (including timeout)."""
+    """Like run_claude() but also returns run metadata. Returns (text, meta).
+    Raises ClaudeError on failure (including timeout). Deny-by-default: see run_claude."""
     cmd = _build_cmd(prompt, mcp_config, model, system_prompt, allowed_tools, permission_mode)
     event = _run_stream(cmd, timeout, prompt)
     usage = event.get("usage") or {}

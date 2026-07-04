@@ -1,0 +1,105 @@
+#!/usr/bin/env bash
+# newsbot-ops — the single unattended-root entry point for the newsbot host.
+#
+# Installed to /usr/local/sbin/newsbot-ops (root:root, 755) by deploy/install.sh
+# and whitelisted in /etc/sudoers.d/newsbot with NOPASSWD. The repo copy is only
+# a template (@USER@/@ROOT@ are substituted at install time); editing it does
+# NOTHING until a human re-runs install.sh with sudo — that manual step is the
+# security boundary between "claude can edit the repo" and "runs as root".
+#
+# Every input is validated against the fixed whitelists below. Never
+# interpolate caller input into a command line.
+set -euo pipefail
+export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+
+ROOT="@ROOT@"
+SERVICE_USER="@USER@"
+
+usage() {
+  echo "usage: newsbot-ops status" >&2
+  echo "       newsbot-ops {start|stop|restart} {poller|dispatcher|neo4j}" >&2
+  echo "       newsbot-ops logs {poller|dispatcher|neo4j} [n]" >&2
+  exit 2
+}
+
+unit_for() {
+  case "$1" in
+    poller) echo newsbot-poller.service ;;
+    dispatcher) echo newsbot-dispatcher.service ;;
+    *) return 1 ;;
+  esac
+}
+
+compose() { docker compose --project-directory "$ROOT" "$@"; }
+
+action="${1:-}"
+service="${2:-}"
+
+case "$action" in
+  status)
+    printf '%-12s %s\n' poller "$(systemctl is-active newsbot-poller.service 2>/dev/null || true)"
+    printf '%-12s %s\n' dispatcher "$(systemctl is-active newsbot-dispatcher.service 2>/dev/null || true)"
+    cid="$(compose ps -q neo4j 2>/dev/null || true)"
+    if [ -n "$cid" ]; then
+      printf '%-12s %s\n' neo4j "$(docker inspect -f '{{.State.Status}} (health={{if .State.Health}}{{.State.Health.Status}}{{else}}n/a{{end}})' "$cid" 2>/dev/null || echo unknown)"
+    else
+      printf '%-12s %s\n' neo4j "not-running"
+    fi
+    ;;
+
+  start|stop|restart)
+    case "$service" in
+      poller|dispatcher|neo4j) ;;
+      *) usage ;;
+    esac
+    if [ "$service" = neo4j ]; then
+      compose "$action" neo4j
+      echo "neo4j: $action ok"
+    elif [ "$service" = dispatcher ] && [ "$action" = restart ]; then
+      # Import guard: refuse to bounce the dispatcher into a crash loop when the
+      # (possibly self-edited) code doesn't even import.
+      err_file="$(mktemp)"
+      if ! sudo -u "$SERVICE_USER" env PYTHONDONTWRITEBYTECODE=1 \
+          "$ROOT/.venv/bin/python" -c "import newsparser.dispatcher" 2>"$err_file"; then
+        echo "import check failed — restart refused:" >&2
+        cat "$err_file" >&2
+        rm -f "$err_file"
+        exit 1
+      fi
+      rm -f "$err_file"
+      # Detached restart: the requesting claude run is a child of the dispatcher,
+      # so give it ~5s to deliver its reply before its parent goes down.
+      # --collect garbage-collects the transient unit even if it fails.
+      if systemd-run --collect --on-active=5s --timer-property=AccuracySec=1s \
+          systemctl restart newsbot-dispatcher.service >/dev/null 2>&1; then
+        echo "dispatcher: restart scheduled in ~5s (detached)"
+      else
+        echo "systemd-run failed — dispatcher restart NOT scheduled" >&2
+        exit 1
+      fi
+    else
+      systemctl "$action" "$(unit_for "$service")"
+      echo "$service: $action ok"
+    fi
+    ;;
+
+  logs)
+    n="${3:-50}"
+    case "$n" in (*[!0-9]*|'') n=50 ;; esac
+    [ "$n" -gt 500 ] && n=500
+    [ "$n" -lt 1 ] && n=50
+    case "$service" in
+      poller|dispatcher)
+        journalctl -u "$(unit_for "$service")" -n "$n" --no-pager
+        ;;
+      neo4j)
+        cid="$(compose ps -q neo4j 2>/dev/null || true)"
+        [ -n "$cid" ] || { echo "neo4j container not running" >&2; exit 1; }
+        docker logs --tail "$n" "$cid" 2>&1
+        ;;
+      *) usage ;;
+    esac
+    ;;
+
+  *) usage ;;
+esac

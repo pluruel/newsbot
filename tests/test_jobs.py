@@ -53,6 +53,25 @@ async def test_start_runs_bot_and_persists_lifecycle(tmp_path):
     assert state["recent"][0]["status"] == "done"
 
 
+async def test_denials_survive_into_recent(tmp_path):
+    """Tool denials recorded by a job's (finished) claude runs must appear on
+    the completed job in jobs.json — the whole point of the audit trail."""
+    async def run(ctx):
+        job_id = runner.CURRENT_JOB.get()
+        with runner._ACTIVE_LOCK:   # what _run_stream does when a run finishes
+            runner._JOB_DENIALS[job_id] = ['Bash {"command": "apply_graph.py"}']
+
+    bot = Bot(name="cycle", triggers=[], run=run, background=True)
+    jm = JobManager(tmp_path)
+    job = jm.start(bot, _ctx(tmp_path), trigger="cron")
+    await job.task
+    state = _state(tmp_path)
+    assert state["recent"][0]["status"] == "done"
+    assert state["recent"][0]["denials"] == ['Bash {"command": "apply_graph.py"}']
+    with runner._ACTIVE_LOCK:       # consumed on job end — no leak
+        assert job.id not in runner._JOB_DENIALS
+
+
 async def test_duplicate_bot_is_rejected(tmp_path):
     release = asyncio.Event()
 

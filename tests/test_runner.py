@@ -170,6 +170,46 @@ def test_activity_hook_called_on_events(tmp_path, monkeypatch):
     assert calls
 
 
+def test_run_claude_permission_mode_defaults_to_deny(tmp_path, monkeypatch):
+    """Deny-by-default: a call site that omits permission_mode must get
+    --permission-mode default, never fall through to settings.json defaultMode."""
+    _fake_claude(tmp_path, monkeypatch, _ARGV_BODY)
+    argv = _argv_of(run_claude("query"))
+    assert argv[argv.index("--permission-mode") + 1] == "default"
+    argv = _argv_of(run_claude("query", permission_mode="bypassPermissions"))
+    assert argv[argv.index("--permission-mode") + 1] == "bypassPermissions"
+
+
+# One error tool_result whose text merely *mentions* Permission denied (an OS
+# error, not a tool denial), plus one structured denial in the result event.
+_DENIAL_BODY = """
+import json
+print(json.dumps({"type": "user", "message": {"content": [
+    {"type": "tool_result", "is_error": True,
+     "content": "bash: /root/x: Permission denied"}]}}))
+print(json.dumps({"type": "result", "subtype": "success", "result": "ok",
+    "permission_denials": [{"tool_name": "Bash", "tool_use_id": "t1",
+                            "tool_input": {"command": "python3 apply_graph.py"}}]}))
+"""
+
+
+def test_denials_use_structured_signal_and_survive_run_end(tmp_path, monkeypatch):
+    """Denials come from result.permission_denials (an OS 'Permission denied' in
+    tool output must not count) and stay retrievable after the run finishes so
+    the JobManager can persist them onto the completed job."""
+    _fake_claude(tmp_path, monkeypatch, _DENIAL_BODY)
+    token = runner.CURRENT_JOB.set(11)
+    try:
+        assert run_claude("query") == "ok"
+    finally:
+        runner.CURRENT_JOB.reset(token)
+    denials = runner.consume_job_denials(11)
+    assert len(denials) == 1
+    assert denials[0].startswith("Bash ")
+    assert "python3 apply_graph.py" in denials[0]
+    assert runner.consume_job_denials(11) == []  # popped — no leak
+
+
 def test_describe_event_reports_tool_use():
     event = {"type": "assistant", "message": {"content": [
         {"type": "tool_use", "name": "WebSearch"},

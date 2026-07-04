@@ -105,8 +105,9 @@ def _run_claude_with_retry(prompt: str) -> str | None:
     last_exc: Exception | None = None
     for attempt in range(_RETRIES):
         try:
+            # Entity names are derived from scraped article content — run tool-less.
             return run_claude(prompt, timeout=_HAIKU_TIMEOUT, model=HAIKU_MODEL,
-                               system_prompt=_SYSTEM_PROMPT)
+                               system_prompt=_SYSTEM_PROMPT, permission_mode="default")
         except (ClaudeError, RuntimeError, OSError) as exc:
             last_exc = exc
             if attempt == _RETRIES - 1:

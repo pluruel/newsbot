@@ -57,7 +57,10 @@ def classify_article(title: str, body: str | None) -> str:
     body_excerpt = (body or "")[:_BODY_EXCERPT_CHARS]
     prompt = _ARTICLE_PROMPT.format(title=title, n=_BODY_EXCERPT_CHARS, body=body_excerpt)
     try:
-        raw = run_claude(prompt, timeout=15, model=HAIKU_MODEL, system_prompt=_CLASSIFIER_SYSTEM_PROMPT)
+        # permission_mode="default": article bodies are untrusted web content and
+        # classification needs zero tools — every tool call gets auto-denied.
+        raw = run_claude(prompt, timeout=15, model=HAIKU_MODEL,
+                         system_prompt=_CLASSIFIER_SYSTEM_PROMPT, permission_mode="default")
     except (ClaudeError, RuntimeError, OSError) as exc:
         logger.warning("classify_article failed (%s); defaulting to 'markets'", exc)
         return "markets"
@@ -76,7 +79,8 @@ def classify_query(query: str, history: list[dict] | None = None) -> str:
     parts.append(f"쿼리: {query}")
     prompt = "".join(parts)
     try:
-        raw = run_claude(prompt, timeout=15, model=HAIKU_MODEL, system_prompt=_CLASSIFIER_SYSTEM_PROMPT)
+        raw = run_claude(prompt, timeout=15, model=HAIKU_MODEL,
+                         system_prompt=_CLASSIFIER_SYSTEM_PROMPT, permission_mode="default")
     except (ClaudeError, RuntimeError, OSError) as exc:
         logger.warning("classify_query failed (%s); defaulting to 'both'", exc)
         return "both"
