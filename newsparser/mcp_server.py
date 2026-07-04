@@ -356,6 +356,39 @@ def job_status() -> str:
     return "\n".join(lines)
 
 
+_STARTABLE_BOTS = {"cycle", "weekly", "reflect", "market_daily"}
+
+
+@mcp.tool()
+def start_job(bot: str, chat_id: str | None = None) -> str:
+    """백그라운드 작업을 시작한다 (허용: cycle, weekly, reflect, market_daily).
+    사용자가 "사이클 돌려줘", "위클리 실행해" 같이 작업 실행을 지시하면 호출한다.
+    chat_id를 넘기면 완료 메시지가 그 채팅으로 간다 (프롬프트에 있는 현재 chat_id를 넘겨라).
+    요청은 파일 큐로 전달되어 디스패처가 수 초 내에 집어간다."""
+    if bot not in _STARTABLE_BOTS:
+        return f"'{bot}'은 시작할 수 없는 작업이다. 허용: {sorted(_STARTABLE_BOTS)}."
+    ws = _workspace()
+    try:
+        state = json.loads((ws / "jobs.json").read_text())
+    except (OSError, json.JSONDecodeError):
+        state = {}
+    running = next((j for j in state.get("running", []) if j.get("bot") == bot), None)
+    if running is not None:
+        return (f"{bot}은 이미 실행 중이다 (#{running['id']}, "
+                f"{running.get('started_at', '?')} 시작). job_status()로 확인해라.")
+
+    import uuid
+    req_dir = ws / "job-requests"
+    req_dir.mkdir(parents=True, exist_ok=True)
+    req = {"bot": bot, "chat_id": chat_id,
+           "requested_at": datetime.now(timezone.utc).isoformat()}
+    tmp = req_dir / f".{uuid.uuid4().hex}.tmp"
+    tmp.write_text(json.dumps(req, ensure_ascii=False))
+    tmp.rename(req_dir / f"{uuid.uuid4().hex}.json")
+    return (f"{bot} 시작 요청 접수 — 디스패처가 수 초 내에 실행한다. "
+            "진행 상황은 job_status()로 확인할 수 있다.")
+
+
 @mcp.tool()
 def kill_job(job_id: int) -> str:
     """실행 중인 백그라운드 작업을 강제 중단한다. job_status()로 id를 확인하고,

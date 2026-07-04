@@ -62,6 +62,35 @@ def test_job_status_running_without_activity(workspace):
     assert "활성 claude 서브프로세스 없음" in job_status()
 
 
+def test_start_job_writes_request_file(workspace):
+    from newsparser.mcp_server import start_job
+    out = start_job("cycle", chat_id="123")
+    assert "요청 접수" in out
+    files = list((workspace / "job-requests").glob("*.json"))
+    assert len(files) == 1
+    req = json.loads(files[0].read_text())
+    assert req["bot"] == "cycle"
+    assert req["chat_id"] == "123"
+
+
+def test_start_job_rejects_unknown_bot(workspace):
+    from newsparser.mcp_server import start_job
+    out = start_job("tracker")
+    assert "시작할 수 없는" in out
+    assert not (workspace / "job-requests").exists()
+
+
+def test_start_job_rejects_already_running(workspace):
+    from newsparser.mcp_server import start_job
+    _write_state(workspace, running=[{
+        "id": 4, "bot": "cycle", "trigger": "cron", "status": "running",
+        "started_at": "2026-07-04T12:00:00+09:00", "elapsed_s": 30,
+    }])
+    out = start_job("cycle")
+    assert "이미 실행 중" in out
+    assert not (workspace / "job-requests").exists()
+
+
 def test_kill_job_unknown_id(workspace):
     _write_state(workspace)
     assert "없다" in kill_job(99)

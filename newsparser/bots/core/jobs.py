@@ -22,6 +22,7 @@ _KST = ZoneInfo("Asia/Seoul")
 
 STATE_FILE = "jobs.json"
 KILL_FILE = "jobs.kill"
+REQUEST_DIR = "job-requests"
 _RECENT_MAX = 10
 
 
@@ -109,6 +110,27 @@ class JobManager:
             await ctx.telegram.send(text)
         except Exception:
             pass
+
+    def consume_requests(self) -> list[dict]:
+        """Read and delete pending job-request files (written by the MCP
+        start_job tool — one file per request, so no write races)."""
+        req_dir = self._workspace / REQUEST_DIR
+        if not req_dir.exists():
+            return []
+        requests: list[dict] = []
+        for path in sorted(req_dir.glob("*.json")):
+            try:
+                req = json.loads(path.read_text())
+            except (OSError, json.JSONDecodeError):
+                req = None
+                logger.warning("Dropping malformed job request %s", path.name)
+            try:
+                path.unlink()
+            except OSError:
+                pass
+            if isinstance(req, dict) and req.get("bot"):
+                requests.append(req)
+        return requests
 
     def _consume_kill_request(self, job_id: int) -> bool:
         """True if `job_id` is in the kill-request file (written by the MCP

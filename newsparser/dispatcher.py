@@ -112,6 +112,22 @@ async def _handle_reload(update: Update, ptb_ctx: ContextTypes.DEFAULT_TYPE) -> 
     await update.message.reply_text("\n".join(lines))
 
 
+async def _poll_job_requests(ptb_ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """Pick up job requests written by the MCP start_job tool (separate process)
+    and launch them as background jobs."""
+    for req in jobs.consume_requests():
+        name = req["bot"]
+        bot = next((b for b in registry.all() if b.name == name), None)
+        chat_id = req.get("chat_id")
+        ctx = _make_ctx(name, ptb_ctx.bot, chat_id=chat_id)
+        if bot is None:
+            logger.warning("Job request for unknown bot %r ignored", name)
+            await ctx.telegram.send(f"⚠️ 알 수 없는 작업 요청: {name}")
+            continue
+        if jobs.start(bot, ctx, trigger="mcp") is None:
+            await ctx.telegram.send(f"⚠️ {name} 이미 실행 중 — 요청 무시됨")
+
+
 def _make_cron_callback(bot: Bot):
     async def _cb(ptb_ctx: ContextTypes.DEFAULT_TYPE) -> None:
         ctx = _make_ctx(bot.name, ptb_ctx.bot)
@@ -149,6 +165,7 @@ def start() -> None:
     )
 
     _register_cron_jobs(app)
+    app.job_queue.run_repeating(_poll_job_requests, interval=3, first=3, name="job-requests")
     app.add_handler(CommandHandler("reload", _handle_reload))
     app.add_handler(MessageHandler(filters.TEXT, _handle_message))
 

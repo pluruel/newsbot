@@ -103,6 +103,19 @@ async def test_kill_request_marks_killed(tmp_path):
     assert not (tmp_path / "jobs.kill").exists()
 
 
+async def test_consume_requests_reads_and_deletes(tmp_path):
+    jm = JobManager(tmp_path)
+    req_dir = tmp_path / "job-requests"
+    req_dir.mkdir()
+    (req_dir / "a.json").write_text(json.dumps({"bot": "cycle", "chat_id": "123"}))
+    (req_dir / "b.json").write_text("not json")
+    (req_dir / "c.json").write_text(json.dumps({"no_bot": True}))
+    reqs = jm.consume_requests()
+    assert reqs == [{"bot": "cycle", "chat_id": "123"}]
+    assert list(req_dir.glob("*.json")) == []
+    assert jm.consume_requests() == []
+
+
 async def test_init_clears_stale_state(tmp_path):
     (tmp_path / "jobs.json").write_text(json.dumps(
         {"running": [{"id": 1, "bot": "cycle"}], "recent": []}))
