@@ -1,10 +1,33 @@
 import asyncio
+import logging
 import os
 
 from telegram import Bot
+from telegram.error import NetworkError
+from telegram.request import HTTPXRequest
+
+logger = logging.getLogger(__name__)
 
 TELEGRAM_LIMIT = 4096
 CHUNK_SIZE = 4000  # safety margin under 4096
+SEND_RETRIES = 3
+
+
+def _make_bot(token: str) -> Bot:
+    return Bot(token, request=HTTPXRequest(
+        connect_timeout=10, read_timeout=30, write_timeout=30, pool_timeout=10))
+
+
+async def _send_with_retry(bot: Bot, chat_id: str, text: str, **kwargs) -> None:
+    for attempt in range(1, SEND_RETRIES + 1):
+        try:
+            await bot.send_message(chat_id=chat_id, text=text, **kwargs)
+            return
+        except NetworkError:
+            if attempt == SEND_RETRIES:
+                raise
+            logger.warning("send_message failed (attempt %d/%d), retrying", attempt, SEND_RETRIES)
+            await asyncio.sleep(2 * attempt)
 
 
 def send_message(text: str) -> None:
@@ -13,8 +36,8 @@ def send_message(text: str) -> None:
     chat_id = os.environ["TELEGRAM_CHAT_ID"]
 
     async def _send() -> None:
-        async with Bot(token) as bot:
-            await bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML")
+        async with _make_bot(token) as bot:
+            await _send_with_retry(bot, chat_id, text, parse_mode="HTML")
 
     asyncio.run(_send())
 
@@ -42,8 +65,8 @@ def send_long_message(text: str) -> None:
     parts = _chunk(text, CHUNK_SIZE) or [""]
 
     async def _send() -> None:
-        async with Bot(token) as bot:
+        async with _make_bot(token) as bot:
             for part in parts:
-                await bot.send_message(chat_id=chat_id, text=part)
+                await _send_with_retry(bot, chat_id, part)
 
     asyncio.run(_send())

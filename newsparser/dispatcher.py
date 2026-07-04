@@ -170,6 +170,8 @@ def start() -> None:
         .token(token)
         .read_timeout(30)
         .connect_timeout(10)
+        .write_timeout(30)
+        .pool_timeout(10)
         .concurrent_updates(True)
         .build()
     )

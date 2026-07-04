@@ -8,6 +8,9 @@ from pathlib import Path
 from typing import Any, Callable
 
 
+_SEND_RETRIES = 3
+
+
 @dataclass
 class TelegramSender:
     bot: Any = None
@@ -15,9 +18,21 @@ class TelegramSender:
     alert_chat_id: str = field(default_factory=lambda: os.environ.get("TELEGRAM_ALERT_CHAT_ID", ""))
 
     async def send(self, text: str) -> None:
+        from telegram.error import NetworkError
+
         target = self.chat_id or self.alert_chat_id
-        if self.bot and target:
-            await self.bot.send_message(chat_id=target, text=text[:4096])
+        if not (self.bot and target):
+            return
+        for attempt in range(1, _SEND_RETRIES + 1):
+            try:
+                await self.bot.send_message(chat_id=target, text=text[:4096])
+                return
+            except NetworkError:
+                if attempt == _SEND_RETRIES:
+                    raise
+                logging.getLogger(__name__).warning(
+                    "send_message failed (attempt %d/%d), retrying", attempt, _SEND_RETRIES)
+                await asyncio.sleep(2 * attempt)
 
 
 @dataclass
