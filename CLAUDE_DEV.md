@@ -38,16 +38,22 @@ Gotchas that bite, none obvious from the file tree:
   system cron. Cron strings + `tz="Asia/Seoul"` live in each `newsparser/bots/*/bot.py` `Cron(...)`;
   `dispatcher._register_cron_jobs` registers them. Drop a `*/bot.py` with a `Cron` trigger and
   `registry.load()` globs it in (`/reload` re-globs at runtime).
-- **The image is intentionally not self-contained.** The Dockerfile bakes only `.venv`,
-  `newsparser/`, and `sources.md`. `mcp.json`, `.claude/` (commands + settings.json + hooks), and
-  `CLAUDE.md` are excluded by `.dockerignore` and reach the dispatcher only through its `- .:/app`
-  bind mount (the CLI runs with `cwd=/app`). The poller mounts only `./workspace`, so it must
-  never need those files. Running the dispatcher image standalone breaks the tracker's MCP tools
-  and the `/cycle` `/reflect` `/weekly` slash commands.
-- **Build `./.venv` on the deploy host** (`uv sync`). The `.:/app` mount shadows the baked
-  `/app/.venv` with the host one, whose interpreter symlink points into the host uv cache — copy
-  it from elsewhere and `.venv/bin/python` dangles and the dispatcher won't start. (The MCP server,
-  spawned by the CLI as `.venv/bin/python -m newsparser.mcp_server`, has the same dependency.)
+- **The image bakes its own `.venv`, but not `mcp.json`/`.claude/`/`CLAUDE.md`.** The Dockerfile
+  builds `.venv` at image build time (`uv sync --frozen`) and copies `newsparser/` + `sources.md` —
+  fully self-contained for the interpreter, independent of the host. `mcp.json`, `.claude/`
+  (commands + settings.json + hooks), and `CLAUDE.md` are excluded by `.dockerignore` and reach the
+  dispatcher only via individual bind mounts in `docker-compose.yml`
+  (`./mcp.json`, `./.claude`, `./CLAUDE.md`) — there's no `.:/app` full-repo mount (dropped since
+  PR #12's "ghcr로 경로 변경" / "배포방식 개선"). The poller mounts only `./workspace`, so it must
+  never need those files. Running the dispatcher image standalone (without those three mounts)
+  breaks the tracker's MCP tools and the `/cycle` `/reflect` `/weekly` slash commands.
+- **Host `.venv` is NOT needed for deploy.** Before PR #12 the dispatcher bind-mounted the whole
+  repo (`.:/app`), which shadowed the image's baked `/app/.venv` with the host one — a copied
+  `.venv` with a dangling interpreter symlink would keep the dispatcher (and its
+  `.venv/bin/python -m newsparser.mcp_server` MCP server) from starting, so `uv sync` on the deploy
+  host was mandatory. That full mount is gone now, so the image's own venv is what runs in both
+  services. `uv sync` on the host is only for local dev (pytest, ad hoc scripts) — see
+  "Development Environment" above.
 - **`IS_SANDBOX=1` is required, not optional.** The container runs as root and calls `claude` with
   `bypassPermissions`; the CLI hard-exits under root unless `IS_SANDBOX=1`.
 - The dispatcher drives the **host** Docker daemon via the mounted `/var/run/docker.sock`

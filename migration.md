@@ -1,8 +1,15 @@
 # Newsparser를 다른 VM으로 마이그레이션
 
 전체 시스템을 새 호스트로 옮기기 = **상태**(`backup.sh` 아카이브) 전송 + **코드**는 직접
-가져오기 + 호스트 로컬 `.venv` 재빌드. 백업은 설계상 상태만 담으므로, "restore 후
-`docker compose up`만" 으로는 **부족**하다 — 아래 추가 2단계 참고.
+가져오기. 백업은 설계상 상태만 담으므로, "restore 후 `docker compose up`만" 으로는
+**부족**하다 — 아래 추가 단계 참고.
+
+`docker compose`의 poller/dispatcher는 이제 레포 전체가 아니라 `workspace/`, `mcp.json`,
+`.claude/`, `CLAUDE.md`만 바인드 마운트한다 (PR #12 "ghcr로 경로 변경"). `.venv/bin/python`은
+**이미지에 구워진 venv**(Dockerfile의 `uv sync --frozen`, 빌드/푸시 시점)를 가리키므로 새
+호스트에 `.venv`가 없어도 컨테이너는 정상 기동한다. **`uv sync`는 마이그레이션 절차에 필요
+없다** — 호스트 `.venv`를 쓰는 곳(`restore.sh`의 workspace 검증, `backup.sh`/`scripts/`)은
+전부 없으면 알아서 skip되거나 system `python3`로 폴백하는 선택 사항이다.
 
 ---
 
@@ -17,11 +24,10 @@
 scp backups/newsparser-backup-*.tar.gz* new-vm:/tmp/
 
 # --- 새 VM ---
-git clone <repo-url> newsbot && cd newsbot     # 1. 코드는 백업에 없음
+git clone <repo-url> newsbot && cd newsbot     # 코드는 백업에 없음
 mkdir -p backups && mv /tmp/newsparser-backup-*.tar.gz* backups/
 ./restore.sh backups/newsparser-backup-XXXXXXXX-XXXXXX.tar.gz
-uv sync                                        # 2. 이 호스트에서 .venv 빌드
-docker compose up -d                           # neo4j + poller + dispatcher
+docker compose up -d                           # neo4j + poller + dispatcher (이미지 자체 venv 사용)
 ```
 
 이게 마이그레이션 전부다. 나머지는 각 단계가 왜 필요한지와 무엇을 확인할지 설명한다.
@@ -36,27 +42,24 @@ docker compose up -d                           # neo4j + poller + dispatcher
 |---|---|
 | `workspace/` 아래 모든 SQLite DB — `newsparser.db`, `market.db`, `state/claude_runs.db` — 일관성 있는 온라인 스냅샷 | 레포 코드 (`newsparser/`, `Dockerfile`, `docker-compose.yml`, 스크립트) |
 | 런타임 문서: `cycles/`, `briefs/`, `me/`, `input/`, `logs/`, `sessions/` | `.claude/`, `mcp.json`, `CLAUDE.md` (git 추적 설정) |
-| `.env` (시크릿) — `--no-secrets` 아니면 | `.venv/` (호스트별; `uv sync`로 재빌드) |
+| `.env` (시크릿) — `--no-secrets` 아니면 | `.venv/` (호스트별 — 마이그레이션엔 불필요, 이미지에 자체 venv 있음) |
 | Neo4j 그래프 dump — **best effort**, 아래 참고 | `neo4j:5` / `python:3.12-slim` 이미지 (첫 `up`에 pull/build) |
 
 따라서 새 VM에는 아카이브 단독이 아니라 **레포 + 아카이브**가 필요하다.
 
 ---
 
-## 놓치기 쉬운 2단계
-
-### 1. 코드가 새 VM에 먼저 있어야 한다
+## 놓치기 쉬운 것: 코드가 새 VM에 먼저 있어야 한다
 
 `backup.sh`는 git에 있는 건 일부러 건너뛴다 ("git으로 복구 가능한 건 전부 제외").
 `restore.sh`는 **fresh checkout 안에서** 실행되는 걸 전제한다 — 레포를 먼저 clone(또는
 복사)한 뒤 그 안으로 restore.
 
-### 2. 새 호스트에서 `uv sync`는 필수
-
-dispatcher는 레포를 `/app`에 바인드 마운트하므로 이미지에 구워진 venv가 아니라 **호스트의**
-`./.venv/bin/python`을 실행한다. 옛 VM에서 복사한 `.venv`는 인터프리터 심링크가 옛 호스트의
-uv 캐시를 가리켜서 끊겨 있고, dispatcher + MCP 서버가 안 뜬다. `docker compose up -d` 전에
-새 호스트에서 항상 `uv sync`를 돌려라. (`restore.sh`도 같은 이유로 "Next step 1"에 이걸 찍어준다.)
+(예전엔 dispatcher가 `.:/app`으로 레포 전체를 바인드 마운트해서 호스트 `.venv`를 직접
+실행했고, `uv sync`를 안 돌리면 dispatcher가 안 뜨는 사고가 있었다. PR #12에서 마운트를
+`workspace/`, `mcp.json`, `.claude/`, `CLAUDE.md`로 줄이면서 `.venv/bin/python`이 이미지에
+구워진 venv를 가리키게 됐고, 그 문제는 해소됨 — 지금은 호스트에 `uv sync`를 돌릴 필요가
+없다.)
 
 ---
 
@@ -116,7 +119,7 @@ neo4j : graph dump included = yes
 
 1. `docker compose ps` — `neo4j`, `poller`, `dispatcher` 셋 다 up.
 2. `docker compose logs dispatcher` — "Loaded bots: [...]", "Dispatcher polling" 보이고 인증
-   (401)이나 `.venv` 에러 없음.
+   (401)이나 이미지 pull/build 에러 없음.
 3. 봇에 메시지 보내기 — 복원된 그래프 + cycle 리포트로 답해야 함.
 4. 소스 `MANIFEST.txt`의 행 수와 대조 (테이블별 row count가 적혀 있음).
 
