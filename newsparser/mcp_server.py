@@ -8,6 +8,7 @@ from pathlib import Path
 from mcp.server.fastmcp import FastMCP
 
 from newsparser.graph.traversal import get_context, get_influence_chain, format_context_for_claude
+from newsparser.bots.core.jobs import KILL_FILE, REQUEST_DIR, STATE_FILE
 from newsparser.classifier import classify_query as _classify_query_impl
 from newsparser.market import store as _market_store
 from newsparser.market.fetcher import TICKERS as _MARKET_TICKERS
@@ -296,6 +297,145 @@ def search_articles(keyword: str, category: str | None = None, n: int = 5) -> st
             f"{body}\n"
         )
     return "\n".join(out)
+
+
+# --- Job tools ---------------------------------------------------------------
+# Background jobs (cycle/weekly/reflect) run inside the dispatcher process; it
+# mirrors their state to workspace/jobs.json (see bots/core/jobs.py). These tools
+# read that file — they run in a separate process and cannot touch the
+# dispatcher's memory.
+
+
+def _fmt_elapsed(seconds: int) -> str:
+    m, s = divmod(max(0, int(seconds)), 60)
+    if m >= 60:
+        h, m = divmod(m, 60)
+        return f"{h}시간 {m}분"
+    if m:
+        return f"{m}분 {s}초"
+    return f"{s}초"
+
+
+def _age_s(iso: str | None) -> int | None:
+    """Seconds elapsed since an ISO timestamp, or None if unparseable."""
+    if not iso:
+        return None
+    try:
+        then = datetime.fromisoformat(iso)
+    except ValueError:
+        return None
+    return max(0, int(datetime.now(timezone.utc).timestamp() - then.timestamp()))
+
+
+@mcp.tool()
+def job_status() -> str:
+    """현재 실행 중인 백그라운드 작업(cycle/weekly/reflect 등)과 최근 완료 이력.
+    사용자가 "지금 뭐 돌아가?", "cycle 잘 되고 있어?" 같이 작업 진행 상황을 물으면 호출한다.
+    running 항목의 "마지막 활동 … 전"이 수 분을 넘으면 작업이 멈춰 있을 가능성이 있다."""
+    path = _workspace() / STATE_FILE
+    if not path.exists():
+        return f"작업 상태 파일({STATE_FILE})이 없다 — 아직 실행된 작업이 없거나 디스패처가 구버전이다."
+    try:
+        state = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError) as e:
+        return f"{STATE_FILE} 읽기 실패: {e}"
+
+    lines: list[str] = [f"상태 갱신 시각: {state.get('updated_at', '?')}"]
+    running = state.get("running", [])
+    if running:
+        lines.append("\n실행 중:")
+        for j in running:
+            # elapsed/idle are recomputed from the persisted timestamps at read
+            # time — the stored values are only as fresh as the last heartbeat,
+            # which stops entirely when claude hangs (the case we must surface).
+            elapsed = _age_s(j.get("started_at"))
+            if elapsed is None:
+                elapsed = j.get("elapsed_s", 0)
+            line = (f"• #{j['id']} {j['bot']} ({j['trigger']}) — "
+                    f"{j['started_at']} 시작, {_fmt_elapsed(elapsed)} 경과")
+            act = j.get("activity")
+            if act:
+                idle = _age_s(act.get("last_event_at"))
+                if idle is None:
+                    idle = act.get("idle_s", 0)
+                line += (f"\n  마지막 활동: {act['desc']} — {_fmt_elapsed(idle)} 전"
+                         f" (턴 {act.get('turns', '?')}, pid {act.get('pid', '?')})")
+            else:
+                line += "\n  (활성 claude 서브프로세스 없음 — python 단계 실행 중일 수 있음)"
+            lines.append(line)
+    else:
+        lines.append("\n실행 중인 작업 없음.")
+    recent = state.get("recent", [])
+    if recent:
+        lines.append("\n최근 완료:")
+        for j in recent[:5]:
+            line = (f"• #{j['id']} {j['bot']} — {j['status']}, "
+                    f"{j.get('finished_at', '?')} 종료, {_fmt_elapsed(j.get('elapsed_s', 0))} 소요")
+            if j.get("error"):
+                line += f"\n  error: {j['error'][:200]}"
+            lines.append(line)
+    return "\n".join(lines)
+
+
+_STARTABLE_BOTS = {"cycle", "weekly", "reflect", "market_daily"}
+
+
+@mcp.tool()
+def start_job(bot: str, chat_id: str | None = None) -> str:
+    """백그라운드 작업을 시작한다 (허용: cycle, weekly, reflect, market_daily).
+    사용자가 "사이클 돌려줘", "위클리 실행해" 같이 작업 실행을 지시하면 호출한다.
+    chat_id를 넘기면 완료 메시지가 그 채팅으로 간다 (프롬프트에 있는 현재 chat_id를 넘겨라).
+    요청은 파일 큐로 전달되어 디스패처가 수 초 내에 집어간다."""
+    if bot not in _STARTABLE_BOTS:
+        return f"'{bot}'은 시작할 수 없는 작업이다. 허용: {sorted(_STARTABLE_BOTS)}."
+    ws = _workspace()
+    try:
+        state = json.loads((ws / STATE_FILE).read_text())
+    except (OSError, json.JSONDecodeError):
+        state = {}
+    running = next((j for j in state.get("running", []) if j.get("bot") == bot), None)
+    if running is not None:
+        return (f"{bot}은 이미 실행 중이다 (#{running['id']}, "
+                f"{running.get('started_at', '?')} 시작). job_status()로 확인해라.")
+
+    import uuid
+    req_dir = ws / REQUEST_DIR
+    req_dir.mkdir(parents=True, exist_ok=True)
+    req = {"bot": bot, "chat_id": chat_id,
+           "requested_at": datetime.now(timezone.utc).isoformat()}
+    tmp = req_dir / f".{uuid.uuid4().hex}.tmp"
+    tmp.write_text(json.dumps(req, ensure_ascii=False))
+    tmp.rename(req_dir / f"{uuid.uuid4().hex}.json")
+    return (f"{bot} 시작 요청 접수 — 디스패처가 수 초 내에 실행한다. "
+            "진행 상황은 job_status()로 확인할 수 있다.")
+
+
+@mcp.tool()
+def kill_job(job_id: int) -> str:
+    """실행 중인 백그라운드 작업을 강제 중단한다. job_status()로 id를 확인하고,
+    사용자에게 확인을 받은 뒤에만 호출한다."""
+    ws = _workspace()
+    try:
+        state = json.loads((ws / STATE_FILE).read_text())
+    except (OSError, json.JSONDecodeError) as e:
+        return f"{STATE_FILE} 읽기 실패: {e}"
+    job = next((j for j in state.get("running", []) if j.get("id") == job_id), None)
+    if job is None:
+        return f"실행 중인 작업 중 id={job_id}가 없다. job_status()로 확인해라."
+
+    # This process only records the request; the dispatcher's poll picks it up
+    # and kills the job's claude subprocesses in-process (killing a pid from
+    # here would risk a stale/reused pid or a different container's namespace).
+    kill_path = ws / KILL_FILE
+    try:
+        ids = json.loads(kill_path.read_text())
+    except (OSError, json.JSONDecodeError):
+        ids = []
+    if job_id not in ids:
+        ids.append(job_id)
+    kill_path.write_text(json.dumps(ids))
+    return (f"#{job_id} {job['bot']} 중단 요청 접수 — 디스패처가 수 초 내에 작업을 종료하고 "
+            "🛑 메시지로 확인해줄 것이다.")
 
 
 # --- Ops tools -------------------------------------------------------------

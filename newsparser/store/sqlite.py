@@ -1,7 +1,7 @@
 import sqlite3
 import os
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Generator
 
@@ -72,7 +72,7 @@ def mark_seen(guid: str) -> None:
     with _connection() as conn:
         conn.execute(
             "INSERT OR IGNORE INTO seen_articles (guid, seen_at) VALUES (?, ?)",
-            (guid, datetime.utcnow().isoformat()),
+            (guid, datetime.now(timezone.utc).isoformat()),
         )
 
 
@@ -86,7 +86,7 @@ def insert_article(
                (guid, source, title, url, published, body, fetched_at, category)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
             (guid, source, title, url, published, body,
-             datetime.utcnow().isoformat(), category),
+             datetime.now(timezone.utc).isoformat(), category),
         )
 
 
@@ -106,7 +106,7 @@ def get_recent(minutes: int = 60) -> list[dict]:
     with _connection() as conn:
         rows = conn.execute(
             """SELECT * FROM pending_articles
-               WHERE fetched_at >= datetime('now', ?)
+               WHERE fetched_at >= strftime('%Y-%m-%dT%H:%M:%S', 'now', ?)
                ORDER BY fetched_at""",
             (f"-{minutes} minutes",),
         ).fetchall()

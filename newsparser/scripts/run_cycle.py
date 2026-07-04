@@ -12,7 +12,7 @@ load_dotenv()
 
 from newsparser.bot.sender import send_long_message
 from newsparser.claude.input_builder import build_input_file
-from newsparser.claude.runner import run_claude
+from newsparser.claude.runner import ClaudeKilled, run_claude
 from newsparser.classifier import classify_article, CATEGORIES
 from newsparser.market import snapshot as market_snapshot
 from newsparser.market import store as market_store
@@ -295,6 +295,10 @@ def main(slot: str | None = None) -> None:
     for category in CATEGORIES:
         try:
             _run_for_category(slot, category, workspace)
+        except ClaudeKilled:
+            # Intentional kill — skip the remaining categories and let the
+            # JobManager consume the marker and report 🛑.
+            raise
         except Exception as exc:
             logger.error("[%s] cycle failed: %s", category, exc)
 

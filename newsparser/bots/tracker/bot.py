@@ -16,7 +16,6 @@ async def run(ctx: Context) -> None:
         _docker_rebuild()
         return
 
-    await ctx.telegram.send("🔍 분석 중...")
     answer = await ctx.run_in_thread(run_tracker, chat_id=chat_id, query=text)
     await ctx.telegram.send(answer)
 

@@ -18,12 +18,11 @@ def main(date: str | None = None) -> None:
     if date is None:
         date = datetime.now(_KST).strftime("%Y-%m-%d")
     ensure_workspace()
-    try:
-        stdout = run_claude(f"/reflect {date}")
-        if stdout.strip():
-            send_long_message(f"[REFLECT] {stdout}")
-    except Exception as exc:
-        logger.error("Reflect failed: %s", exc)
+    # Failures propagate to the JobManager, which notifies ❌ (or 🛑 on kill) —
+    # swallowing them here would make the job look successful.
+    stdout = run_claude(f"/reflect {date}")
+    if stdout.strip():
+        send_long_message(f"[REFLECT] {stdout}")
 
 
 if __name__ == "__main__":

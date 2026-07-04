@@ -1,5 +1,5 @@
 from collections import defaultdict
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 WINDOW_MINUTES = 15
 CONVERGENCE_MIN_SOURCES = 3
@@ -17,12 +17,18 @@ def _jaccard(a: set, b: set) -> float:
     return len(a & b) / len(a | b)
 
 
+def _parse_utc(ts: str) -> datetime:
+    """Parse an isoformat timestamp, treating naive values (from pre-migration rows) as UTC."""
+    dt = datetime.fromisoformat(ts)
+    return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+
+
 def detect_convergence(articles: list[dict]) -> list[list[dict]]:
     """Return clusters of articles from 3+ sources with overlapping titles within 15 min."""
-    cutoff = datetime.utcnow() - timedelta(minutes=WINDOW_MINUTES)
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=WINDOW_MINUTES)
     window = [
         a for a in articles
-        if datetime.fromisoformat(a["fetched_at"]) > cutoff
+        if _parse_utc(a["fetched_at"]) > cutoff
     ]
 
     clusters: list[list[dict]] = []
@@ -51,8 +57,8 @@ def detect_convergence(articles: list[dict]) -> list[list[dict]]:
 
 def detect_spike(articles: list[dict], baseline: dict[str, float]) -> list[str]:
     """Return sources whose article count in the last hour exceeds SPIKE_MULTIPLIER × baseline."""
-    cutoff = datetime.utcnow() - timedelta(hours=1)
-    recent = [a for a in articles if datetime.fromisoformat(a["fetched_at"]) > cutoff]
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=1)
+    recent = [a for a in articles if _parse_utc(a["fetched_at"]) > cutoff]
 
     count_by_source: dict[str, int] = defaultdict(int)
     for a in recent:

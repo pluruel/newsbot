@@ -18,12 +18,11 @@ def main(date: str | None = None) -> None:
     if date is None:
         date = datetime.now(_KST).strftime("%Y-%m-%d")
     ensure_workspace()
-    try:
-        stdout = run_claude(f"/weekly {date}")
-        if stdout.strip():
-            send_long_message(f"[WEEKLY] {stdout}")
-    except Exception as exc:
-        logger.error("Weekly failed: %s", exc)
+    # Failures propagate to the JobManager, which notifies ❌ (or 🛑 on kill) —
+    # swallowing them here would make the job look successful.
+    stdout = run_claude(f"/weekly {date}")
+    if stdout.strip():
+        send_long_message(f"[WEEKLY] {stdout}")
 
 
 if __name__ == "__main__":

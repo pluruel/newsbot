@@ -1,5 +1,5 @@
 import pytest
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from newsparser.collector.alert import detect_convergence, detect_spike, _jaccard, _tokenize
 
 def test_jaccard_overlap():
@@ -20,7 +20,7 @@ def test_tokenize_lowercases_and_filters_short():
     assert "to" not in tokens  # len==2 — excluded
 
 def test_detect_convergence_finds_cluster():
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     articles = [
         {"guid": "1", "source": "Reuters",      "title": "Fed cuts rates emergency meeting", "fetched_at": now.isoformat()},
         {"guid": "2", "source": "매일경제",      "title": "Fed cuts rates emergency", "fetched_at": now.isoformat()},
@@ -31,7 +31,7 @@ def test_detect_convergence_finds_cluster():
     assert len(clusters[0]) == 3
 
 def test_detect_convergence_ignores_single_source():
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     articles = [
         {"guid": "1", "source": "Reuters", "title": "Fed cuts rates", "fetched_at": now.isoformat()},
         {"guid": "2", "source": "Reuters", "title": "Fed rate decision", "fetched_at": now.isoformat()},
@@ -40,8 +40,8 @@ def test_detect_convergence_ignores_single_source():
     assert len(clusters) == 0
 
 def test_detect_convergence_ignores_old_articles():
-    old = (datetime.utcnow() - timedelta(minutes=20)).isoformat()
-    now = datetime.utcnow().isoformat()
+    old = (datetime.now(timezone.utc) - timedelta(minutes=20)).isoformat()
+    now = datetime.now(timezone.utc).isoformat()
     articles = [
         {"guid": "1", "source": "Reuters",  "title": "Fed cuts rates emergency", "fetched_at": old},
         {"guid": "2", "source": "매일경제", "title": "Fed cuts rates emergency", "fetched_at": now},
@@ -51,7 +51,7 @@ def test_detect_convergence_ignores_old_articles():
     assert len(clusters) == 0
 
 def test_detect_spike_triggers_on_burst():
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     articles = [
         {"source": "Reuters", "title": f"Article {i}", "fetched_at": (now - timedelta(minutes=i)).isoformat()}
         for i in range(20)  # 20 articles in last hour
@@ -61,7 +61,7 @@ def test_detect_spike_triggers_on_burst():
     assert "Reuters" in spiking
 
 def test_detect_spike_no_trigger_normal_volume():
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     articles = [
         {"source": "Reuters", "title": f"Article {i}", "fetched_at": (now - timedelta(minutes=i*10)).isoformat()}
         for i in range(4)  # 4 articles in last hour

@@ -365,6 +365,31 @@ def test_run_cycle_skips_empty_category(tmp_path):
     assert "tech" in claude_calls[0]
 
 
+def test_run_cycle_kill_aborts_remaining_categories(tmp_path):
+    """A ClaudeKilled (intentional kill) must propagate out of main() — not be
+    swallowed by the per-category error guard — so the JobManager can consume
+    the kill marker and report 🛑, and no further categories run."""
+    from newsparser.claude.runner import ClaudeKilled
+
+    insert_article("g1", "src", "t1", "u1", None, "body", category="tech")
+    insert_article("g2", "src", "t2", "u2", None, "body", category="markets")
+
+    calls: list[str] = []
+
+    def fake_claude(prompt, **kw):
+        calls.append(prompt)
+        raise ClaudeKilled("killed by kill request")
+
+    with patch("newsparser.scripts.run_cycle.run_claude", side_effect=fake_claude), \
+         patch("newsparser.scripts.run_cycle.build_input_file"), \
+         patch("newsparser.scripts.run_cycle.classify_article", return_value="tech"), \
+         patch("newsparser.scripts.run_cycle.send_long_message"), \
+         pytest.raises(ClaudeKilled):
+        script.main("2026-05-08-12")
+
+    assert len(calls) == 1
+
+
 def test_run_cycle_category_error_doesnt_stop_other(tmp_path):
     insert_article("g1", "src", "t1", "u1", None, "body", category="tech")
     insert_article("g2", "src", "t2", "u2", None, "body", category="markets")

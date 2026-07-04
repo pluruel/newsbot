@@ -1,6 +1,7 @@
 import logging
 import os
 import re
+import time
 import traceback
 from pathlib import Path
 
@@ -10,6 +11,7 @@ from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandl
 from apscheduler.triggers.cron import CronTrigger
 
 from newsparser.bots.core.context import Context, TelegramSender
+from newsparser.bots.core.jobs import JobManager
 from newsparser.bots.core.registry import BotRegistry
 from newsparser.bots.core.types import Bot, Cron
 
@@ -18,6 +20,7 @@ logger = logging.getLogger(__name__)
 
 _WORKSPACE = Path(os.environ.get("WORKSPACE_DIR", "workspace"))
 registry = BotRegistry()
+jobs = JobManager(_WORKSPACE)
 
 
 def _make_ctx(bot_name: str, ptb_bot, chat_id: str | None = None, message=None) -> Context:
@@ -66,6 +69,12 @@ async def _handle_message(update: Update, ptb_ctx: ContextTypes.DEFAULT_TYPE) ->
         return
 
     ctx = _make_ctx(matched.name, ptb_ctx.bot, chat_id=chat_id, message=update.message)
+    if matched.background:
+        if jobs.start(matched, ctx, trigger="telegram") is None:
+            running = jobs.running_for(matched.name)
+            elapsed = int(time.time() - running.started_at) // 60 if running else 0
+            await ctx.telegram.send(f"⚠️ {matched.name} 이미 실행 중 ({elapsed}분 경과)")
+        return
     await _run_with_guard(matched, ctx)
 
 
@@ -103,10 +112,37 @@ async def _handle_reload(update: Update, ptb_ctx: ContextTypes.DEFAULT_TYPE) -> 
     await update.message.reply_text("\n".join(lines))
 
 
+async def _poll_job_requests(ptb_ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """Pick up start/kill requests written by the MCP job tools (separate
+    process): kill the claude subprocesses of jobs marked in jobs.kill, and
+    launch requested bots as background jobs."""
+    jobs.process_kill_requests()
+    for req in jobs.consume_requests():
+        name = req["bot"]
+        bot = next((b for b in registry.all() if b.name == name), None)
+        chat_id = req.get("chat_id")
+        ctx = _make_ctx(name, ptb_ctx.bot, chat_id=chat_id)
+        if bot is None:
+            logger.warning("Job request for unknown bot %r ignored", name)
+            await ctx.telegram.send(f"⚠️ 알 수 없는 작업 요청: {name}")
+            continue
+        if jobs.start(bot, ctx, trigger="mcp") is None:
+            await ctx.telegram.send(f"⚠️ {name} 이미 실행 중 — 요청 무시됨")
+
+
 def _make_cron_callback(bot: Bot):
     async def _cb(ptb_ctx: ContextTypes.DEFAULT_TYPE) -> None:
         ctx = _make_ctx(bot.name, ptb_ctx.bot)
-        await _run_with_guard(bot, ctx)
+        if jobs.start(bot, ctx, trigger="cron") is None:
+            running = jobs.running_for(bot.name)
+            elapsed = int(time.time() - running.started_at) // 60 if running else 0
+            logger.warning("Cron trigger skipped — %s already running (%d min)",
+                           bot.name, elapsed)
+            # A hung job would otherwise silently eat every future cron tick —
+            # tell the user so they can kill_job / restart.
+            await ctx.telegram.send(
+                f"⚠️ {bot.name} 정기 실행 건너뜀 — 이전 작업이 아직 실행 중 ({elapsed}분 경과). "
+                "멈춘 것 같으면 kill_job으로 중단해라.")
     return _cb
 
 
@@ -134,10 +170,12 @@ def start() -> None:
         .token(token)
         .read_timeout(30)
         .connect_timeout(10)
+        .concurrent_updates(True)
         .build()
     )
 
     _register_cron_jobs(app)
+    app.job_queue.run_repeating(_poll_job_requests, interval=3, first=3, name="job-requests")
     app.add_handler(CommandHandler("reload", _handle_reload))
     app.add_handler(MessageHandler(filters.TEXT, _handle_message))
 
