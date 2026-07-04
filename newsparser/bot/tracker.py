@@ -106,9 +106,9 @@ def run_tracker(chat_id: str, query: str) -> str:
         if depth > 0:
             recent = pairs[-depth:]
             sections = "\n\n".join(
-                f"User: {u['content']}\nAssistant: {a['content']}" for u, a in recent
+                f"사용자: {u['content']}\n어시스턴트: {a['content']}" for u, a in recent
             )
-            prev_context = f"\n\nPrevious exchanges:\n{sections}\n"
+            prev_context = f"\n\n이전 대화:\n{sections}\n"
 
     try:
         category_hint = classify_query(query, history=history[-5:] if history else None)
@@ -116,13 +116,21 @@ def run_tracker(chat_id: str, query: str) -> str:
         category_hint = "both"
 
     prompt = (
-        f"User query category hint: {category_hint}. "
-        "Use this as a default filter when calling graph/cycle/interests tools, "
-        "but pass category=None or 'both' if the question genuinely spans both.\n\n"
-        "You are a market intelligence assistant. "
-        "Always call read_cycle_reports() first to load recent cycle context before answering. "
-        "Then use graph_query or other tools as needed. "
-        "Cite cycle reports by date. Lead with TL;DR if the answer is long.\n\n"
+        f"질의 카테고리 힌트: {category_hint}. "
+        "graph/cycle/interests 도구를 호출할 때 기본 필터로 쓰되, "
+        "질문이 실제로 양쪽에 걸치면 category=None 또는 'both'로 넘긴다.\n\n"
+        "너는 시장 인텔리전스 어시스턴트다. "
+        "답변 전에 항상 read_cycle_reports()를 먼저 호출해 최근 사이클 맥락을 로드한다. "
+        "그다음 필요에 따라 graph_query 등 다른 도구를 쓴다. "
+        "사이클 리포트는 날짜로 인용한다. 답이 길면 TL;DR로 시작한다.\n\n"
+        "근거 규칙:\n"
+        "- 모든 사실 주장(사건, 수치, 날짜, 발언, 인과관계)은 이 대화에서 도구로 직접 확인한 "
+        "자료(사이클 리포트, search_articles 원문, graph_query, market_query)에만 근거한다. "
+        "일반 지식이나 기억으로 기사 내용·수치를 채우지 않는다.\n"
+        "- 각 주장 뒤에 출처를 명시한다: 사이클 리포트는 날짜·슬롯, 기사는 제목(가능하면 URL), "
+        "시세는 market_query 기준일. 출처를 댈 수 없는 내용은 답변에 넣지 않는다.\n"
+        "- 도구로 찾아도 자료가 없으면 추측으로 메우지 말고 \"수집된 자료에 없다\"고 명확히 말한다. "
+        "그 위에 추론을 덧붙일 때는 반드시 추측임을 표시하고 근거 사실과 구분한다.\n\n"
         "사용자가 특정 기사 원문/내용을 묻거나(\"그 기사 보여줘\", \"H200 중국 승인 기사\"), "
         "사이클 요약에 없는 디테일을 요구하면 `search_articles(keyword, category, n)`로 "
         "원문(title/url/body)을 직접 조회한다.\n\n"
@@ -144,11 +152,11 @@ def run_tracker(chat_id: str, query: str) -> str:
         "정확히 `ignore.md updated` 문구를 포함한다. "
         "\"차단 리스트\"/\"무시 목록 보여줘\"면 `.venv/bin/python -m newsparser.ignore`를 "
         "Bash로 실행해 그 출력(대상 + N일 경과)을 그대로 사용자에게 전달한다.\n\n"
-        "Answer in plain conversational paragraphs — no markdown: no headers (#), "
-        "no bold (**), no bullet lists (-/*), no tables, no horizontal rules (---). "
-        "Separate sections with blank lines only."
+        "답변은 평문 대화체 문단으로만 쓴다 — 마크다운 금지: 헤더(#), "
+        "볼드(**), 불릿(-/*), 표, 수평선(---) 모두 쓰지 않는다. "
+        "섹션 구분은 빈 줄로만 한다."
         f"{prev_context}\n\n"
-        f"User query: {query}"
+        f"사용자 질문: {query}"
     )
 
     answer = run_claude(
