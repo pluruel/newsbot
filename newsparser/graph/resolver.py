@@ -90,17 +90,24 @@ def _registry_norm_index(registry: list[dict]) -> dict[str, set[str]]:
 def _deterministic_matches(
     candidates: list[EntityUpdate], registry: list[dict]
 ) -> tuple[dict[str, tuple[str, str]], list[EntityUpdate]]:
-    """Confirm renames without an LLM where the match is unambiguous: a
-    candidate's normalized name/alias hits exactly one registry *canonical
-    name*. Ambiguity is measured by distinct canonical name — the same name
-    fragmented across labels counts as one match (we want to collapse it, not
-    defer it), and the surviving label is the most-established one.
+    """Confirm renames without an LLM where the match is unambiguous AND the
+    candidate's own *name* participates in it: the normalized name hits exactly
+    one registry canonical name (directly or via that entry's aliases), with no
+    second canonical name reachable through the candidate's aliases. Ambiguity
+    is measured by distinct canonical name — the same name fragmented across
+    labels counts as one match (we want to collapse it, not defer it), and the
+    surviving label is the most-established one.
+
+    A single hit reachable only through candidate *aliases* is NOT confirmed:
+    aliases are LLM-extracted from article prose and one noisy shorthand alias
+    ('삼성' on a Samsung Biologics candidate) must not silently merge two
+    distinct entities. Those go to Haiku, which can answer NEW.
 
     Returns (rename, remaining):
       - rename: {candidate_name: (canonical_name, label)} for confirmed matches,
         including label-only overrides (same name, existing node's label wins).
-      - remaining: candidates left for Haiku (no match, or an ambiguous multi-hit
-        onto genuinely different names — a wrong merge is worse than a missed one).
+      - remaining: candidates left for Haiku (no match, alias-only match, or an
+        ambiguous multi-hit — a wrong merge is worse than a missed one).
     A candidate already equal to both the canonical name and its label resolves
     to itself: no rename, and dropped from the Haiku batch."""
     idx = _registry_norm_index(registry)
@@ -108,20 +115,23 @@ def _deterministic_matches(
     rename: dict[str, tuple[str, str]] = {}
     remaining: list[EntityUpdate] = []
     for c in candidates:
-        matches: set[str] = set()
-        for surface in [c.name, *c.aliases]:
+        name_key = _normalize(c.name)
+        name_hits: set[str] = set(idx.get(name_key, set())) if name_key else set()
+        alias_hits: set[str] = set()
+        for surface in c.aliases:
             key = _normalize(surface)
             if key and key in idx:
-                matches |= idx[key]
-        if len(matches) == 1:
+                alias_hits |= idx[key]
+        matches = name_hits | alias_hits
+        if len(matches) == 1 and name_hits:
             canon = next(iter(matches))
             label = label_of.get(canon)
             if (canon, label) != (c.name, c.label):
                 rename[c.name] = (canon, label)
             # else already canonical under the same label — skip Haiku
         else:
-            # 0 matches → genuinely new (or long-tail); >1 → ambiguous.
-            # Both go to Haiku.
+            # 0 matches → genuinely new (or long-tail); alias-only → suggestive
+            # but not proof; >1 → ambiguous. All go to Haiku.
             remaining.append(c)
     return rename, remaining
 
@@ -144,41 +154,53 @@ def _labels_in_group(group: str) -> list[str]:
 _index_ensured = False
 
 _LUCENE_SPECIAL = re.compile(r'([+\-&|!(){}\[\]^"~*?:\\/])')
+# Bare uppercase AND/OR/NOT are boolean operators to Lucene's query parser and
+# raise ParseException in operator-illegal positions (e.g. a name starting with
+# 'AND'). They can't be backslash-escaped; lowercasing makes them literal terms
+# (the fulltext analyzer lowercases everything anyway, so matching is unchanged).
+_LUCENE_OPERATORS = re.compile(r"\b(AND|OR|NOT)\b")
 
 
 def _lucene_escape(text: str) -> str:
     """Escape Lucene query syntax so an arbitrary entity name is treated as
     literal terms, not an operator soup that raises a parse error."""
-    return _LUCENE_SPECIAL.sub(r"\\\1", text or "")
+    escaped = _LUCENE_SPECIAL.sub(r"\\\1", text or "")
+    return _LUCENE_OPERATORS.sub(lambda m: m.group(0).lower(), escaped)
 
 
-def ensure_entity_index(session=None) -> None:
-    """Create the full-text index over entity names/aliases, idempotently.
-    Cheap after first run; safe to race (IF NOT EXISTS). Best-effort — a failure
-    just leaves fetch_registry on its top-N fallback path."""
+def ensure_entity_index(session) -> bool:
+    """Create the full-text index over entity names/aliases (idempotent) and
+    wait until it is online. Returns False when the index can't be confirmed
+    usable — the caller must treat the registry as incomplete (deterministic
+    confirmation skipped, candidates routed to Haiku which can answer NEW),
+    because a half-populated index makes a wrong match look unambiguous."""
     global _index_ensured
     if _index_ensured:
-        return
+        return True
     labels = "|".join(_ENTITY_LABELS)
     stmt = (
         f"CREATE FULLTEXT INDEX {_ENTITY_INDEX} IF NOT EXISTS "
         f"FOR (n:{labels}) ON EACH [n.canonical_name, n.aliases]"
     )
     try:
-        if session is not None:
-            session.run(stmt)
-        else:
-            with get_driver().session() as s:
-                s.run(stmt)
+        session.run(stmt)
+        # A freshly created index populates asynchronously; block until ONLINE
+        # (immediate no-op once populated) so the first cycles after deploy
+        # don't resolve against a partial registry.
+        session.run("CALL db.awaitIndex($name, $timeout)",
+                    name=_ENTITY_INDEX, timeout=60)
         _index_ensured = True
+        return True
     except Exception as exc:  # pragma: no cover - depends on live Neo4j
-        logger.warning("could not ensure entity full-text index (%s); "
-                       "resolver will use top-N fallback", exc)
+        logger.warning("entity full-text index unavailable (%s); "
+                       "registry will be treated as incomplete", exc)
+        return False
 
 
 _REGISTRY_RETURN = (
     "e.canonical_name AS name, coalesce(e.aliases, []) AS aliases, "
-    "[l IN labels(e) WHERE l IN $labels][0] AS label"
+    "[l IN labels(e) WHERE l IN $labels][0] AS label, "
+    "coalesce(e.mention_count, 0) AS mention_count"
 )
 
 
@@ -194,25 +216,37 @@ def _fetch_top_n(session, labels: list[str], limit: int) -> list[dict]:
     return [dict(r) for r in result]
 
 
-def _fetch_full_text(session, labels: list[str], candidates: list[EntityUpdate]) -> list[dict]:
+def _fetch_full_text(
+    session, labels: list[str], candidates: list[EntityUpdate]
+) -> tuple[list[dict], bool]:
     """Per-candidate full-text hits — pulls long-tail entities the top-N base
-    misses. Query terms are each candidate's name + aliases, Lucene-escaped."""
+    misses. Query terms are each candidate's name + aliases, Lucene-escaped.
+
+    One statement per candidate (not a single UNWIND) so one unparsable name
+    can't sink the whole batch. Returns (rows, ok); ok=False when any query
+    failed — long-tail coverage is then incomplete and the caller must not
+    treat the registry as complete."""
     queries = []
     for c in candidates:
         terms = " ".join(_lucene_escape(t) for t in [c.name, *c.aliases] if t and t.strip())
         if terms.strip():
             queries.append(terms)
-    if not queries:
-        return []
-    result = session.run(
-        "UNWIND $queries AS q "
-        f"CALL db.index.fulltext.queryNodes('{_ENTITY_INDEX}', q, {{limit: $k}}) "
-        "  YIELD node AS e "
-        "WITH DISTINCT e WHERE any(l IN labels(e) WHERE l IN $labels) "
-        f"RETURN {_REGISTRY_RETURN}",
-        queries=queries, k=_FT_TOPK, labels=labels,
-    )
-    return [dict(r) for r in result]
+    rows: list[dict] = []
+    ok = True
+    for q in queries:
+        try:
+            result = session.run(
+                f"CALL db.index.fulltext.queryNodes('{_ENTITY_INDEX}', $q, {{limit: $k}}) "
+                "  YIELD node AS e "
+                "WITH DISTINCT e WHERE any(l IN labels(e) WHERE l IN $labels) "
+                f"RETURN {_REGISTRY_RETURN}",
+                q=q, k=_FT_TOPK, labels=labels,
+            )
+            rows.extend(dict(r) for r in result)
+        except Exception as exc:
+            ok = False
+            logger.warning("full-text lookup failed for %r (%s)", q, exc)
+    return rows, ok
 
 
 def _fetch_recent_events(session, labels: list[str], days: int, limit: int) -> list[dict]:
@@ -230,39 +264,66 @@ def _fetch_recent_events(session, labels: list[str], days: int, limit: int) -> l
     return [dict(r) for r in result]
 
 
-def fetch_registry(labels: list[str], candidates: list[EntityUpdate] | None = None) -> list[dict]:
-    """Existing canonical_name/aliases/label for entities in `labels`, deduped
-    by canonical_name. Crossing a label group (e.g. Company+Institution) lets
-    the resolver spot the same entity fragmented across labels; the `label`
-    column drives first-seen-sticky override.
+def fetch_registry(
+    labels: list[str], candidates: list[EntityUpdate] | None = None
+) -> tuple[list[dict], bool]:
+    """Existing canonical_name/aliases/label/mention_count for entities in
+    `labels`, deduped by canonical_name. Crossing a label group (e.g.
+    Company+Institution) lets the resolver spot the same entity fragmented
+    across labels; when two nodes share a canonical_name, the more-established
+    (higher mention_count) row's label wins and the aliases are unioned so the
+    other node's surface forms stay matchable.
 
     With `candidates`, builds a targeted registry (top-N base ∪ per-candidate
-    full-text ∪ recent Events) instead of a flat top-300 — this reaches
-    long-tail entities the mention-count cap would hide. Full-text failures
-    (index missing/populating) degrade to just the top-N base; a total failure
-    falls back to the legacy top-300 scan."""
+    full-text ∪ recent Events) instead of a flat top-N scan — this reaches
+    long-tail entities the mention-count cap would hide.
+
+    Returns (rows, complete). complete=False when the full-text layer could
+    not fully cover the candidates (index missing/populating, query failures)
+    — the caller must NOT run deterministic auto-merges against an incomplete
+    registry, where a wrong match can look unambiguous; Haiku (which can
+    answer NEW) is the only safe consumer then."""
     with get_driver().session() as session:
         if not candidates:
-            return _fetch_top_n(session, labels, _REGISTRY_LIMIT)
+            # Legacy flat scan: no candidate-targeted coverage, so never
+            # complete enough for deterministic confirmation.
+            return _fetch_top_n(session, labels, _REGISTRY_LIMIT), False
 
-        ensure_entity_index(session)
+        complete = ensure_entity_index(session)
         by_name: dict[str, dict] = {}
-        # Base is always present, so common entities stay covered even before
-        # the full-text index finishes populating.
+
+        def _fold(row: dict) -> None:
+            cur = by_name.get(row["name"])
+            if cur is None:
+                by_name[row["name"]] = row
+                return
+            # Same canonical_name from two nodes (label fragmentation): keep
+            # the more-established row, union aliases from the other.
+            keep, other = ((row, cur)
+                           if (row.get("mention_count") or 0) > (cur.get("mention_count") or 0)
+                           else (cur, row))
+            keep["aliases"] = keep["aliases"] + [
+                a for a in other["aliases"] if a not in keep["aliases"]]
+            by_name[row["name"]] = keep
+
+        # Base is always present, so common entities stay covered even when
+        # the full-text layer is degraded.
         for row in _fetch_top_n(session, labels, _BASE_TOP_N):
-            by_name.setdefault(row["name"], row)
-        try:
-            for row in _fetch_full_text(session, labels, candidates):
-                by_name.setdefault(row["name"], row)
-        except Exception as exc:
-            logger.warning("full-text registry lookup failed (%s); using top-N base only", exc)
+            _fold(row)
+        ft_rows, ft_ok = _fetch_full_text(session, labels, candidates)
+        complete = complete and ft_ok
+        for row in ft_rows:
+            _fold(row)
         if "Event" in labels:
             try:
                 for row in _fetch_recent_events(session, labels, _EVENT_RECENT_DAYS, _EVENT_RECENT_LIMIT):
-                    by_name.setdefault(row["name"], row)
+                    _fold(row)
             except Exception as exc:
+                # Recent Events add name-divergent duplicates for Haiku's
+                # benefit only — the deterministic pass can't match them —
+                # so their loss doesn't make deterministic merges unsafe.
                 logger.warning("recent-event registry lookup failed (%s)", exc)
-        return list(by_name.values())
+        return list(by_name.values()), complete
 
 
 def _build_prompt(registry: list[dict], candidates: list[EntityUpdate]) -> str:
@@ -312,12 +373,15 @@ def _parse_response(
             continue
         # Reject hallucinated names not in the registry — a wrong merge is worse
         # than a missed one. Accept an exact hit, else a unique normalized hit.
+        # A resolution onto the candidate's own name IS returned: the caller
+        # may still need it as a label-only override (same name, existing
+        # node's label) and filters true no-ops itself.
         if answer in registry_names:
             resolved = answer
         else:
             hits = norm_to_names.get(_normalize(answer), set())
             resolved = next(iter(hits)) if len(hits) == 1 else None
-        if resolved is not None and resolved != name:
+        if resolved is not None:
             rename[name] = resolved
     return rename
 
@@ -345,14 +409,18 @@ def _run_claude_with_retry(prompt: str) -> str | None:
 
 
 def _registry_label_map(registry: list[dict]) -> dict[str, str]:
-    """canonical_name → label. Registry is ordered by mention_count desc, so the
-    first occurrence of a name wins — if the same name is fragmented across
-    labels (the P1 duplicate itself), we stick to the most-established label
-    (first-seen-sticky approximation) rather than the cycle's fresh guess."""
-    name_to_label: dict[str, str] = {}
+    """canonical_name → label of the most-established (highest mention_count)
+    row carrying that name. Registry row order is NOT meaningful (top-N,
+    full-text, and recent-Event buckets arrive in different orders), so the
+    pick is by explicit mention_count — if the same name is fragmented across
+    labels (the P1 duplicate itself), we stick to the established label
+    rather than the cycle's fresh guess."""
+    best: dict[str, tuple[int, str]] = {}
     for r in registry:
-        name_to_label.setdefault(r["name"], r.get("label"))
-    return name_to_label
+        mc = r.get("mention_count") or 0
+        if r["name"] not in best or mc > best[r["name"]][0]:
+            best[r["name"]] = (mc, r.get("label"))
+    return {name: label for name, (_, label) in best.items()}
 
 
 def resolve_entities(entities: list[EntityUpdate]) -> dict[str, tuple[str, str]]:
@@ -360,25 +428,45 @@ def resolve_entities(entities: list[EntityUpdate]) -> dict[str, tuple[str, str]]
     candidates matched to an existing entity within the same label group.
     Names absent from the map are left as-is (new entity, empty registry, or
     resolution failure). The label is the existing node's — applied so the
-    write MERGEs onto that node instead of forking a new label."""
+    write MERGEs onto that node instead of forking a new label.
+
+    A name extracted under multiple label groups in the same batch is skipped
+    entirely: the name-keyed rename map can't hold per-group targets, and
+    relations reference endpoints by bare name — resolving one group's meaning
+    would stomp the other's (missed merge over wrong merge)."""
     rename: dict[str, tuple[str, str]] = {}
+    name_groups: dict[str, set[str]] = {}
+    for e in entities:
+        name_groups.setdefault(e.name, set()).add(_label_group(e.label))
+    cross_group = {n for n, groups in name_groups.items() if len(groups) > 1}
+    if cross_group:
+        logger.warning("skipping resolution for name(s) extracted under multiple "
+                       "label groups: %s", sorted(cross_group))
+
     by_group: dict[str, list[EntityUpdate]] = {}
     for e in entities:
-        by_group.setdefault(_label_group(e.label), []).append(e)
+        if e.name not in cross_group:
+            by_group.setdefault(_label_group(e.label), []).append(e)
 
     for group, candidates in by_group.items():
         labels = _labels_in_group(group)
         try:
-            registry = fetch_registry(labels, candidates)
+            registry, complete = fetch_registry(labels, candidates)
         except Exception as exc:
             logger.warning("registry fetch failed for group=%s (%s); skipping resolution", group, exc)
             continue
         if not registry:
             continue
-        # Deterministic pass first: confirm unambiguous matches without an LLM
-        # and shrink the Haiku batch (fewer/cheaper prompts, self-matches dropped).
-        det_rename, remaining = _deterministic_matches(candidates, registry)
-        rename.update(det_rename)
+        if complete:
+            # Deterministic pass first: confirm unambiguous matches without an LLM
+            # and shrink the Haiku batch (fewer/cheaper prompts, self-matches dropped).
+            det_rename, remaining = _deterministic_matches(candidates, registry)
+            rename.update(det_rename)
+        else:
+            # An incomplete registry can make a wrong match look unambiguous —
+            # only Haiku (which can answer NEW) sees these candidates.
+            logger.warning("registry for group=%s incomplete; skipping deterministic pass", group)
+            remaining = candidates
         if remaining:
             prompt = _build_prompt(registry, remaining)
             raw = _run_claude_with_retry(prompt)
@@ -387,8 +475,13 @@ def resolve_entities(entities: list[EntityUpdate]) -> dict[str, tuple[str, str]]
                 continue
             label_of = _registry_label_map(registry)
             registry_names = {r["name"] for r in registry}
+            cand_label = {c.name: c.label for c in remaining}
             for name, canon in _parse_response(raw, remaining, registry_names).items():
-                rename[name] = (canon, label_of.get(canon))
+                label = label_of.get(canon)
+                # Keep label-only overrides (same name, existing node's label
+                # wins); drop true no-ops (same name AND same label).
+                if (canon, label) != (name, cand_label.get(name)):
+                    rename[name] = (canon, label)
 
     return rename
 

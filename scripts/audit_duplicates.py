@@ -143,12 +143,15 @@ def fetch_entities(session, labels: list[str]) -> list[dict]:
     return [dict(r) for r in result]
 
 
-def _confirm_pairs(candidates: list[dict]) -> set[int] | None:
-    """Ask Haiku which candidate pairs are the same entity. Returns the set of
-    confirmed indices, or None if the call failed (caller treats all as
-    unconfirmed — fail-safe toward not merging)."""
+def _confirm_pairs(candidates: list[dict]) -> dict[int, str] | None:
+    """Ask Haiku which candidate pairs are the same entity. Returns
+    {index: 'SAME'|'DIFF'} for the pairs actually answered — pairs missing
+    from the reply (truncated output, unparsable line) simply stay absent,
+    so the caller marks them 'unconfirmed' rather than silently 'rejected'.
+    Returns None if the call itself failed (caller treats all as unconfirmed
+    — fail-safe toward not merging)."""
     if not candidates:
-        return set()
+        return {}
     lines = [
         f"P{i + 1}. {c['from']['name']} [{c['from']['label']}]  <->  "
         f"{c['to']['name']} [{c['to']['label']}]  (근거: {c['reason']})"
@@ -164,26 +167,33 @@ def _confirm_pairs(candidates: list[dict]) -> set[int] | None:
     except (ClaudeError, RuntimeError, OSError) as exc:
         logger.warning("pair confirmation failed (%s); leaving all pairs unconfirmed", exc)
         return None
-    confirmed: set[int] = set()
+    verdicts: dict[int, str] = {}
     for line in (raw or "").splitlines():
         m = _CONFIRM_LINE_RE.match(line)
-        if m and m.group(2).upper() == "SAME":
+        if m:
             idx = int(m.group(1)) - 1
             if 0 <= idx < len(candidates):
-                confirmed.add(idx)
-    return confirmed
+                verdicts[idx] = m.group(2).upper()
+    return verdicts
 
 
 def audit(session, use_llm: bool = True) -> list[dict]:
     """Return candidate records: {from, to, reason, verdict}. verdict is
-    'confirmed' | 'rejected' | 'unconfirmed'."""
+    'confirmed' (Haiku answered SAME) | 'rejected' (Haiku answered DIFF) |
+    'unconfirmed' (LLM skipped/failed, or the pair was missing from the
+    reply — never judged, so never presented as judged-distinct)."""
     candidates: list[dict] = []
+    seen: set[tuple] = set()
 
     def _add(entities, index_pairs, reason):
         for i, j in index_pairs:
             from_e, to_e = _directed(entities[i], entities[j])
             if (from_e["name"], from_e["label"]) == (to_e["name"], to_e["label"]):
                 continue  # same node under two group labels in the fetch — nothing to merge
+            key = (from_e["name"], from_e["label"], to_e["name"], to_e["label"])
+            if key in seen:
+                continue  # already surfaced by an earlier rule — one verdict per pair
+            seen.add(key)
             candidates.append({"from": from_e, "to": to_e, "reason": reason})
 
     org = fetch_entities(session, _ORG_GROUP)
@@ -195,16 +205,12 @@ def audit(session, use_llm: bool = True) -> list[dict]:
     _add(events, _surface_collision_pairs(events), "surface-collision (Event)")
     _add(events, _event_pairs(events), "event subject+date (±2d)")
 
-    if use_llm:
-        confirmed = _confirm_pairs(candidates)
-        for i, c in enumerate(candidates):
-            if confirmed is None:
-                c["verdict"] = "unconfirmed"
-            else:
-                c["verdict"] = "confirmed" if i in confirmed else "rejected"
-    else:
-        for c in candidates:
-            c["verdict"] = "unconfirmed"
+    answers = _confirm_pairs(candidates) if use_llm else None
+    for i, c in enumerate(candidates):
+        a = answers.get(i) if answers is not None else None
+        c["verdict"] = ("confirmed" if a == "SAME"
+                        else "rejected" if a == "DIFF"
+                        else "unconfirmed")
     return candidates
 
 

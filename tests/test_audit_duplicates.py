@@ -76,8 +76,8 @@ def test_confirm_pairs_parses_same_diff():
         {"from": _e("Apple"), "to": _e("Apricot"), "reason": "x"},
     ]
     with patch("scripts.audit_duplicates.run_claude", return_value="P1: SAME\nP2: DIFF"):
-        confirmed = script._confirm_pairs(cands)
-    assert confirmed == {0}
+        answers = script._confirm_pairs(cands)
+    assert answers == {0: "SAME", 1: "DIFF"}
 
 
 def test_confirm_pairs_returns_none_on_failure():
@@ -111,8 +111,44 @@ def test_audit_confirms_via_llm():
 
     session = MagicMock()
     with patch("scripts.audit_duplicates.fetch_entities", side_effect=fake_fetch), \
-         patch("scripts.audit_duplicates._confirm_pairs", return_value={0}):
+         patch("scripts.audit_duplicates._confirm_pairs", return_value={0: "SAME"}):
         out = script.audit(session, use_llm=True)
     assert out[0]["verdict"] == "confirmed"
     assert out[0]["from"]["name"] == "Citi"
     assert out[0]["to"]["name"] == "Citigroup"
+
+
+def test_audit_marks_unanswered_pairs_unconfirmed_not_rejected():
+    """A pair missing from Haiku's reply (truncated output, unparsable line)
+    was never judged — it must surface as 'unconfirmed', not 'rejected'."""
+    def fake_fetch(session, labels):
+        if labels == script._ORG_GROUP:
+            return [_e("NVIDIA"), _e("Nvidia"),
+                    _e("Citi", aliases=["C"]), _e("Citigroup", aliases=["C"])]
+        return []
+
+    session = MagicMock()
+    # Reply only covers P1; P2 is silently missing (e.g. truncation).
+    with patch("scripts.audit_duplicates.fetch_entities", side_effect=fake_fetch), \
+         patch("scripts.audit_duplicates.run_claude", return_value="P1: DIFF"):
+        out = script.audit(session, use_llm=True)
+    assert len(out) == 2
+    assert out[0]["verdict"] == "rejected"      # explicitly judged DIFF
+    assert out[1]["verdict"] == "unconfirmed"   # never judged
+
+
+def test_audit_dedups_pairs_surfaced_by_multiple_rules():
+    """An Event pair hit by both the surface-collision rule and the
+    subject+date rule must appear once — one verdict, one merge record."""
+    def fake_fetch(session, labels):
+        if labels == ["Event"]:
+            # normalized-equal names AND shared subject tokens with same date
+            return [_e("Claude Fable 5 출시 2026-06-09", label="Event", mention_count=2),
+                    _e("claude fable 5 출시 2026-06-09", label="Event", mention_count=1)]
+        return []
+
+    session = MagicMock()
+    with patch("scripts.audit_duplicates.fetch_entities", side_effect=fake_fetch):
+        out = script.audit(session, use_llm=False)
+    assert len(out) == 1
+    assert out[0]["reason"] == "surface-collision (Event)"

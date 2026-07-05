@@ -13,6 +13,8 @@ DESTRUCTIVE and hard to undo once relations combine into one node — so:
   - `--dry-run` is the DEFAULT; `--apply` is required to mutate.
   - snapshot the graph first (`./backup.sh`); the script reminds you.
   - compose has no APOC, so relationship moves are pure Cypher, per type.
+  - each pair runs in its own transaction: a mid-pair failure rolls that pair
+    back to un-merged and the remaining pairs still run.
 
 Recommended origin: scripts/audit_duplicates.py emits exactly this JSON format
 after a human reviews it. Run this AFTER the resolver prevention (Phases 1-3)
@@ -49,8 +51,14 @@ _REL_ON_MATCH = (
     "      WHERE NOT g IN coalesce(nr.source_article_guids, [])], "
     "  nr.category = coalesce(nr.category, r.category), "
     "  nr.confidence = coalesce(nr.confidence, r.confidence), "
-    "  nr.first_seen = coalesce(nr.first_seen, r.first_seen), "
-    "  nr.last_seen = coalesce(nr.last_seen, r.last_seen)"
+    # min/max, not survivor-wins: keeping the survivor's timestamps would drop
+    # an actively re-mentioned duplicate out of traversal.py's recency windows
+    # (writer.py bumps last_seen on every re-mention). A null side compares
+    # false, so the ELSE coalesce picks whichever value exists.
+    "  nr.first_seen = CASE WHEN r.first_seen < nr.first_seen THEN r.first_seen "
+    "    ELSE coalesce(nr.first_seen, r.first_seen) END, "
+    "  nr.last_seen = CASE WHEN r.last_seen > nr.last_seen THEN r.last_seen "
+    "    ELSE coalesce(nr.last_seen, r.last_seen) END"
 )
 
 
@@ -152,13 +160,21 @@ def merge_pair(session, pair: dict, apply: bool) -> dict:
 
 
 def merge_all(pairs: list[dict], apply: bool) -> list[dict]:
+    # One explicit transaction per pair: merge_pair issues several statements
+    # (describe, rel-type scan, per-type moves, node merge) and a mid-pair
+    # failure must roll back to un-merged, never leave a half-moved node.
+    # Catch broadly (driver errors, not just validation) so one bad pair is
+    # recorded and the rest still run.
     summaries = []
     with get_driver().session() as session:
         for pair in pairs:
             try:
-                summaries.append(merge_pair(session, pair, apply))
-            except ValueError as exc:
-                logger.error("skipping pair: %s", exc)
+                with session.begin_transaction() as tx:
+                    summary = merge_pair(tx, pair, apply)
+                    tx.commit()
+                summaries.append(summary)
+            except Exception as exc:
+                logger.error("pair failed (rolled back): %s", exc)
                 summaries.append({"pair": pair, "error": str(exc)})
     return summaries
 

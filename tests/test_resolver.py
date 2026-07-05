@@ -47,9 +47,11 @@ def test_parse_response_ignores_unparseable_lines():
     assert _parse_response("garbage line with no colon", candidates, {"Tesla"}) == {}
 
 
-def test_parse_response_no_op_when_answer_equals_candidate_name():
+def test_parse_response_returns_self_name_resolution():
+    """An answer equal to the candidate's name is returned — resolve_entities
+    needs it for label-only overrides and filters true no-ops itself."""
     candidates = [_entity("Tesla")]
-    assert _parse_response("C1: Tesla", candidates, {"Tesla"}) == {}
+    assert _parse_response("C1: Tesla", candidates, {"Tesla"}) == {"Tesla": "Tesla"}
 
 
 def test_parse_response_ignores_unknown_candidate_id():
@@ -81,13 +83,24 @@ def test_deterministic_matches_spacing_variant():
     assert remaining == []
 
 
-def test_deterministic_matches_via_alias_intersection():
-    """SK하이닉스 shares a normalized alias with the SK hynix node → confirmed."""
-    reg = [_reg("SK hynix", aliases=["SKHynix", "에스케이하이닉스"])]
-    cand = _entity("SK하이닉스", aliases=["에스케이하이닉스"])
+def test_deterministic_matches_name_via_registry_alias():
+    """The candidate's own NAME hitting a registry alias is confirmed."""
+    reg = [_reg("SK hynix", aliases=["SK하이닉스", "에스케이하이닉스"])]
+    cand = _entity("SK하이닉스")
     rename, remaining = _deterministic_matches([cand], reg)
     assert rename == {"SK하이닉스": ("SK hynix", "Company")}
     assert remaining == []
+
+
+def test_deterministic_matches_alias_only_hit_defers_to_haiku():
+    """A match reachable only through the candidate's aliases is NOT
+    auto-confirmed — one noisy LLM-extracted alias ('삼성' on a Samsung
+    Biologics candidate) must not silently merge two distinct entities."""
+    reg = [_reg("Samsung Electronics", aliases=["삼성"])]
+    cand = _entity("Samsung Biologics", aliases=["삼성"])
+    rename, remaining = _deterministic_matches([cand], reg)
+    assert rename == {}
+    assert [c.name for c in remaining] == ["Samsung Biologics"]
 
 
 def test_deterministic_matches_label_override_same_name():
@@ -141,7 +154,7 @@ def test_parse_response_rejects_ambiguous_normalized_match():
 
 def test_resolve_entities_deterministic_match_skips_haiku():
     with patch("newsparser.graph.resolver.fetch_registry",
-               return_value=[{"name": "Nvidia", "aliases": [], "label": "Company"}]), \
+               return_value=([{"name": "Nvidia", "aliases": [], "label": "Company"}], True)), \
          patch("newsparser.graph.resolver.run_claude") as mock_run:
         rename = resolve_entities([_entity("NVIDIA", label="Company")])
     mock_run.assert_not_called()
@@ -152,11 +165,55 @@ def test_resolve_entities_cross_label_override():
     """Company candidate resolves onto an existing Institution node of the same
     name — the Company/Institution group is crossed and the label overridden."""
     with patch("newsparser.graph.resolver.fetch_registry",
-               return_value=[{"name": "Anthropic", "aliases": [], "label": "Institution"}]), \
+               return_value=([{"name": "Anthropic", "aliases": [], "label": "Institution"}], True)), \
          patch("newsparser.graph.resolver.run_claude") as mock_run:
         rename = resolve_entities([_entity("Anthropic", label="Company")])
     mock_run.assert_not_called()
     assert rename == {"Anthropic": ("Anthropic", "Institution")}
+
+
+def test_resolve_entities_incomplete_registry_routes_all_to_haiku():
+    """complete=False (full-text degraded/populating) must disable the
+    deterministic pass — an incomplete registry can make a wrong match look
+    unambiguous. All candidates go to Haiku instead."""
+    with patch("newsparser.graph.resolver.fetch_registry",
+               return_value=([{"name": "Nvidia", "aliases": [], "label": "Company"}], False)), \
+         patch("newsparser.graph.resolver.run_claude", return_value="C1: Nvidia") as mock_run:
+        rename = resolve_entities([_entity("NVIDIA", label="Company")])
+    mock_run.assert_called_once()
+    assert rename == {"NVIDIA": ("Nvidia", "Company")}
+
+
+def test_resolve_entities_haiku_label_only_override():
+    """Haiku answering the candidate's own name still carries the existing
+    node's label — the write must MERGE onto that node, not fork a new label."""
+    with patch("newsparser.graph.resolver.fetch_registry",
+               return_value=([{"name": "Anthropic", "aliases": [], "label": "Institution"}], False)), \
+         patch("newsparser.graph.resolver.run_claude", return_value="C1: Anthropic"):
+        rename = resolve_entities([_entity("Anthropic", label="Company")])
+    assert rename == {"Anthropic": ("Anthropic", "Institution")}
+
+
+def test_resolve_entities_haiku_self_answer_same_label_is_noop():
+    with patch("newsparser.graph.resolver.fetch_registry",
+               return_value=([{"name": "Anthropic", "aliases": [], "label": "Company"}], False)), \
+         patch("newsparser.graph.resolver.run_claude", return_value="C1: Anthropic"):
+        rename = resolve_entities([_entity("Anthropic", label="Company")])
+    assert rename == {}
+
+
+def test_resolve_entities_skips_names_extracted_under_multiple_groups():
+    """The same name under two label groups can't be resolved safely (the
+    name-keyed rename map and label-less relation endpoints would stomp one
+    group's meaning with the other's) — both are left as-is."""
+    with patch("newsparser.graph.resolver.fetch_registry",
+               return_value=([{"name": "비트코인 시장", "aliases": ["비트코인"], "label": "Market"}], True)) as mock_fetch, \
+         patch("newsparser.graph.resolver.run_claude") as mock_run:
+        rename = resolve_entities([_entity("비트코인", label="Market"),
+                                   _entity("비트코인", label="Indicator")])
+    assert rename == {}
+    mock_fetch.assert_not_called()
+    mock_run.assert_not_called()
 
 
 def test_build_prompt_includes_registry_and_candidates():
@@ -179,7 +236,7 @@ def test_build_prompt_adds_event_hint_for_event_candidates():
 
 
 def test_resolve_entities_skips_haiku_when_registry_empty():
-    with patch("newsparser.graph.resolver.fetch_registry", return_value=[]), \
+    with patch("newsparser.graph.resolver.fetch_registry", return_value=([], True)), \
          patch("newsparser.graph.resolver.run_claude") as mock_run:
         rename = resolve_entities([_entity("OpenAI")])
     mock_run.assert_not_called()
@@ -191,7 +248,7 @@ def test_resolve_entities_groups_candidates_by_label_group_in_separate_calls():
 
     def fake_fetch(labels, candidates=None):
         tag = "-".join(labels)
-        return [{"name": f"Existing-{tag}", "aliases": [], "label": labels[0]}]
+        return [{"name": f"Existing-{tag}", "aliases": [], "label": labels[0]}], True
 
     def fake_run(prompt, **kw):
         calls.append(prompt)
@@ -211,7 +268,7 @@ def test_resolve_entities_company_and_institution_share_one_call():
 
     def fake_fetch(labels, candidates=None):
         fetch_calls.append(labels)
-        return [{"name": "Goldman Sachs", "aliases": [], "label": "Institution"}]
+        return [{"name": "Goldman Sachs", "aliases": [], "label": "Institution"}], True
 
     def fake_run(prompt, **kw):
         return "C1: NEW\nC2: NEW"
@@ -227,7 +284,7 @@ def test_resolve_entities_company_and_institution_share_one_call():
 
 def test_resolve_entities_applies_rename_from_haiku_response():
     with patch("newsparser.graph.resolver.fetch_registry",
-               return_value=[{"name": "Tesla", "aliases": ["TSLA"], "label": "Company"}]), \
+               return_value=([{"name": "Tesla", "aliases": ["TSLA"], "label": "Company"}], True)), \
          patch("newsparser.graph.resolver.run_claude", return_value="C1: Tesla"):
         rename = resolve_entities([_entity("테슬라", label="Company")])
     assert rename == {"테슬라": ("Tesla", "Company")}
@@ -235,7 +292,7 @@ def test_resolve_entities_applies_rename_from_haiku_response():
 
 def test_resolve_entities_tolerates_haiku_failure_after_retries_exhausted():
     with patch("newsparser.graph.resolver.fetch_registry",
-               return_value=[{"name": "Tesla", "aliases": []}]), \
+               return_value=([{"name": "Tesla", "aliases": []}], True)), \
          patch("newsparser.graph.resolver.run_claude", side_effect=ClaudeError("boom")) as mock_run, \
          patch("newsparser.graph.resolver.time.sleep"):
         rename = resolve_entities([_entity("테슬라")])
@@ -245,7 +302,7 @@ def test_resolve_entities_tolerates_haiku_failure_after_retries_exhausted():
 
 def test_resolve_entities_retries_then_succeeds():
     with patch("newsparser.graph.resolver.fetch_registry",
-               return_value=[{"name": "Tesla", "aliases": [], "label": "Company"}]), \
+               return_value=([{"name": "Tesla", "aliases": [], "label": "Company"}], True)), \
          patch("newsparser.graph.resolver.run_claude",
                side_effect=[ClaudeError("timed out"), "C1: Tesla"]) as mock_run, \
          patch("newsparser.graph.resolver.time.sleep"):
@@ -269,8 +326,10 @@ def test_fetch_registry_queries_by_labels(monkeypatch):
     fake_driver = MagicMock()
     fake_driver.session.return_value.__enter__.return_value = fake_session
     with patch("newsparser.graph.resolver.get_driver", return_value=fake_driver):
-        rows = fetch_registry(["Company", "Institution"])
+        rows, complete = fetch_registry(["Company", "Institution"])
     assert rows == [{"name": "Tesla", "aliases": ["TSLA"], "label": "Company"}]
+    # candidate-less scan has no targeted coverage → never complete
+    assert complete is False
     _, kwargs = fake_session.run.call_args
     assert kwargs["labels"] == ["Company", "Institution"]
 
@@ -303,8 +362,9 @@ def test_fetch_registry_targeted_unions_base_and_fulltext(monkeypatch):
 
     driver, _ = _targeted_driver(monkeypatch, dispatch)
     with patch("newsparser.graph.resolver.get_driver", return_value=driver):
-        rows = fetch_registry(["Company", "Institution"], [_entity("마이크론")])
+        rows, complete = fetch_registry(["Company", "Institution"], [_entity("마이크론")])
     assert {r["name"] for r in rows} == {"Nvidia", "Micron Technology"}
+    assert complete is True
 
 
 def test_fetch_registry_targeted_degrades_to_base_on_fulltext_failure(monkeypatch):
@@ -319,9 +379,35 @@ def test_fetch_registry_targeted_degrades_to_base_on_fulltext_failure(monkeypatc
 
     driver, _ = _targeted_driver(monkeypatch, dispatch)
     with patch("newsparser.graph.resolver.get_driver", return_value=driver):
-        rows = fetch_registry(["Company"], [_entity("마이크론")])
-    # No exception; full-text loss leaves just the top-N base.
+        rows, complete = fetch_registry(["Company"], [_entity("마이크론")])
+    # No exception; full-text loss leaves just the top-N base, and the registry
+    # is flagged incomplete so the deterministic pass stays off.
     assert {r["name"] for r in rows} == {"Nvidia"}
+    assert complete is False
+
+
+def test_fetch_registry_merges_same_name_rows_by_mention_count(monkeypatch):
+    """The same canonical_name from two nodes (label fragmentation): the
+    more-established row's label wins regardless of arrival order, and the
+    aliases are unioned so the loser's surface forms stay matchable."""
+    def dispatch(q):
+        if "CREATE FULLTEXT INDEX" in q:
+            return []
+        if "queryNodes" in q:
+            # full-text row arrives second but is more established
+            return [{"name": "Citi", "aliases": ["씨티그룹"], "label": "Company",
+                     "mention_count": 40}]
+        if "mention_count" in q:
+            return [{"name": "Citi", "aliases": ["Citigroup"], "label": "Institution",
+                     "mention_count": 3}]
+        return []
+
+    driver, _ = _targeted_driver(monkeypatch, dispatch)
+    with patch("newsparser.graph.resolver.get_driver", return_value=driver):
+        rows, _ = fetch_registry(["Company", "Institution"], [_entity("Citi")])
+    assert len(rows) == 1
+    assert rows[0]["label"] == "Company"
+    assert set(rows[0]["aliases"]) == {"씨티그룹", "Citigroup"}
 
 
 def test_fetch_registry_targeted_folds_in_recent_events(monkeypatch):
@@ -337,14 +423,15 @@ def test_fetch_registry_targeted_folds_in_recent_events(monkeypatch):
 
     driver, _ = _targeted_driver(monkeypatch, dispatch)
     with patch("newsparser.graph.resolver.get_driver", return_value=driver):
-        rows = fetch_registry(["Event"], [_entity("이란 공습", label="Event")])
+        rows, _ = fetch_registry(["Event"], [_entity("이란 공습", label="Event")])
     assert {r["name"] for r in rows} == {"Iran strike 2026-06-30"}
     # recent-event bucket must be bounded (last_seen can collapse to all events)
     assert "ORDER BY e.last_seen DESC LIMIT" in seen[0]
 
 
 def test_fetch_registry_no_candidates_uses_top_n_fallback(monkeypatch):
-    """The candidate-less path stays on the flat top-N scan (no index needed)."""
+    """The candidate-less path stays on the flat top-N scan (no index needed)
+    and reports incomplete — it has no candidate-targeted coverage."""
     calls = []
 
     def dispatch(q):
@@ -353,24 +440,44 @@ def test_fetch_registry_no_candidates_uses_top_n_fallback(monkeypatch):
 
     driver, _ = _targeted_driver(monkeypatch, dispatch)
     with patch("newsparser.graph.resolver.get_driver", return_value=driver):
-        rows = fetch_registry(["Company"])
+        rows, complete = fetch_registry(["Company"])
     assert [r["name"] for r in rows] == ["Tesla"]
+    assert complete is False
     assert all("queryNodes" not in q and "CREATE FULLTEXT" not in q for q in calls)
 
 
 def test_ensure_entity_index_is_idempotent_per_process(monkeypatch):
     resolver_mod._index_ensured = False
     session = MagicMock()
-    ensure_entity_index(session)
-    ensure_entity_index(session)
-    assert session.run.call_count == 1
-    stmt = session.run.call_args.args[0]
+    assert ensure_entity_index(session) is True
+    assert ensure_entity_index(session) is True
+    # first call: CREATE + awaitIndex (population barrier); second call: cached
+    assert session.run.call_count == 2
+    stmt = session.run.call_args_list[0].args[0]
     assert "CREATE FULLTEXT INDEX" in stmt and "entity_names" in stmt
+    assert "awaitIndex" in session.run.call_args_list[1].args[0]
+
+
+def test_ensure_entity_index_reports_unusable_index(monkeypatch):
+    resolver_mod._index_ensured = False
+    session = MagicMock()
+    session.run.side_effect = RuntimeError("no fulltext support")
+    assert ensure_entity_index(session) is False
+    # not cached as ensured — the next call retries
+    assert resolver_mod._index_ensured is False
 
 
 def test_lucene_escape_escapes_special_chars():
     assert _lucene_escape("AT&T (Inc.)") == r"AT\&T \(Inc.\)"
     assert _lucene_escape("plain name") == "plain name"
+
+
+def test_lucene_escape_neutralizes_boolean_operators():
+    """Bare AND/OR/NOT are Lucene operators and raise ParseException in
+    operator-illegal positions — lowercase them into literal terms."""
+    assert _lucene_escape("AND Digital") == "and Digital"
+    assert _lucene_escape("S OR P") == "S or P"
+    assert _lucene_escape("Brandy") == "Brandy"  # substring untouched
 
 
 def test_prepare_graph_updates_renames_entities_and_relations(tmp_path):

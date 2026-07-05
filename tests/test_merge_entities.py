@@ -91,3 +91,27 @@ def test_merge_all_records_error_for_bad_pair():
     with patch("scripts.merge_entities.get_driver", return_value=fake_driver):
         out = script.merge_all([{"from_name": "A"}], apply=False)
     assert "error" in out[0]
+
+
+def test_merge_all_rolls_back_failed_pair_and_continues():
+    """A driver error mid-pair (not just ValueError) must not abort the run:
+    the pair's transaction rolls back (commit never reached) and the remaining
+    pairs still execute, each with an error record."""
+    fake_session = MagicMock()
+    tx = MagicMock()
+    tx.run.side_effect = RuntimeError("connection reset")
+    fake_session.begin_transaction.return_value.__enter__.return_value = tx
+    fake_driver = MagicMock()
+    fake_driver.session.return_value.__enter__.return_value = fake_session
+    with patch("scripts.merge_entities.get_driver", return_value=fake_driver):
+        out = script.merge_all([_pair(), _pair(fn="A", tn="B")], apply=True)
+    assert len(out) == 2
+    assert all("error" in s for s in out)
+    tx.commit.assert_not_called()
+
+
+def test_rel_on_match_merges_timestamps_min_max_not_survivor_wins():
+    """Survivor-wins (plain coalesce) would drop an actively re-mentioned
+    duplicate out of traversal.py's recency windows after a merge."""
+    assert "CASE WHEN r.first_seen < nr.first_seen" in script._REL_ON_MATCH
+    assert "CASE WHEN r.last_seen > nr.last_seen" in script._REL_ON_MATCH
