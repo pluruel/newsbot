@@ -1,4 +1,3 @@
-import json
 import pytest
 from pathlib import Path
 from unittest.mock import patch
@@ -16,7 +15,6 @@ def setup(tmp_path, monkeypatch):
     monkeypatch.setenv("CONV_DB_PATH", str(tmp_path / "conversations.db"))
     conv.init_conv_db()
     (tmp_path / "workspace" / "me").mkdir(parents=True)
-    (tmp_path / "workspace" / "me" / "interest-events.jsonl").touch()
     (tmp_path / "workspace" / "cycles").mkdir(parents=True)
 
 
@@ -28,14 +26,12 @@ def test_graph_query_returns_formatted_context():
     assert "삼성전자" in result
 
 
-def test_graph_query_logs_interest_event(tmp_path):
-    events_path = Path(tmp_path / "workspace" / "me" / "interest-events.jsonl")
+def test_graph_query_logs_interest_event():
     with patch("newsparser.mcp_server.get_context", return_value=[]), \
          patch("newsparser.mcp_server.get_influence_chain", return_value=[]):
         graph_query("TSMC")
-    event = json.loads(events_path.read_text().strip())
-    assert "TSMC" in event["entities"]
-    assert event["type"] == "query"
+    counts = dict(conv.interest_theme_counts())
+    assert counts.get("TSMC") == 1
 
 
 def test_read_cycle_reports_returns_n_most_recent(tmp_path):
@@ -162,10 +158,25 @@ def test_get_interest_weights_uses_per_category_file(tmp_path):
         "|---|---|---|---|\n"
         "| AI | 0.95 | 0.5 | |\n"
     )
-    (me / "interest-events.jsonl").write_text("")
     out = get_interest_weights(category="tech", days=14)
     assert "AI" in out
     assert "0.95" in out
+
+
+def test_get_interest_weights_estimates_from_events():
+    conv.log_interest_event("AI")
+    conv.log_interest_event("AI")
+    conv.log_interest_event("반도체")
+    out = get_interest_weights(category="tech", days=14)
+    assert "AI" in out and "반도체" in out
+
+
+def test_clear_interest_events_tool():
+    from newsparser.mcp_server import clear_interest_events
+    conv.log_interest_event("AI")
+    result = clear_interest_events()
+    assert "cleared" in result
+    assert conv.interest_theme_counts() == []
 
 
 def test_classify_query_tool_returns_label():

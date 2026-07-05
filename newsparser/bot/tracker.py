@@ -20,7 +20,7 @@ _ADMIN_MARKERS = (
     "manifesto.md updated",
     "ignore.md updated",
     "cleared",
-    "interest-events.jsonl",
+    "interest events cleared",
 )
 
 

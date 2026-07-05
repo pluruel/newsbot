@@ -113,6 +113,20 @@ def init_conv_db() -> None:
                     VALUES('delete', old.rowid, old.content);
                 INSERT INTO messages_fts(rowid, content) VALUES (new.rowid, new.content);
             END;
+
+            -- Conversation-derived interest signal: one row per theme the user
+            -- queried about (logged when the chat agent calls graph_query).
+            -- Migrated here from the old workspace/me/interest-events.jsonl so all
+            -- conversation-derived data lives in one SQLite file.
+            CREATE TABLE IF NOT EXISTS interest_events (
+                id    INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts    TEXT NOT NULL,
+                theme TEXT NOT NULL,
+                type  TEXT NOT NULL DEFAULT 'query',
+                depth TEXT NOT NULL DEFAULT 'shallow'
+            );
+            CREATE INDEX IF NOT EXISTS idx_interest_events_ts
+                ON interest_events(ts);
             """
         )
         conn.commit()
@@ -266,3 +280,65 @@ def iter_all_messages() -> Iterator[dict]:
             "SELECT * FROM messages ORDER BY ts, rowid"
         ):
             yield _row_to_dict(row)
+
+
+def recent_user_queries(
+    since: str | None = None, limit: int = 200, chat_id: str | None = None
+) -> list[dict]:
+    """Return the user's own questions (role='user', kind='chat'), newest-first.
+    The demand-side interest signal for reflect/weekly. ``since`` is an ISO lower
+    bound on ``ts``."""
+    sql = "SELECT * FROM messages WHERE role = 'user' AND kind = 'chat'"
+    params: list = []
+    if since is not None:
+        sql += " AND ts >= ?"
+        params.append(since)
+    if chat_id is not None:
+        sql += " AND chat_id = ?"
+        params.append(chat_id)
+    sql += " ORDER BY ts DESC, rowid DESC LIMIT ?"
+    params.append(limit)
+    with _connection() as conn:
+        rows = conn.execute(sql, params).fetchall()
+    return [_row_to_dict(r) for r in rows]
+
+
+# --- interest events (conversation-derived interest signal) ------------------
+
+
+def log_interest_event(
+    entity: str,
+    *,
+    themes: list[str] | None = None,
+    type: str = "query",
+    depth: str = "shallow",
+    ts: str | None = None,
+) -> None:
+    """Record that the user showed interest in one or more themes. One row per
+    theme (defaults to ``[entity]``)."""
+    themes = themes or [entity]
+    ts = ts or datetime.now(timezone.utc).isoformat()
+    with _connection() as conn:
+        conn.executemany(
+            "INSERT INTO interest_events (ts, theme, type, depth) VALUES (?, ?, ?, ?)",
+            [(ts, theme, type, depth) for theme in themes],
+        )
+
+
+def interest_theme_counts(since: str | None = None) -> list[tuple[str, int]]:
+    """Theme → query-count over events at/after ``since``, most-queried first."""
+    sql = "SELECT theme, COUNT(*) AS c FROM interest_events"
+    params: list = []
+    if since is not None:
+        sql += " WHERE ts >= ?"
+        params.append(since)
+    sql += " GROUP BY theme ORDER BY c DESC, theme"
+    with _connection() as conn:
+        rows = conn.execute(sql, params).fetchall()
+    return [(r["theme"], r["c"]) for r in rows]
+
+
+def clear_interest_events() -> int:
+    """Delete all interest events (resets the estimation baseline). Returns count."""
+    with _connection() as conn:
+        return conn.execute("DELETE FROM interest_events").rowcount

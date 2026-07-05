@@ -1,6 +1,5 @@
 import json
 import os
-from collections import Counter
 from datetime import datetime, timedelta, timezone
 from datetime import date as _date, datetime as _datetime, time as _time, timezone as _tz
 from pathlib import Path
@@ -23,17 +22,7 @@ def _workspace() -> Path:
 
 
 def _log_interest_event(entity: str) -> None:
-    event = {
-        "ts": datetime.now(timezone.utc).isoformat(),
-        "type": "query",
-        "entities": [entity],
-        "themes": [entity],
-        "depth": "shallow",
-    }
-    path = _workspace() / "me" / "interest-events.jsonl"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a") as f:
-        f.write(json.dumps(event, ensure_ascii=False) + "\n")
+    _conv.log_interest_event(entity)
 
 
 def _resolve_categories(category: str | None) -> list[str]:
@@ -133,7 +122,6 @@ def conversations_about_entity(entity: str, n: int = 10) -> str:
 
 def _interest_weights_one(category: str, days: int) -> str:
     interests_path = _workspace() / "me" / f"interests_{category}.md"
-    events_path = _workspace() / "me" / "interest-events.jsonl"
 
     actual: dict[str, dict] = {}
     if interests_path.exists():
@@ -152,25 +140,12 @@ def _interest_weights_one(category: str, days: int) -> str:
                 continue
 
     estimated: dict[str, float] = {}
-    if events_path.exists():
-        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
-        counts: Counter = Counter()
-        for line in events_path.read_text().splitlines():
-            if not line.strip():
-                continue
-            try:
-                e = json.loads(line)
-                ts = datetime.fromisoformat(e["ts"].replace("Z", "+00:00"))
-                if ts < cutoff:
-                    continue
-                for theme in e.get("themes", []):
-                    counts[theme] += 1
-            except (json.JSONDecodeError, KeyError, ValueError):
-                continue
-        if counts:
-            max_count = max(counts.values())
-            for theme, count in counts.items():
-                estimated[theme] = round(count / max_count, 2)
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    counts = dict(_conv.interest_theme_counts(since=cutoff))
+    if counts:
+        max_count = max(counts.values())
+        for theme, count in counts.items():
+            estimated[theme] = round(count / max_count, 2)
 
     if not actual and not estimated:
         return f"No data found for category={category}."
@@ -199,12 +174,9 @@ def get_interest_weights(category: str | None = None, days: int = 14) -> str:
 
 @mcp.tool()
 def clear_interest_events() -> str:
-    """Clear the interest-events.jsonl query log (resets weight estimation baseline)."""
-    path = _workspace() / "me" / "interest-events.jsonl"
-    if not path.exists():
-        return "No interest events file found."
-    path.write_text("")
-    return "interest-events.jsonl cleared."
+    """Clear the interest-event query log (resets weight estimation baseline)."""
+    removed = _conv.clear_interest_events()
+    return f"interest events cleared ({removed} rows)."
 
 
 @mcp.tool()

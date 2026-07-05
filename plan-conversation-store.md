@@ -100,3 +100,22 @@ API:
 4. mcp_server.py 도구 갱신/추가 + 테스트 갱신
 5. 스타트업 init 배선, .gitignore, CLAUDE.md
 6. 전체 pytest + 백업 재검증
+
+---
+
+## 2단계 — 대화 신호를 소비하는 기능 마이그레이션 (커밋 2)
+
+"대화로 하던 기능"을 추적한 결과: 유일한 대화 소비자는 tracker(완료)와, tracker가 남기는
+`interest-events.jsonl`(대화-파생 관심 신호)뿐. reflect/weekly는 지금껏 **뉴스 공급(cycle)만** 보고
+사용자 수요(대화)는 안 봤다. 이를 마이그레이션:
+
+- **`interest-events.jsonl` → SQLite.** 마지막 남은 대화 JSONL을 `conversations.db`의
+  `interest_events` 테이블로 이관. `store/conversations.py`에 `log_interest_event` /
+  `interest_theme_counts` / `clear_interest_events` / `recent_user_queries` 추가.
+  `mcp_server.py`의 `_log_interest_event` / `_interest_weights_one` / `clear_interest_events`가
+  SQLite를 쓰도록 갱신. (tracker의 stale admin 마커 `interest-events.jsonl` → `interest events cleared`.)
+- **reflect/weekly에 수요 신호 주입.** 두 잡은 `TAINTED_FILE_TOOLS`(MCP·bypass 없음)라 DB 직접
+  조회 불가 → `scheduler/demand.py`가 Python으로 스토어를 읽어 `workspace/me/interest-demand.md`
+  다이제스트(질의 빈도 상위 테마 + 최근 사용자 질문)를 쓰고, `run_reflect.py`(14일)/`run_weekly.py`(7일)가
+  claude 실행 전에 생성. `reflect.md`/`weekly.md` 스펙이 그 파일을 Read(허용 도구)해서 반영.
+  → 뉴스 taint를 늘리지 않고(사용자 입력은 신뢰됨) 기존 tool 정책 유지.
