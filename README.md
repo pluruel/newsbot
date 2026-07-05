@@ -106,6 +106,66 @@ host? See `migration.md`.
 
 ---
 
+## Graph maintenance — entity dedup
+
+The cycle resolver prevents most fragmentation at write time, but the graph can still
+accumulate near-duplicate entities (the same real-world thing under variant names or
+labels: `NVIDIA`/`Nvidia`, `Citi`/`Citigroup`, Company vs Institution). Four scripts
+under `scripts/` clean this up. **Every graph write is dry-run by default — `--apply`
+is required to mutate, and you should `./backup.sh` first.** Labels are matched as query
+parameters (no Cypher injection); names/labels never string-interpolated except merge's
+MERGE.
+
+| Script | Input JSON | Does |
+|---|---|---|
+| `audit_duplicates.py` | — (emits with `--out`) | scan the live graph for duplicate candidates (rule-based), optionally Haiku-confirm SAME/DIFF |
+| `merge_entities.py` | `merges.json` | fold the `from` node into `to` — moves relations/aliases/mention_count, deletes `from` |
+| `alias_cleanup.py` | `alias_cleanup.json` | strip wrongly-attached aliases from a node (so the resolver won't re-merge things you kept apart) |
+| `apply_renames.py` | `renames.json` | change a node's `canonical_name` (old name preserved as an alias) |
+
+Merge JSON is `[{"from_name","from_label","to_name","to_label"}]`; renames
+`[{"name","label","new_name"}]`; alias cleanup `[{"name","label","remove_aliases"}]`.
+
+### Workflow
+
+```bash
+# 1. detect + let Haiku confirm same-vs-distinct → confirmed pairs only (needs CLAUDE token)
+.venv/bin/python -m scripts.audit_duplicates --out merges.json
+#    --no-llm skips Haiku and emits every rule candidate for pure hand review
+
+# 2. review merges.json by hand: drop parent/subsidiary or distinct-event pairs,
+#    collapse chains to one survivor per cluster, prefer spaced canonical names.
+#    (hand-build renames.json / alias_cleanup.json for any renames + alias fixes.)
+
+# 3. snapshot, then apply IN THIS ORDER:
+./backup.sh
+.venv/bin/python -m scripts.merge_entities merges.json           # dry-run preview
+.venv/bin/python -m scripts.merge_entities merges.json --apply    # ① merge duplicates
+.venv/bin/python -m scripts.alias_cleanup  alias_cleanup.json --apply  # ② BEFORE renames
+.venv/bin/python -m scripts.apply_renames  renames.json --apply        # ③ AFTER merges
+```
+
+Order matters: alias cleanup keys on the pre-rename names, and renames target the nodes
+merges just consolidated onto. The `*.json` are one-off inputs — not committed; delete
+them after applying.
+
+### Verify (read-only — no graph writes)
+
+```bash
+# re-scan the live graph; the candidate count should drop sharply after cleanup
+.venv/bin/python -m scripts.audit_duplicates --no-llm 2>&1 >/dev/null | grep "candidate pair"
+```
+
+Remaining candidates are expected to include pairs you deliberately kept separate (the
+rules re-flag them every run) and Haiku-DIFF distinct pairs — not necessarily unfixed
+duplicates. To isolate genuinely-same leftovers, run `audit_duplicates.py --out round2.json`
+and let Haiku filter the residual for a second round.
+
+Recurring events (visits, summits, negotiations) use `YYYY-MM` canonical names by default
+(`.claude/commands/cycle.md`) to avoid per-day fragmentation.
+
+---
+
 ## Architecture
 
 ```
