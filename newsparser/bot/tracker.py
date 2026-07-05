@@ -1,4 +1,5 @@
 import logging
+import threading
 from pathlib import Path
 
 from newsparser.claude.runner import run_claude
@@ -12,15 +13,20 @@ HISTORY_MAX_TURNS = 10
 _MCP_CONFIG = Path(__file__).parent.parent.parent / "mcp.json"
 
 # Answers containing one of these markers are workspace edits (interests,
-# manifesto, ignore list, history clears), not conversation — they must not be
-# persisted into the chat history.
+# manifesto, ignore list, history clears), not conversation — they get kind='admin'
+# so they stay out of the conversational context and the demand signal.
+#
+# Each marker is the exact confirmation string an admin MCP tool returns, and the
+# tracker prompt instructs the model to echo that string verbatim after such an
+# edit. They must stay specific — a bare "cleared" would misclassify any answer
+# that merely quotes an English headline containing the word.
 _ADMIN_MARKERS = (
     "interests_tech.md updated",
     "interests_markets.md updated",
     "manifesto.md updated",
     "ignore.md updated",
-    "cleared",
     "interest events cleared",
+    "Conversation history cleared",
 )
 
 
@@ -37,15 +43,12 @@ def _extract_pairs(history: list[dict]) -> list[tuple[dict, dict]]:
     positional user→assistant alternation for turns without an edge."""
     by_id = {m["id"]: m for m in history if m.get("id")}
     pairs: list[tuple[dict, dict]] = []
-    paired: set[str] = set()
     for m in history:
         if m.get("role") != "assistant":
             continue
         parent = by_id.get(m.get("reply_to_id"))
         if parent is not None and parent.get("role") == "user":
             pairs.append((parent, m))
-            paired.add(parent["id"])
-            paired.add(m["id"])
     if pairs:
         return pairs
 
@@ -165,6 +168,12 @@ def run_tracker(chat_id: str, query: str) -> str:
         "정확히 `ignore.md updated` 문구를 포함한다. "
         "\"차단 리스트\"/\"무시 목록 보여줘\"면 `.venv/bin/python -m newsparser.ignore`를 "
         "Bash로 실행해 그 출력(대상 + N일 경과)을 그대로 사용자에게 전달한다.\n\n"
+        "워크스페이스 편집 도구(write_interests, write_manifesto, clear_interest_events, "
+        "clear_conversation_history)나 ignore.md 편집을 수행한 경우, 그 도구가 돌려준 영어 확인 "
+        "문구(interests_tech.md updated / interests_markets.md updated / manifesto.md updated / "
+        "ignore.md updated / interest events cleared / Conversation history cleared)를 답변에 "
+        "반드시 그 형태 그대로 한 번 포함한다 — 이 문구로 관리 작업을 식별해 대화 기록에서 제외하기 "
+        "때문이다. 편집을 하지 않았다면 이 문구들을 쓰지 않는다.\n\n"
         "답변은 평문 대화체 문단으로만 쓴다 — 마크다운 금지: 헤더(#), "
         "볼드(**), 불릿(-/*), 표, 수평선(---) 모두 쓰지 않는다. "
         "섹션 구분은 빈 줄로만 한다."
@@ -188,10 +197,21 @@ def run_tracker(chat_id: str, query: str) -> str:
     )
 
     if kind == "chat":
-        # Best-effort projection into Neo4j; a graph hiccup must not break the reply.
-        try:
-            from newsparser.graph.conversation_projector import project_exchange
-            project_exchange(chat_id, user_id, asst_id)
-        except Exception:
-            logger.exception("conversation graph projection failed")
+        # Project into Neo4j off the reply path: a Neo4j outage stalls the driver
+        # for its whole connection timeout, and blocking the reply on a best-effort
+        # mirror is wrong (SQLite is already the source of truth). Fire-and-forget
+        # on a daemon thread so the answer returns immediately.
+        threading.Thread(
+            target=_project_exchange_bg,
+            args=(chat_id, user_id, asst_id),
+            daemon=True,
+        ).start()
     return answer
+
+
+def _project_exchange_bg(chat_id: str, user_id: str, asst_id: str) -> None:
+    try:
+        from newsparser.graph.conversation_projector import project_exchange
+        project_exchange(chat_id, user_id, asst_id)
+    except Exception:
+        logger.exception("conversation graph projection failed")

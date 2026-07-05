@@ -23,6 +23,11 @@ from typing import Generator, Iterator
 
 _DEFAULT_KINDS = ("chat",)
 
+# How long a blocked writer waits for the WAL lock before giving up (also the
+# sqlite3.connect timeout). Reprojection scans + concurrent tracker writes can
+# briefly overlap; a few seconds of patience avoids losing a turn.
+_BUSY_TIMEOUT_S = 5.0
+
 
 def _workspace() -> Path:
     return Path(os.environ.get("WORKSPACE_DIR", "workspace"))
@@ -37,8 +42,15 @@ def _db_path() -> str:
 def _connect() -> sqlite3.Connection:
     path = _db_path()
     Path(path).parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path)
+    conn = sqlite3.connect(path, timeout=_BUSY_TIMEOUT_S)
     conn.row_factory = sqlite3.Row
+    # WAL lets readers (the reproject/demand scans) and a writer (the tracker
+    # thread) proceed concurrently instead of blocking each other; busy_timeout
+    # makes a writer wait for a lock rather than raising "database is locked"
+    # immediately. The article/market stores set the same pragmas — several
+    # processes (dispatcher, MCP server, reflect/weekly) touch this file at once.
+    conn.execute("PRAGMA journal_mode = WAL")
+    conn.execute(f"PRAGMA busy_timeout = {int(_BUSY_TIMEOUT_S * 1000)}")
     conn.execute("PRAGMA foreign_keys = ON")
     return conn
 
@@ -116,8 +128,9 @@ def init_conv_db() -> None:
 
             -- Conversation-derived interest signal: one row per theme the user
             -- queried about (logged when the chat agent calls graph_query).
-            -- Migrated here from the old workspace/me/interest-events.jsonl so all
-            -- conversation-derived data lives in one SQLite file.
+            -- Replaces the old workspace/me/interest-events.jsonl so all
+            -- conversation-derived data lives in one SQLite file; existing data is
+            -- carried over by newsparser/scripts/migrate_conversations.py.
             CREATE TABLE IF NOT EXISTS interest_events (
                 id    INTEGER PRIMARY KEY AUTOINCREMENT,
                 ts    TEXT NOT NULL,
@@ -176,6 +189,29 @@ def add_message(
     return msg_id
 
 
+def import_message(
+    id: str,
+    chat_id: str,
+    role: str,
+    content: str,
+    ts: str,
+    *,
+    reply_to_id: str | None = None,
+    kind: str = "chat",
+) -> bool:
+    """Insert a message with a caller-supplied id (``INSERT OR IGNORE``), for one-time
+    data migration only — normal writes use ``add_message``. Idempotent: returns True
+    if a new row was written, False if the id already existed."""
+    with _connection() as conn:
+        cur = conn.execute(
+            """INSERT OR IGNORE INTO messages
+               (id, chat_id, role, content, ts, reply_to_id, kind, meta)
+               VALUES (?, ?, ?, ?, ?, ?, ?, NULL)""",
+            (id, chat_id, role, content, ts, reply_to_id, kind),
+        )
+        return cur.rowcount > 0
+
+
 def get_recent_messages(
     chat_id: str,
     n: int = 10,
@@ -202,6 +238,20 @@ def get_message(message_id: str) -> dict | None:
             "SELECT * FROM messages WHERE id = ?", (message_id,)
         ).fetchone()
     return _row_to_dict(row) if row else None
+
+
+def get_messages(ids: list[str]) -> list[dict]:
+    """Fetch several messages by id in one query, returned in ``ids`` order
+    (missing ids are skipped). One round-trip for the projector's exchange fetch."""
+    if not ids:
+        return []
+    placeholders = ",".join("?" for _ in ids)
+    with _connection() as conn:
+        rows = conn.execute(
+            f"SELECT * FROM messages WHERE id IN ({placeholders})", ids
+        ).fetchall()
+    by_id = {r["id"]: _row_to_dict(r) for r in rows}
+    return [by_id[i] for i in ids if i in by_id]
 
 
 def get_thread(message_id: str) -> list[dict]:
@@ -247,8 +297,11 @@ def search_messages(
         )
         params.append('"' + keyword.replace('"', '""') + '"')
     else:
-        sql = "SELECT m.* FROM messages m WHERE m.content LIKE ? "
-        params.append(f"%{keyword}%")
+        # Escape LIKE wildcards so a keyword of "%" or "_" is matched literally
+        # instead of returning every stored message (admin turns included).
+        escaped = keyword.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        sql = "SELECT m.* FROM messages m WHERE m.content LIKE ? ESCAPE '\\' "
+        params.append(f"%{escaped}%")
     if chat_id is not None:
         sql += "AND m.chat_id = ? "
         params.append(chat_id)

@@ -97,6 +97,31 @@ def test_search_short_keyword_falls_back_to_like():
     assert len(conv.search_messages("AI")) == 1
 
 
+def test_search_short_keyword_escapes_like_wildcards():
+    # A short keyword of "%" must be matched literally, not as "match everything".
+    conv.add_message("c1", "user", "hi")
+    conv.add_message("c1", "user", "50% 상승")
+    hits = conv.search_messages("%")                # only the message with a literal %
+    assert len(hits) == 1 and "50%" in hits[0]["content"]
+    # "_" likewise literal: matches only content containing an underscore.
+    conv.add_message("c1", "user", "a_b snippet")
+    assert [h["content"] for h in conv.search_messages("_")] == ["a_b snippet"]
+
+
+def test_get_messages_batch_in_order():
+    a = conv.add_message("c1", "user", "a")
+    b = conv.add_message("c1", "assistant", "b")
+    rows = conv.get_messages([b, a, "nonexistent"])
+    assert [r["content"] for r in rows] == ["b", "a"]
+    assert conv.get_messages([]) == []
+
+
+def test_import_message_is_idempotent():
+    assert conv.import_message("fixed-id", "c1", "user", "hi", "2026-07-01T00:00:00+00:00")
+    assert not conv.import_message("fixed-id", "c1", "user", "hi", "2026-07-01T00:00:00+00:00")
+    assert len(conv.get_recent_messages("c1")) == 1
+
+
 def test_search_updates_after_delete():
     conv.add_message("c1", "user", "삭제될 메시지 내용")
     assert conv.search_messages("삭제될")

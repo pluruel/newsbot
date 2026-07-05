@@ -183,6 +183,10 @@ def clear_interest_events() -> str:
 def clear_conversation_history(chat_id: str | None = None) -> str:
     """Clear stored conversation history. Omit chat_id to clear every chat."""
     removed = _conv.clear_chat(chat_id)
+    # Propagate the delete into the Neo4j projection so cleared turns stop
+    # surfacing via conversations_about_entity (best-effort — SQLite is truth).
+    from newsparser.graph.conversation_projector import delete_chat
+    delete_chat(chat_id)
     scope = f"chat {chat_id}" if chat_id else "all chats"
     return f"Conversation history cleared ({removed} turns, {scope})."
 

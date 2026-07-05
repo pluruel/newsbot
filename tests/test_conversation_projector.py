@@ -18,6 +18,41 @@ def test_projection_is_best_effort_when_neo4j_absent(monkeypatch):
     aid = conv.add_message("c1", "assistant", "답", reply_to_id=uid)
     proj.project_exchange("c1", uid, aid)      # must not raise
     proj.project_message(conv.get_message(uid))  # must not raise
+    proj.delete_chat("c1")                       # must not raise
+    proj.delete_chat()                           # (all) must not raise
+
+
+# --- Entity mention matching (pure, no Neo4j) -------------------------------
+
+def _reg(*items):
+    """Build the projector's registry shape: [(canonical, (surface_cf, ...))]."""
+    out = []
+    for canonical, *aliases in items:
+        surfaces = {canonical, *aliases}
+        cf = tuple(s.casefold() for s in surfaces if len(s) >= proj._MIN_ENTITY_LEN)
+        out.append((canonical, cf))
+    return out
+
+
+def test_mentions_no_false_substring_edges():
+    # 'AI'∈'TAIWAN'/'OPENAI' and 'SK'∈'risk' must not create edges — word boundary.
+    registry = _reg(("AI",), ("SK",))
+    assert proj._mentioned_names("TAIWAN and OPENAI face risk", registry) == []
+    assert proj._mentioned_names("AI is booming", registry) == ["AI"]
+
+
+def test_mentions_match_via_alias_and_korean():
+    registry = _reg(("Tesla", "테슬라", "TSLA"))
+    assert proj._mentioned_names("오늘 테슬라 주가 봤어?", registry) == ["Tesla"]
+    assert proj._mentioned_names("TSLA earnings", registry) == ["Tesla"]
+    assert proj._mentioned_names("no match here", registry) == []
+
+
+def test_should_link_mentions_policy():
+    # Shared policy: only real user turns get mention links (both paths).
+    assert proj._should_link_mentions({"role": "user", "kind": "chat"})
+    assert not proj._should_link_mentions({"role": "assistant", "kind": "chat"})
+    assert not proj._should_link_mentions({"role": "user", "kind": "admin"})
     assert proj.messages_about_entity("Fed") == []  # swallows, returns []
 
 
