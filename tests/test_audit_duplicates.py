@@ -28,10 +28,21 @@ def test_parse_event_date():
     assert script._parse_event_date("no date here") is None
 
 
-def test_event_tokens_drops_date():
+def test_event_tokens_drops_date_verb_and_number():
     toks = script._event_tokens("Mythos 5 발표 2026-06-09")
-    assert "20260609" not in toks
+    assert "20260609" not in toks           # date stripped
+    assert script._normalize("발표") not in toks  # generic verb stopword
+    assert "5" not in toks                   # bare version number
     assert script._normalize("Mythos") in toks
+
+
+def test_event_pairs_no_match_on_verb_only_overlap():
+    """Different launches on adjacent dates must NOT pair on the shared verb."""
+    events = [
+        _e("Gemma 4 12B 출시 2026-06-10", label="Event"),
+        _e("Claude Fable 5 출시 2026-06-09", label="Event"),
+    ]
+    assert script._event_pairs(events) == []
 
 
 def test_event_pairs_matches_close_dates_and_shared_token():

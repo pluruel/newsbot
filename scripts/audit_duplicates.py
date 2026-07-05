@@ -44,6 +44,14 @@ _ORG_GROUP = ["Company", "Institution"]
 _SOLO_LABELS = ["Person", "Indicator", "Market", "Sector", "Policy"]
 _EVENT_DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 _EVENT_DATE_DELTA = timedelta(days=2)
+# Generic release/announce verbs carry no subject identity — two unrelated
+# launches on adjacent dates ("Gemma 4 출시" vs "Claude Fable 5 출시") would
+# otherwise pair on the shared verb alone. Excluded from subject-token overlap.
+_EVENT_STOPWORDS = {_normalize(w) for w in (
+    "출시", "발표", "공개", "배포", "발매", "릴리스", "오픈", "출간", "공식", "공표",
+    "launch", "launches", "release", "released", "announce", "announced",
+    "announcement", "unveil", "update",
+)}
 
 _CONFIRM_SYSTEM = (
     "You decide whether two graph entities are the same real-world thing "
@@ -85,9 +93,16 @@ def _parse_event_date(name: str):
 
 
 def _event_tokens(name: str) -> set[str]:
-    """Normalized subject tokens of an Event name, minus the date."""
+    """Normalized subject tokens of an Event name: date, generic release verbs,
+    and bare version/number tokens dropped — so overlap reflects the actual
+    subject, not "released" or a shared version digit."""
     without_date = _EVENT_DATE_RE.sub(" ", name or "")
-    return {t for t in (_normalize(tok) for tok in without_date.split()) if t}
+    toks = set()
+    for raw in without_date.split():
+        n = _normalize(raw)
+        if n and n not in _EVENT_STOPWORDS and not n.isdigit():
+            toks.add(n)
+    return toks
 
 
 def _event_pairs(events: list[dict]) -> list[tuple[int, int]]:
