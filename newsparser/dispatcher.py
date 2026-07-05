@@ -170,7 +170,9 @@ def start() -> None:
             "ALLOWED_CHAT_ID is not set — refusing to start with an open chat gate. "
             "Set it in .env and restart.")
     from newsparser.store.sqlite import init_db
+    from newsparser.store.conversations import init_conv_db
     init_db()
+    init_conv_db()
     registry.load()
     logger.info("Loaded bots: %s", registry.names())
 

@@ -1,11 +1,9 @@
-import json
 import logging
-import os
-from datetime import datetime, timezone
 from pathlib import Path
 
 from newsparser.claude.runner import run_claude
 from newsparser.classifier import classify_query
+from newsparser.store import conversations as conv
 
 logger = logging.getLogger(__name__)
 
@@ -26,27 +24,32 @@ _ADMIN_MARKERS = (
 )
 
 
-def _workspace() -> Path:
-    return Path(os.environ.get("WORKSPACE_DIR", "workspace"))
-
-
 def load_history(chat_id: str) -> list[dict]:
-    path = _workspace() / "sessions" / f"{chat_id}.jsonl"
-    if not path.exists():
-        return []
-    turns = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
-    return turns[-HISTORY_MAX_TURNS:]
-
-
-def save_history(chat_id: str, turns: list[dict]) -> None:
-    path = _workspace() / "sessions" / f"{chat_id}.jsonl"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("\n".join(json.dumps(t, ensure_ascii=False) for t in turns))
+    """Recent conversational turns for a chat, oldest-first (admin turns excluded)."""
+    return conv.get_recent_messages(chat_id, HISTORY_MAX_TURNS)
 
 
 def _extract_pairs(history: list[dict]) -> list[tuple[dict, dict]]:
-    """Walk history and pair each user turn with its following assistant turn."""
+    """Pair each user turn with the assistant turn that answered it.
+
+    Prefers the explicit ``reply_to_id`` edge, so pairing survives non-sequential
+    arrival (e.g. two user messages before either is answered). Falls back to
+    positional user→assistant alternation for turns without an edge."""
+    by_id = {m["id"]: m for m in history if m.get("id")}
     pairs: list[tuple[dict, dict]] = []
+    paired: set[str] = set()
+    for m in history:
+        if m.get("role") != "assistant":
+            continue
+        parent = by_id.get(m.get("reply_to_id"))
+        if parent is not None and parent.get("role") == "user":
+            pairs.append((parent, m))
+            paired.add(parent["id"])
+            paired.add(m["id"])
+    if pairs:
+        return pairs
+
+    # Fallback: no reply edges present — walk positionally as before.
     i = 0
     while i < len(history) - 1:
         if history[i].get("role") == "user" and history[i + 1].get("role") == "assistant":
@@ -176,11 +179,19 @@ def run_tracker(chat_id: str, query: str) -> str:
         permission_mode="bypassPermissions",
     )
 
-    if not any(marker in answer for marker in _ADMIN_MARKERS):
-        now = datetime.now(timezone.utc).isoformat()
-        new_turns = history + [
-            {"role": "user", "content": query, "ts": now},
-            {"role": "assistant", "content": answer, "ts": now},
-        ]
-        save_history(chat_id, new_turns)
+    # Admin/workspace-edit answers are recorded with kind='admin' — kept for audit
+    # but excluded from the conversational context that load_history returns.
+    kind = "admin" if any(marker in answer for marker in _ADMIN_MARKERS) else "chat"
+    user_id = conv.add_message(chat_id, "user", query, kind=kind)
+    asst_id = conv.add_message(
+        chat_id, "assistant", answer, reply_to_id=user_id, kind=kind
+    )
+
+    if kind == "chat":
+        # Best-effort projection into Neo4j; a graph hiccup must not break the reply.
+        try:
+            from newsparser.graph.conversation_projector import project_exchange
+            project_exchange(chat_id, user_id, asst_id)
+        except Exception:
+            logger.exception("conversation graph projection failed")
     return answer

@@ -8,7 +8,7 @@ def ensure_workspace() -> Path:
     """Create all required workspace directories and template files. Returns workspace root."""
     root = Path(os.environ.get("WORKSPACE_DIR", "workspace"))
 
-    for subdir in ["input", "cycles", "me", "state", "state/locks", "logs", "sessions", "briefs"]:
+    for subdir in ["input", "cycles", "me", "state", "state/locks", "logs", "briefs"]:
         (root / subdir).mkdir(parents=True, exist_ok=True)
 
     for category in CATEGORIES:

@@ -13,6 +13,7 @@ from newsparser.classifier import classify_query as _classify_query_impl
 from newsparser.market import store as _market_store
 from newsparser.market.fetcher import TICKERS as _MARKET_TICKERS
 from newsparser.store import sqlite as _sqlite_store
+from newsparser.store import conversations as _conv
 
 mcp = FastMCP("newsparser")
 
@@ -81,11 +82,53 @@ def read_cycle_reports(category: str | None = None, n: int = 4) -> str:
 @mcp.tool()
 def read_conversation_history(chat_id: str, n: int = 10) -> str:
     """Read recent conversation turns for a given chat."""
-    from newsparser.bot.tracker import load_history
-    history = load_history(chat_id)[-n:]
+    history = _conv.get_recent_messages(chat_id, n)
     if not history:
         return "No conversation history."
     return "\n".join(f"{t['role'].upper()}: {t['content']}" for t in history)
+
+
+@mcp.tool()
+def search_conversations(
+    keyword: str, chat_id: str | None = None, since: str | None = None, n: int = 10
+) -> str:
+    """Full-text search past conversation turns by keyword (trigram index over all
+    stored messages), newest-first. `since` is an absolute lower-bound date/datetime
+    (YYYY-MM-DD). Restrict to one chat with `chat_id`. Use this to recall what was
+    previously discussed with the user."""
+    rows = _conv.search_messages(keyword, chat_id=chat_id, since=since, limit=n)
+    if not rows:
+        return f"No conversation turns matching '{keyword}'."
+    out = [f"Found {len(rows)} turn(s) matching '{keyword}':\n"]
+    for r in rows:
+        out.append(f"[{r['ts']}] ({r['chat_id']}) {r['role'].upper()}: {r['content']}")
+    return "\n".join(out)
+
+
+@mcp.tool()
+def get_conversation_thread(message_id: str) -> str:
+    """Reconstruct the reply chain (root-first) a message belongs to, following the
+    reply_to_id edges. Use this to see the exact question/answer lineage that led to
+    a given turn, even when turns did not arrive strictly in order."""
+    rows = _conv.get_thread(message_id)
+    if not rows:
+        return f"No message found with id {message_id}."
+    return "\n".join(f"[{r['ts']}] {r['role'].upper()}: {r['content']}" for r in rows)
+
+
+@mcp.tool()
+def conversations_about_entity(entity: str, n: int = 10) -> str:
+    """Find past conversation turns that mentioned a news-graph entity (by canonical
+    name), newest-first — bridges the chat history and the knowledge graph. Answers
+    "what have we discussed about <entity> before?"."""
+    from newsparser.graph.conversation_projector import messages_about_entity
+    rows = messages_about_entity(entity, n)
+    if not rows:
+        return f"No conversation turns mention '{entity}'."
+    out = [f"{len(rows)} turn(s) mentioning '{entity}':\n"]
+    for r in rows:
+        out.append(f"[{r['ts']}] ({r['chat_id']}) {r['role'].upper()}: {r['content']}")
+    return "\n".join(out)
 
 
 def _interest_weights_one(category: str, days: int) -> str:
@@ -165,15 +208,11 @@ def clear_interest_events() -> str:
 
 
 @mcp.tool()
-def clear_conversation_history() -> str:
-    """Clear all conversation history."""
-    sessions_dir = _workspace() / "sessions"
-    if not sessions_dir.exists():
-        return "No sessions found."
-    files = list(sessions_dir.glob("*.jsonl"))
-    for f in files:
-        f.write_text("")
-    return f"Conversation history cleared ({len(files)} sessions)."
+def clear_conversation_history(chat_id: str | None = None) -> str:
+    """Clear stored conversation history. Omit chat_id to clear every chat."""
+    removed = _conv.clear_chat(chat_id)
+    scope = f"chat {chat_id}" if chat_id else "all chats"
+    return f"Conversation history cleared ({removed} turns, {scope})."
 
 
 @mcp.tool()

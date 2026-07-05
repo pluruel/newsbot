@@ -1,14 +1,14 @@
 import pytest
-from pathlib import Path
 from unittest.mock import patch
-from newsparser.bot.tracker import run_tracker, load_history, save_history
+from newsparser.bot.tracker import run_tracker, load_history
+from newsparser.store import conversations as conv
 
 
 @pytest.fixture(autouse=True)
 def setup(tmp_path, monkeypatch):
     monkeypatch.setenv("WORKSPACE_DIR", str(tmp_path / "workspace"))
-    (tmp_path / "workspace" / "sessions").mkdir(parents=True)
-    (tmp_path / "workspace" / "me").mkdir(parents=True)
+    monkeypatch.setenv("CONV_DB_PATH", str(tmp_path / "conversations.db"))
+    conv.init_conv_db()
 
 
 def test_load_history_empty_for_new_chat():
@@ -17,18 +17,16 @@ def test_load_history_empty_for_new_chat():
 
 
 def test_save_and_load_history():
-    save_history("chat123", [
-        {"role": "user", "content": "안녕"},
-        {"role": "assistant", "content": "안녕하세요"},
-    ])
+    conv.add_message("chat123", "user", "안녕")
+    conv.add_message("chat123", "assistant", "안녕하세요")
     history = load_history("chat123")
     assert len(history) == 2
     assert history[0]["content"] == "안녕"
 
 
 def test_load_history_returns_last_10_turns():
-    turns = [{"role": "user", "content": str(i), "ts": "2026-05-05T00:00:00"} for i in range(15)]
-    save_history("chat123", turns)
+    for i in range(15):
+        conv.add_message("chat123", "user", str(i), ts=f"2026-05-05T00:00:{i:02d}")
     history = load_history("chat123")
     assert len(history) == 10
     assert history[0]["content"] == "5"
