@@ -56,7 +56,7 @@ def test_restore_routes_through_resolver_renames(tmp_path):
 
     with patch.object(script, "apply_graph_updates", side_effect=fake_apply), \
          patch("newsparser.graph.resolver.resolve_entities",
-               return_value={"테슬라": "Tesla"}):
+               return_value={"테슬라": ("Tesla", "Company")}):
         script.restore(tmp_path)
 
     assert captured["entities"][0].name == "Tesla"
