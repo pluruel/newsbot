@@ -83,10 +83,14 @@ Read `workspace/me/ignore.md`. 표의 모든 `대상`(종류 entity/storyline)�
 유효 Label: Company, Person, Institution, Event, Indicator, Market, Sector, Policy
 유효 Predicate: INFLUENCES, MEMBER_OF, COMPETES_WITH, ANNOUNCED, IMPACTS, CONTRADICTS, FOLLOWS_UP
 
-Event canonical_name 규칙: `{핵심 주체} {핵심 행위 명사} {YYYY-MM-DD}` 한 가지 꼴로만 짓는다.
+Event canonical_name 규칙: `{핵심 주체} {핵심 행위 명사} {날짜}` 한 가지 꼴로만 짓는다.
 조사·수식어·서술형 금지, 대표 동사 하나로 통일(발표/공개/배포/출시 중 하나만).
-같은 사건은 늘 같은 이름이 나와야 한다 — 예: `Claude Fable 5 출시 2026-06-09`
+날짜는 **연-월(`YYYY-MM`)을 기본**으로 한다 — 방문·정상회담·협상·회의처럼 여러 날
+걸치거나 사이클마다 날짜 추정이 갈릴 수 있는 사건은 반드시 연-월만 쓴다(일자를 붙이면
+같은 사건이 날짜별로 파편화됨). 한 날짜에 확정된 단발 사건이고 같은 달 다른 사건과
+구분이 꼭 필요할 때만 `YYYY-MM-DD`를 쓴다.
+같은 사건은 늘 같은 이름이 나와야 한다 — 예: `시진핑 방북 2026-06`, `Claude Fable 5 출시 2026-06`
 (O), `Claude Fable 5·Mythos 5 발표` / `Mythos 5 Project Glasswing 배포`처럼
-서술이 갈리는 이름 (X). 날짜는 사건 발생일 기준.
+서술이 갈리는 이름 (X).
 
 다이제스트 섹션에 보고할 내용이 없으면 `• 없음`이라고 쓴다. 비어 있는 그래프 항목은 생략한다.
