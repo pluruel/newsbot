@@ -24,11 +24,14 @@ When answering as the chat/tracker agent, these are available in addition to Bas
 
 - `graph_query(entity, category=None, days=7)` — knowledge-graph context + influence chains for an entity; also logs an interest event.
 - `read_cycle_reports(category=None, n=4)` — most recent cycle report(s) from `workspace/cycles/{tech,markets}`.
-- `read_conversation_history(chat_id, n=10)` — recent turns for a chat (separate from the tracker's own history file).
+- `read_conversation_history(chat_id, n=10)` — recent turns for a chat (from the `conversations.db` store).
+- `search_conversations(keyword, chat_id=None, since=None, n=10)` — full-text recall over past turns (trigram index), newest-first; `since` is an absolute date. Use to recall what was previously discussed.
+- `get_conversation_thread(message_id)` — reconstruct the reply chain (root-first) a turn belongs to.
+- `conversations_about_entity(entity, n=10)` — past turns that mentioned a knowledge-graph entity (by canonical name); bridges chat history and the news graph.
 - `get_interest_weights(category=None, days=14)` / `clear_interest_events()` — actual vs. estimated interest-profile weights, and resetting the estimation baseline.
 - `read_interests(category=None)` / `write_interests(category, content)` — per-category interest profile (`workspace/me/interests_{category}.md`).
 - `read_manifesto()` / `write_manifesto(content)` — user's manifesto (`workspace/me/manifesto.md`).
-- `clear_conversation_history()` — wipes all session history files.
+- `clear_conversation_history(chat_id=None)` — delete stored conversation turns; omit `chat_id` to clear every chat.
 - `classify_query(query)` — classifies a query as `tech`/`markets`/`both`.
 - `market_query(instruments, start, end, freq="1d")` — OHLCV tables for SPX/NDX/KOSPI/USDKRW/USDJPY/DXY/VIX/TNX; dates must be absolute, resolve relative expressions first.
 - `search_articles(keyword, category=None, n=5)` — keyword search over ingested articles; use when the user references a specific story.
