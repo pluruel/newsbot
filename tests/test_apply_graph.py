@@ -242,7 +242,7 @@ def test_apply_graph_renames_entities_and_relations_via_resolver(tmp_path):
 
     with patch("newsparser.scripts.apply_graph.apply_graph_updates") as mock_apply, \
          patch("newsparser.graph.resolver.resolve_entities",
-               return_value={"테슬라": "Tesla"}):
+               return_value={"테슬라": ("Tesla", "Company")}):
         script.main(["apply_graph.py", "tech", "2026-05-08-12"])
 
     entities, relations = mock_apply.call_args.args
