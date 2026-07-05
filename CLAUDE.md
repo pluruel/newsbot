@@ -15,3 +15,22 @@ Tone and substance:
 - No honorifics. Casual peer tone.
 - Numbers and tickers exact. Never round without noting it.
 - No filler phrases.
+
+## MCP tools (chat/dispatcher answers only)
+
+`mcp.json` (`newsparser/mcp_server.py`) is loaded **only** for the chat-answer path — `newsparser/bot/tracker.py`'s `run_tracker()`, which handles a user's Telegram question via the dispatcher. Scheduled parsing jobs (cycle/weekly/reflect/market_daily) call `run_claude()` without `mcp_config` and never see these tools — don't assume they're available outside a chat answer.
+
+When answering as the chat/tracker agent, these are available in addition to Bash/Read/Edit/Write/Grep/Glob:
+
+- `graph_query(entity, category=None, days=7)` — knowledge-graph context + influence chains for an entity; also logs an interest event.
+- `read_cycle_reports(category=None, n=4)` — most recent cycle report(s) from `workspace/cycles/{tech,markets}`.
+- `read_conversation_history(chat_id, n=10)` — recent turns for a chat (separate from the tracker's own history file).
+- `get_interest_weights(category=None, days=14)` / `clear_interest_events()` — actual vs. estimated interest-profile weights, and resetting the estimation baseline.
+- `read_interests(category=None)` / `write_interests(category, content)` — per-category interest profile (`workspace/me/interests_{category}.md`).
+- `read_manifesto()` / `write_manifesto(content)` — user's manifesto (`workspace/me/manifesto.md`).
+- `clear_conversation_history()` — wipes all session history files.
+- `classify_query(query)` — classifies a query as `tech`/`markets`/`both`.
+- `market_query(instruments, start, end, freq="1d")` — OHLCV tables for SPX/NDX/KOSPI/USDKRW/USDJPY/DXY/VIX/TNX; dates must be absolute, resolve relative expressions first.
+- `search_articles(keyword, category=None, n=5)` — keyword search over ingested articles; use when the user references a specific story.
+- `job_status()` / `start_job(bot, chat_id=None)` / `kill_job(job_id)` — inspect/start/stop background bots (cycle, weekly, reflect, market_daily) via the dispatcher's file queue; `kill_job` needs user confirmation first.
+- `service_status()` / `restart_service(service)` / `tail_logs(service, n=50)` — status/restart/logs for `neo4j`, `poller`, `dispatcher` via the root-owned `newsbot-ops` script; prefer these over raw `docker`/`systemctl` via Bash. Restarting `dispatcher` kills any running background job — confirm with the user first.
