@@ -146,6 +146,13 @@ Code deploys are `git pull && uv sync` + `sudo -n newsbot-ops restart dispatcher
 `.venv` must be built on the deploy host: a copied one has a dangling interpreter
 symlink and the units won't start.
 
+Only re-run `sudo ./deploy/install.sh` when `deploy/` itself changed (the unit
+templates, `newsbot-ops`, or `install.sh`) — those are rendered into root-owned
+locations outside the repo, so a plain `git pull` doesn't update them. Ordinary
+`newsparser/` code changes need nothing beyond the restart above. Run
+`git diff <previously-installed-commit>..HEAD -- deploy/` if unsure whether this
+deploy needs it.
+
 Privileged ops (service restart/status/logs) go through `/usr/local/sbin/newsbot-ops`,
 a root-owned copy of `deploy/newsbot-ops` installed outside the repo — editing the
 repo copy does nothing until a human re-runs `sudo ./deploy/install.sh`. That manual

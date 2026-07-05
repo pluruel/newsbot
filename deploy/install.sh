@@ -80,9 +80,5 @@ Installed:
   /usr/local/sbin/newsbot-ops                               (root:root 755)
   /etc/sudoers.d/newsbot                                    (NOPASSWD: newsbot-ops only)
 
-Next steps (see plan-host-migration.md checklist):
-  1. chown -R $USER_NAME:$USER_NAME $ROOT/workspace     # if migrating off containers
-  2. docker compose --project-directory $ROOT up -d     # neo4j only
-  3. systemctl start newsbot-poller newsbot-dispatcher
-  4. sudo -n /usr/local/sbin/newsbot-ops status         # as $USER_NAME, no password
+See README.md (Deployment) for first-boot / start / update steps.
 EOF
