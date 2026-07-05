@@ -80,11 +80,24 @@ def test_confirm_pairs_parses_same_diff():
     assert answers == {0: "SAME", 1: "DIFF"}
 
 
-def test_confirm_pairs_returns_none_on_failure():
+def test_confirm_pairs_returns_none_after_retries_exhausted():
     from newsparser.claude.runner import ClaudeError
     cands = [{"from": _e("A"), "to": _e("B"), "reason": "x"}]
-    with patch("scripts.audit_duplicates.run_claude", side_effect=ClaudeError("boom")):
+    with patch("scripts.audit_duplicates.run_claude", side_effect=ClaudeError("timed out")) as mock_run, \
+         patch("scripts.audit_duplicates.time.sleep"):
         assert script._confirm_pairs(cands) is None
+    assert mock_run.call_count == 3  # retried before giving up
+
+
+def test_confirm_pairs_retries_then_succeeds():
+    from newsparser.claude.runner import ClaudeError
+    cands = [{"from": _e("Citi"), "to": _e("Citigroup"), "reason": "x"}]
+    with patch("scripts.audit_duplicates.run_claude",
+               side_effect=[ClaudeError("timed out"), "P1: SAME"]) as mock_run, \
+         patch("scripts.audit_duplicates.time.sleep"):
+        out = script._confirm_pairs(cands)
+    assert out == {0: "SAME"}
+    assert mock_run.call_count == 2
 
 
 def test_audit_marks_unconfirmed_without_llm():

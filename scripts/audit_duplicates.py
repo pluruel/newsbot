@@ -25,8 +25,10 @@ VERIFY on a graph copy first — the Cypher reads are only mock-tested here.
 import argparse
 import json
 import logging
+import random
 import re
 import sys
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -59,6 +61,9 @@ _CONFIRM_SYSTEM = (
     "'<id>: SAME' or '<id>: DIFF', no explanations. Default to DIFF when unsure."
 )
 _CONFIRM_LINE_RE = re.compile(r"^\s*P(\d+)\s*:\s*(SAME|DIFF)\s*$", re.IGNORECASE)
+_CONFIRM_TIMEOUT = 300
+_CONFIRM_RETRIES = 3
+_CONFIRM_BACKOFF_BASE = 1.0  # seconds
 
 
 # ---- pure rule logic (unit-tested) ----------------------------------------
@@ -144,12 +149,12 @@ def fetch_entities(session, labels: list[str]) -> list[dict]:
 
 
 def _confirm_pairs(candidates: list[dict]) -> dict[int, str] | None:
-    """Ask Haiku which candidate pairs are the same entity. Returns
-    {index: 'SAME'|'DIFF'} for the pairs actually answered — pairs missing
-    from the reply (truncated output, unparsable line) simply stay absent,
-    so the caller marks them 'unconfirmed' rather than silently 'rejected'.
-    Returns None if the call itself failed (caller treats all as unconfirmed
-    — fail-safe toward not merging)."""
+    """Ask Haiku which candidate pairs are the same entity — all pairs in one
+    prompt, retried with backoff. Returns {index: 'SAME'|'DIFF'} for the pairs
+    actually answered; pairs missing from the reply stay absent so the caller
+    marks them 'unconfirmed' rather than silently 'rejected'. Returns None if
+    the call still failed after retries (caller treats all as unconfirmed —
+    fail-safe toward not merging)."""
     if not candidates:
         return {}
     lines = [
@@ -161,12 +166,21 @@ def _confirm_pairs(candidates: list[dict]) -> dict[int, str] | None:
         "다음 후보 쌍이 각각 같은 실체(분열된 중복)인지 판단해라:\n" + "\n".join(lines) +
         "\n\n각 쌍에 대해 'P1: SAME' 또는 'P1: DIFF' 한 줄씩. 확신 없으면 DIFF."
     )
-    try:
-        raw = run_claude(prompt, timeout=90, model=HAIKU_MODEL,
-                         system_prompt=_CONFIRM_SYSTEM, permission_mode="default")
-    except (ClaudeError, RuntimeError, OSError) as exc:
-        logger.warning("pair confirmation failed (%s); leaving all pairs unconfirmed", exc)
-        return None
+    raw = None
+    for attempt in range(_CONFIRM_RETRIES):
+        try:
+            raw = run_claude(prompt, timeout=_CONFIRM_TIMEOUT, model=HAIKU_MODEL,
+                             system_prompt=_CONFIRM_SYSTEM, permission_mode="default")
+            break
+        except (ClaudeError, RuntimeError, OSError) as exc:
+            if attempt == _CONFIRM_RETRIES - 1:
+                logger.warning("pair confirmation failed after %d attempts (%s); "
+                               "leaving all pairs unconfirmed", _CONFIRM_RETRIES, exc)
+                return None
+            wait = _CONFIRM_BACKOFF_BASE * (2 ** attempt) + random.uniform(0, 0.25)
+            logger.warning("pair confirmation attempt %d failed (%s); retrying in %.2fs",
+                           attempt + 1, exc, wait)
+            time.sleep(wait)
     verdicts: dict[int, str] = {}
     for line in (raw or "").splitlines():
         m = _CONFIRM_LINE_RE.match(line)
