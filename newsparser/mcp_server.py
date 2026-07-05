@@ -11,14 +11,11 @@ from newsparser.bots.core.jobs import KILL_FILE, REQUEST_DIR, STATE_FILE
 from newsparser.classifier import classify_query as _classify_query_impl
 from newsparser.market import store as _market_store
 from newsparser.market.fetcher import TICKERS as _MARKET_TICKERS
+from newsparser.paths import workspace_dir as _workspace
 from newsparser.store import sqlite as _sqlite_store
 from newsparser.store import conversations as _conv
 
 mcp = FastMCP("newsparser")
-
-
-def _workspace() -> Path:
-    return Path(os.environ.get("WORKSPACE_DIR", "workspace"))
 
 
 def _log_interest_event(entity: str) -> None:
@@ -31,6 +28,20 @@ def _resolve_categories(category: str | None) -> list[str]:
     if category in (None, "both"):
         return ["tech", "markets"]
     return [category]
+
+
+def _render_turns(rows: list[dict], *, ts: bool = False, chat: bool = False) -> str:
+    """Format conversation turns for the recall tools. ``ts``/``chat`` prefix each
+    line with the timestamp / chat id — the only axes the four tools differ on."""
+    lines = []
+    for r in rows:
+        prefix = ""
+        if ts:
+            prefix += f"[{r['ts']}] "
+        if chat:
+            prefix += f"({r['chat_id']}) "
+        lines.append(f"{prefix}{r['role'].upper()}: {r['content']}")
+    return "\n".join(lines)
 
 
 @mcp.tool()
@@ -74,7 +85,7 @@ def read_conversation_history(chat_id: str, n: int = 10) -> str:
     history = _conv.get_recent_messages(chat_id, n)
     if not history:
         return "No conversation history."
-    return "\n".join(f"{t['role'].upper()}: {t['content']}" for t in history)
+    return _render_turns(history)
 
 
 @mcp.tool()
@@ -88,10 +99,8 @@ def search_conversations(
     rows = _conv.search_messages(keyword, chat_id=chat_id, since=since, limit=n)
     if not rows:
         return f"No conversation turns matching '{keyword}'."
-    out = [f"Found {len(rows)} turn(s) matching '{keyword}':\n"]
-    for r in rows:
-        out.append(f"[{r['ts']}] ({r['chat_id']}) {r['role'].upper()}: {r['content']}")
-    return "\n".join(out)
+    return (f"Found {len(rows)} turn(s) matching '{keyword}':\n\n"
+            + _render_turns(rows, ts=True, chat=True))
 
 
 @mcp.tool()
@@ -102,7 +111,7 @@ def get_conversation_thread(message_id: str) -> str:
     rows = _conv.get_thread(message_id)
     if not rows:
         return f"No message found with id {message_id}."
-    return "\n".join(f"[{r['ts']}] {r['role'].upper()}: {r['content']}" for r in rows)
+    return _render_turns(rows, ts=True)
 
 
 @mcp.tool()
@@ -114,10 +123,8 @@ def conversations_about_entity(entity: str, n: int = 10) -> str:
     rows = messages_about_entity(entity, n)
     if not rows:
         return f"No conversation turns mention '{entity}'."
-    out = [f"{len(rows)} turn(s) mentioning '{entity}':\n"]
-    for r in rows:
-        out.append(f"[{r['ts']}] ({r['chat_id']}) {r['role'].upper()}: {r['content']}")
-    return "\n".join(out)
+    return (f"{len(rows)} turn(s) mentioning '{entity}':\n\n"
+            + _render_turns(rows, ts=True, chat=True))
 
 
 def _interest_weights_one(category: str, days: int) -> str:

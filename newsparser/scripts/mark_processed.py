@@ -1,11 +1,10 @@
 # newsparser/scripts/mark_processed.py
-import os
 import sys
-from pathlib import Path
 
 from dotenv import load_dotenv
 load_dotenv()
 
+from newsparser.paths import workspace_dir
 from newsparser.store.sqlite import mark_processed
 
 
@@ -17,7 +16,7 @@ def main(argv: list[str] | None = None) -> None:
         sys.exit(1)
 
     category, slot = args[1], args[2]
-    workspace = Path(os.environ.get("WORKSPACE_DIR", "workspace"))
+    workspace = workspace_dir()
     guids_path = workspace / "input" / category / f"{slot}-guids.txt"
 
     if not guids_path.exists():

@@ -1,6 +1,5 @@
 # newsparser/scripts/apply_graph.py
 import logging
-import os
 import sys
 from pathlib import Path
 
@@ -8,6 +7,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from newsparser.claude.output_parser import parse_graph_updates
+from newsparser.paths import workspace_dir
 from newsparser.graph.resolver import prepare_graph_updates
 from newsparser.graph.writer import apply_graph_updates
 from newsparser.market.annotate import maybe_annotate_impacts
@@ -48,7 +48,7 @@ def main(argv: list[str] | None = None) -> None:
         sys.exit(1)
 
     category, slot = args[1], args[2]
-    workspace = Path(os.environ.get("WORKSPACE_DIR", "workspace"))
+    workspace = workspace_dir()
     report_path = workspace / "cycles" / category / f"{slot}.md"
 
     if not report_path.exists():

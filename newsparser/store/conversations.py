@@ -21,6 +21,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Generator, Iterator
 
+from newsparser.paths import workspace_dir
+
 _DEFAULT_KINDS = ("chat",)
 
 # How long a blocked writer waits for the WAL lock before giving up (also the
@@ -29,14 +31,10 @@ _DEFAULT_KINDS = ("chat",)
 _BUSY_TIMEOUT_S = 5.0
 
 
-def _workspace() -> Path:
-    return Path(os.environ.get("WORKSPACE_DIR", "workspace"))
-
-
 def _db_path() -> str:
     # CONV_DB_PATH wins; otherwise derive from WORKSPACE_DIR so tests that set
     # WORKSPACE_DIR get an isolated DB without extra wiring.
-    return os.environ.get("CONV_DB_PATH") or str(_workspace() / "conversations.db")
+    return os.environ.get("CONV_DB_PATH") or str(workspace_dir() / "conversations.db")
 
 
 def _connect() -> sqlite3.Connection:

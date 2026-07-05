@@ -25,21 +25,17 @@ Run on the deploy host after ``uv sync`` and before serving traffic:
 
 import json
 import logging
-import os
 import sys
 import uuid
 from pathlib import Path
 
+from newsparser.paths import workspace_dir as _workspace
 from newsparser.store import conversations as conv
 
 logger = logging.getLogger(__name__)
 
 # Fixed namespace so ids are stable across runs (uuid5 is deterministic).
 _NS = uuid.UUID("6f9b1e2a-0000-4000-8000-000000000001")
-
-
-def _workspace() -> Path:
-    return Path(os.environ.get("WORKSPACE_DIR", "workspace"))
 
 
 def _msg_id(chat_id: str, index: int, role: str, ts: str, content: str) -> str:
