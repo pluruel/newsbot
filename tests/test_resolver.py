@@ -325,8 +325,11 @@ def test_fetch_registry_targeted_degrades_to_base_on_fulltext_failure(monkeypatc
 
 
 def test_fetch_registry_targeted_folds_in_recent_events(monkeypatch):
+    seen = []
+
     def dispatch(q):
         if "duration" in q:
+            seen.append(q)
             return [{"name": "Iran strike 2026-06-30", "aliases": [], "label": "Event"}]
         if "queryNodes" in q or "CREATE FULLTEXT INDEX" in q or "mention_count" in q:
             return []
@@ -336,6 +339,8 @@ def test_fetch_registry_targeted_folds_in_recent_events(monkeypatch):
     with patch("newsparser.graph.resolver.get_driver", return_value=driver):
         rows = fetch_registry(["Event"], [_entity("이란 공습", label="Event")])
     assert {r["name"] for r in rows} == {"Iran strike 2026-06-30"}
+    # recent-event bucket must be bounded (last_seen can collapse to all events)
+    assert "ORDER BY e.last_seen DESC LIMIT" in seen[0]
 
 
 def test_fetch_registry_no_candidates_uses_top_n_fallback(monkeypatch):

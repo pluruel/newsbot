@@ -39,6 +39,11 @@ _REGISTRY_LIMIT = 300  # fallback cap when candidate-targeted search is unavaila
 _BASE_TOP_N = 100      # most-mentioned entities always folded into the registry
 _FT_TOPK = 10          # per-candidate full-text hits
 _EVENT_RECENT_DAYS = 14  # Events are time-local: recent ones re-appear, not top-mentioned
+# Bound on the recent-Event bucket. last_seen is bumped to now() on every
+# re-mention (and reset to now by a full graph replay), so "within 14 days" can
+# collapse to *every* event and balloon the Haiku prompt — cap it at the most
+# recent N. Full-text still covers name-similar events outside this window.
+_EVENT_RECENT_LIMIT = 200
 # Haiku 4.5 doesn't support adaptive thinking (this is plain generation
 # latency — subprocess/CLI overhead plus a registry that can run to
 # _REGISTRY_LIMIT entries), so a single 30s attempt isn't reliable once the
@@ -210,14 +215,17 @@ def _fetch_full_text(session, labels: list[str], candidates: list[EntityUpdate])
     return [dict(r) for r in result]
 
 
-def _fetch_recent_events(session, labels: list[str], days: int) -> list[dict]:
+def _fetch_recent_events(session, labels: list[str], days: int, limit: int) -> list[dict]:
     """Events are time-local — a re-appearing event is almost always a recent
-    one, so fold every Event seen in the last `days` into the registry rather
-    than relying on mention_count (which buries fresh events in the long tail)."""
+    one, so fold recent Events into the registry rather than relying on
+    mention_count (which buries fresh events in the long tail). Capped at the
+    `limit` most-recent: last_seen bumps to now() on every re-mention/replay, so
+    an uncapped window can degenerate to the entire Event set."""
     result = session.run(
         "MATCH (e:Event) WHERE e.last_seen >= datetime() - duration({days: $days}) "
-        f"RETURN {_REGISTRY_RETURN}",
-        labels=labels, days=days,
+        f"RETURN {_REGISTRY_RETURN} "
+        "ORDER BY e.last_seen DESC LIMIT $limit",
+        labels=labels, days=days, limit=limit,
     )
     return [dict(r) for r in result]
 
@@ -250,7 +258,7 @@ def fetch_registry(labels: list[str], candidates: list[EntityUpdate] | None = No
             logger.warning("full-text registry lookup failed (%s); using top-N base only", exc)
         if "Event" in labels:
             try:
-                for row in _fetch_recent_events(session, labels, _EVENT_RECENT_DAYS):
+                for row in _fetch_recent_events(session, labels, _EVENT_RECENT_DAYS, _EVENT_RECENT_LIMIT):
                     by_name.setdefault(row["name"], row)
             except Exception as exc:
                 logger.warning("recent-event registry lookup failed (%s)", exc)
