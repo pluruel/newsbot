@@ -14,11 +14,12 @@ from newsparser.bots.core.context import Context, TelegramSender
 from newsparser.bots.core.jobs import JobManager
 from newsparser.bots.core.registry import BotRegistry
 from newsparser.bots.core.types import Bot, Cron
+from newsparser.paths import workspace_dir
 
 load_dotenv()
 logger = logging.getLogger(__name__)
 
-_WORKSPACE = Path(os.environ.get("WORKSPACE_DIR", "workspace"))
+_WORKSPACE = workspace_dir()
 registry = BotRegistry()
 jobs = JobManager(_WORKSPACE)
 
@@ -170,7 +171,9 @@ def start() -> None:
             "ALLOWED_CHAT_ID is not set — refusing to start with an open chat gate. "
             "Set it in .env and restart.")
     from newsparser.store.sqlite import init_db
+    from newsparser.store.conversations import init_conv_db
     init_db()
+    init_conv_db()
     registry.load()
     logger.info("Loaded bots: %s", registry.names())
 

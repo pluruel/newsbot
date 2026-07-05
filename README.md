@@ -131,9 +131,15 @@ plus one container: `neo4j`. See `plan-host-migration.md` for the rationale.
 cp .env.example .env        # then fill in every value (table below)
 uv sync                     # build ./.venv ON THIS HOST — units run it directly
 docker compose up -d        # neo4j only (ports bind to 127.0.0.1)
+.venv/bin/python -m newsparser.scripts.migrate_conversations   # one-time: fold legacy sessions/*.jsonl + interest-events.jsonl into conversations.db (idempotent, no-op once done)
 sudo ./deploy/install.sh    # systemd units + /usr/local/sbin/newsbot-ops + sudoers
 sudo systemctl start newsbot-poller newsbot-dispatcher
 ```
+
+The migration step is idempotent and self-skipping (it renames its sources to
+`*.migrated`), so it is safe to leave in a redeploy script; on a host with no legacy
+JSONL it is a no-op. Neo4j is a derived projection — after the store is migrated and
+Neo4j is up, `reproject_all()` rebuilds the conversation subgraph from SQLite.
 
 `install.sh` validates `.env` before installing anything and exits with an error if
 `ALLOWED_CHAT_ID` is missing or a compose-era `NEO4J_URI=bolt://neo4j:7687` is still
@@ -145,6 +151,13 @@ Code deploys are `git pull && uv sync` + `sudo -n newsbot-ops restart dispatcher
 (detached restart with an import guard — safe to trigger from inside a claude run).
 `.venv` must be built on the deploy host: a copied one has a dangling interpreter
 symlink and the units won't start.
+
+Only re-run `sudo ./deploy/install.sh` when `deploy/` itself changed (the unit
+templates, `newsbot-ops`, or `install.sh`) — those are rendered into root-owned
+locations outside the repo, so a plain `git pull` doesn't update them. Ordinary
+`newsparser/` code changes need nothing beyond the restart above. Run
+`git diff <previously-installed-commit>..HEAD -- deploy/` if unsure whether this
+deploy needs it.
 
 Privileged ops (service restart/status/logs) go through `/usr/local/sbin/newsbot-ops`,
 a root-owned copy of `deploy/newsbot-ops` installed outside the repo — editing the

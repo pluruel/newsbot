@@ -4,6 +4,7 @@ __pycache__/
 .env
 .venv/
 workspace/newsparser.db
+workspace/conversations.db
 .worktrees/
 worktrees/
 .pytest_cache/

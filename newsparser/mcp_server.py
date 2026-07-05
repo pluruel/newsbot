@@ -1,6 +1,5 @@
 import json
 import os
-from collections import Counter
 from datetime import datetime, timedelta, timezone
 from datetime import date as _date, datetime as _datetime, time as _time, timezone as _tz
 from pathlib import Path
@@ -12,27 +11,15 @@ from newsparser.bots.core.jobs import KILL_FILE, REQUEST_DIR, STATE_FILE
 from newsparser.classifier import classify_query as _classify_query_impl
 from newsparser.market import store as _market_store
 from newsparser.market.fetcher import TICKERS as _MARKET_TICKERS
+from newsparser.paths import workspace_dir as _workspace
 from newsparser.store import sqlite as _sqlite_store
+from newsparser.store import conversations as _conv
 
 mcp = FastMCP("newsparser")
 
 
-def _workspace() -> Path:
-    return Path(os.environ.get("WORKSPACE_DIR", "workspace"))
-
-
 def _log_interest_event(entity: str) -> None:
-    event = {
-        "ts": datetime.now(timezone.utc).isoformat(),
-        "type": "query",
-        "entities": [entity],
-        "themes": [entity],
-        "depth": "shallow",
-    }
-    path = _workspace() / "me" / "interest-events.jsonl"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a") as f:
-        f.write(json.dumps(event, ensure_ascii=False) + "\n")
+    _conv.log_interest_event(entity)
 
 
 def _resolve_categories(category: str | None) -> list[str]:
@@ -41,6 +28,20 @@ def _resolve_categories(category: str | None) -> list[str]:
     if category in (None, "both"):
         return ["tech", "markets"]
     return [category]
+
+
+def _render_turns(rows: list[dict], *, ts: bool = False, chat: bool = False) -> str:
+    """Format conversation turns for the recall tools. ``ts``/``chat`` prefix each
+    line with the timestamp / chat id — the only axes the four tools differ on."""
+    lines = []
+    for r in rows:
+        prefix = ""
+        if ts:
+            prefix += f"[{r['ts']}] "
+        if chat:
+            prefix += f"({r['chat_id']}) "
+        lines.append(f"{prefix}{r['role'].upper()}: {r['content']}")
+    return "\n".join(lines)
 
 
 @mcp.tool()
@@ -81,16 +82,53 @@ def read_cycle_reports(category: str | None = None, n: int = 4) -> str:
 @mcp.tool()
 def read_conversation_history(chat_id: str, n: int = 10) -> str:
     """Read recent conversation turns for a given chat."""
-    from newsparser.bot.tracker import load_history
-    history = load_history(chat_id)[-n:]
+    history = _conv.get_recent_messages(chat_id, n)
     if not history:
         return "No conversation history."
-    return "\n".join(f"{t['role'].upper()}: {t['content']}" for t in history)
+    return _render_turns(history)
+
+
+@mcp.tool()
+def search_conversations(
+    keyword: str, chat_id: str | None = None, since: str | None = None, n: int = 10
+) -> str:
+    """Full-text search past conversation turns by keyword (trigram index over all
+    stored messages), newest-first. `since` is an absolute lower-bound date/datetime
+    (YYYY-MM-DD). Restrict to one chat with `chat_id`. Use this to recall what was
+    previously discussed with the user."""
+    rows = _conv.search_messages(keyword, chat_id=chat_id, since=since, limit=n)
+    if not rows:
+        return f"No conversation turns matching '{keyword}'."
+    return (f"Found {len(rows)} turn(s) matching '{keyword}':\n\n"
+            + _render_turns(rows, ts=True, chat=True))
+
+
+@mcp.tool()
+def get_conversation_thread(message_id: str) -> str:
+    """Reconstruct the reply chain (root-first) a message belongs to, following the
+    reply_to_id edges. Use this to see the exact question/answer lineage that led to
+    a given turn, even when turns did not arrive strictly in order."""
+    rows = _conv.get_thread(message_id)
+    if not rows:
+        return f"No message found with id {message_id}."
+    return _render_turns(rows, ts=True)
+
+
+@mcp.tool()
+def conversations_about_entity(entity: str, n: int = 10) -> str:
+    """Find past conversation turns that mentioned a news-graph entity (by canonical
+    name), newest-first — bridges the chat history and the knowledge graph. Answers
+    "what have we discussed about <entity> before?"."""
+    from newsparser.graph.conversation_projector import messages_about_entity
+    rows = messages_about_entity(entity, n)
+    if not rows:
+        return f"No conversation turns mention '{entity}'."
+    return (f"{len(rows)} turn(s) mentioning '{entity}':\n\n"
+            + _render_turns(rows, ts=True, chat=True))
 
 
 def _interest_weights_one(category: str, days: int) -> str:
     interests_path = _workspace() / "me" / f"interests_{category}.md"
-    events_path = _workspace() / "me" / "interest-events.jsonl"
 
     actual: dict[str, dict] = {}
     if interests_path.exists():
@@ -109,25 +147,12 @@ def _interest_weights_one(category: str, days: int) -> str:
                 continue
 
     estimated: dict[str, float] = {}
-    if events_path.exists():
-        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
-        counts: Counter = Counter()
-        for line in events_path.read_text().splitlines():
-            if not line.strip():
-                continue
-            try:
-                e = json.loads(line)
-                ts = datetime.fromisoformat(e["ts"].replace("Z", "+00:00"))
-                if ts < cutoff:
-                    continue
-                for theme in e.get("themes", []):
-                    counts[theme] += 1
-            except (json.JSONDecodeError, KeyError, ValueError):
-                continue
-        if counts:
-            max_count = max(counts.values())
-            for theme, count in counts.items():
-                estimated[theme] = round(count / max_count, 2)
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    counts = dict(_conv.interest_theme_counts(since=cutoff))
+    if counts:
+        max_count = max(counts.values())
+        for theme, count in counts.items():
+            estimated[theme] = round(count / max_count, 2)
 
     if not actual and not estimated:
         return f"No data found for category={category}."
@@ -156,24 +181,21 @@ def get_interest_weights(category: str | None = None, days: int = 14) -> str:
 
 @mcp.tool()
 def clear_interest_events() -> str:
-    """Clear the interest-events.jsonl query log (resets weight estimation baseline)."""
-    path = _workspace() / "me" / "interest-events.jsonl"
-    if not path.exists():
-        return "No interest events file found."
-    path.write_text("")
-    return "interest-events.jsonl cleared."
+    """Clear the interest-event query log (resets weight estimation baseline)."""
+    removed = _conv.clear_interest_events()
+    return f"interest events cleared ({removed} rows)."
 
 
 @mcp.tool()
-def clear_conversation_history() -> str:
-    """Clear all conversation history."""
-    sessions_dir = _workspace() / "sessions"
-    if not sessions_dir.exists():
-        return "No sessions found."
-    files = list(sessions_dir.glob("*.jsonl"))
-    for f in files:
-        f.write_text("")
-    return f"Conversation history cleared ({len(files)} sessions)."
+def clear_conversation_history(chat_id: str | None = None) -> str:
+    """Clear stored conversation history. Omit chat_id to clear every chat."""
+    removed = _conv.clear_chat(chat_id)
+    # Propagate the delete into the Neo4j projection so cleared turns stop
+    # surfacing via conversations_about_entity (best-effort — SQLite is truth).
+    from newsparser.graph.conversation_projector import delete_chat
+    delete_chat(chat_id)
+    scope = f"chat {chat_id}" if chat_id else "all chats"
+    return f"Conversation history cleared ({removed} turns, {scope})."
 
 
 @mcp.tool()

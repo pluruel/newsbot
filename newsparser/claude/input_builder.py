@@ -1,6 +1,6 @@
-import os
 from pathlib import Path
 
+from newsparser.paths import workspace_dir
 from newsparser.store.sqlite import get_unprocessed
 
 
@@ -10,7 +10,7 @@ def build_input_file(slot: str, category: str) -> Path:
     explicit GUID line so Claude can cite source articles via `src:A001,A007`
     in graph block relations.
     """
-    workspace = Path(os.environ.get("WORKSPACE_DIR", "workspace"))
+    workspace = workspace_dir()
     articles = get_unprocessed(category=category)
 
     lines = [

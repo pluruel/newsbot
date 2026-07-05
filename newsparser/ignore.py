@@ -5,13 +5,13 @@ Stored as a markdown table in ``workspace/me/ignore.md`` (human- and
 bot-editable, same tier as manifesto/interests), parsed tolerantly like
 ``collector/sources.py``. No database — the file is the only persistent state.
 """
-import os
 import re
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
 from newsparser._mdtable import parse_rows
+from newsparser.paths import workspace_dir
 
 VALID_KINDS = ("entity", "storyline")
 
@@ -82,7 +82,7 @@ class IgnoreList:
 def _workspace(workspace: Path | str | None = None) -> Path:
     if workspace is not None:
         return Path(workspace)
-    return Path(os.environ.get("WORKSPACE_DIR", "workspace"))
+    return workspace_dir()
 
 
 def load_ignore(workspace: Path | str | None = None) -> IgnoreList:

@@ -1,11 +1,12 @@
-import os
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
+from newsparser.paths import workspace_dir
+
 
 def _db_path() -> Path:
-    return Path(os.environ.get("WORKSPACE_DIR", "workspace")) / "state" / "claude_runs.db"
+    return workspace_dir() / "state" / "claude_runs.db"
 
 
 def _init(conn: sqlite3.Connection) -> None:
