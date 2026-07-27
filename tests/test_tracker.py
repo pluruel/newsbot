@@ -1,5 +1,8 @@
 import pytest
+import re
+from datetime import datetime
 from unittest.mock import patch
+from zoneinfo import ZoneInfo
 from newsparser.bot.tracker import run_tracker, load_history
 from newsparser.store import conversations as conv
 
@@ -68,6 +71,78 @@ def test_run_tracker_injects_category_hint():
     mock_classify.assert_called_once_with("OpenAI 새 모델 어때?", history=None)
     assert "카테고리 힌트" in captured["prompt"]
     assert "tech" in captured["prompt"]
+
+
+def test_run_tracker_prompt_routes_run_orders_to_start_job():
+    """"사이클 돌려줘" must reach start_job, not the /cycle slash command.
+
+    The tracker runs with bypassPermissions, so the project's .claude/commands/
+    cycle.md is visible to it — and cycle.md's first job is parsing $ARGUMENTS
+    into slot+category. Without an explicit ban the model picks that over
+    start_job and asks the user for a slot, which start_job doesn't even take.
+    """
+    captured: dict = {}
+
+    def fake_run_claude(prompt, **kw):
+        captured["prompt"] = prompt
+        return "answer"
+
+    with patch("newsparser.bot.tracker.classify_query", return_value="tech"), \
+         patch("newsparser.bot.tracker.run_claude", side_effect=fake_run_claude):
+        run_tracker(chat_id="t1", query="사이클 돌려줘")
+
+    prompt = captured["prompt"]
+    assert "slot·category를 되묻지 마라" in prompt
+    assert "슬래시 커맨드를 직접 실행하는 것도 금지" in prompt
+    assert "실행 지시에는 언제나 start_job만 쓴다" in prompt
+
+
+def test_run_tracker_prompt_supplies_kst_clock():
+    """The prompt must carry a KST wall clock.
+
+    run_claude passes no TZ/date to the CLI subprocess, so the model's only clock
+    is the host's — and nothing in deploy/ pins the host to Asia/Seoul. Without
+    an interpolated value "오늘" resolves to the previous KST day on a UTC host
+    between 00:00 and 09:00 KST.
+    """
+    captured: dict = {}
+
+    def fake_run_claude(prompt, **kw):
+        captured["prompt"] = prompt
+        return "answer"
+
+    with patch("newsparser.bot.tracker.classify_query", return_value="markets"), \
+         patch("newsparser.bot.tracker.run_claude", side_effect=fake_run_claude):
+        run_tracker(chat_id="t1", query="마지막 사이클 언제 돌았어?")
+
+    # Matched by shape + KST date, not by an exact HH:MM equal to "now" — the
+    # minute can tick over between prompt build and assertion.
+    m = re.search(r"지금은 (\d{4}-\d{2}-\d{2}) \d{2}:\d{2} KST다", captured["prompt"])
+    assert m, captured["prompt"][:400]
+    assert m.group(1) == datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y-%m-%d")
+
+
+def test_run_tracker_prompt_flags_non_kst_tool_timestamps():
+    """Per-source timezones, not a blanket "everything is KST".
+
+    market_query's 1h `ts` is UTC (market/fetcher.py), its 1d `date` is the
+    market's session date, and the conversation tools render UTC timestamps
+    verbatim — only cycle slots and job_status are KST.
+    """
+    captured: dict = {}
+
+    def fake_run_claude(prompt, **kw):
+        captured["prompt"] = prompt
+        return "answer"
+
+    with patch("newsparser.bot.tracker.classify_query", return_value="markets"), \
+         patch("newsparser.bot.tracker.run_claude", side_effect=fake_run_claude):
+        run_tracker(chat_id="t1", query="어제 SPX 몇 시에 빠졌어?")
+
+    prompt = captured["prompt"]
+    assert "`ts`(freq=\"1h\") — UTC다" in prompt
+    assert "KST 날짜가 아니다" in prompt
+    assert "`[타임스탬프]` — UTC다" in prompt
 
 
 def test_run_tracker_continues_if_classify_query_fails():

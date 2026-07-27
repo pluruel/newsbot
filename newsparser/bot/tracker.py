@@ -1,6 +1,8 @@
 import logging
 import threading
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from newsparser.claude.runner import run_claude
 from newsparser.classifier import classify_query
@@ -9,6 +11,8 @@ from newsparser.store import conversations as conv
 logger = logging.getLogger(__name__)
 
 HISTORY_MAX_TURNS = 10
+
+_KST = ZoneInfo("Asia/Seoul")
 
 _MCP_CONFIG = Path(__file__).parent.parent.parent / "mcp.json"
 
@@ -130,6 +134,20 @@ def run_tracker(chat_id: str, query: str) -> str:
         "답변 전에 항상 read_cycle_reports()를 먼저 호출해 최근 사이클 맥락을 로드한다. "
         "그다음 필요에 따라 graph_query 등 다른 도구를 쓴다. "
         "사이클 리포트는 날짜로 인용한다. 답이 길면 TL;DR로 시작한다.\n\n"
+        f"지금은 {datetime.now(_KST).strftime('%Y-%m-%d %H:%M')} KST다 "
+        "(claude CLI가 도는 호스트의 시간대는 KST가 아닐 수 있으니 네 자체 시계 대신 이 값을 써라). "
+        "\"오늘\", \"어제\", \"3시간 전\" 같은 상대 표현은 전부 이 시각으로 환산하고, "
+        "사용자에게 답할 때 쓰는 시각·날짜도 KST로 적는다.\n"
+        "단, 도구가 돌려주는 타임스탬프는 소스마다 시간대가 달라서 그대로 KST로 읽으면 안 된다:\n"
+        "- 사이클 슬롯·리포트 타임스탬프, `job_status`의 시각 — 이미 KST다. 그대로 쓴다.\n"
+        "- `market_query`의 `ts`(freq=\"1h\") — UTC다. 답할 때 +9시간 해서 KST로 옮긴다.\n"
+        "- `market_query`의 `date`(freq=\"1d\") — 그 시장의 거래일이지 KST 날짜가 아니다 "
+        "(SPX·NDX·VIX·TNX는 미국 세션 기준). 날짜를 옮기지 말고 거래일 그대로 인용한다.\n"
+        "- 대화 기록 도구(`read_conversation_history`, `search_conversations`, "
+        "`get_conversation_thread`, `conversations_about_entity`)가 찍는 `[타임스탬프]` — UTC다. "
+        "인용할 땐 +9시간 해서 KST로 옮긴다. `search_conversations`의 `since`도 UTC `ts`와 "
+        "비교되므로 KST 날짜 경계를 그대로 넣으면 9시간이 어긋난다 — 하루 앞당긴 날짜를 넣고 "
+        "결과의 타임스탬프를 보고 직접 걸러라.\n\n"
         "근거 규칙:\n"
         "- 모든 사실 주장(사건, 수치, 날짜, 발언, 인과관계)은 이 대화에서 도구로 직접 확인한 "
         "자료(사이클 리포트, search_articles 원문, graph_query, market_query)에만 근거한다. "
@@ -150,7 +168,12 @@ def run_tracker(chat_id: str, query: str) -> str:
         "실행 중 작업·경과 시간·마지막 활동을 확인해 답한다. 마지막 활동(idle_s)이 "
         "수 분 이상이면 정체 가능성을 언급한다. 사용자가 작업 실행을 지시하면"
         "(\"사이클 돌려줘\", \"위클리 실행해\") `start_job(bot, chat_id)`를 호출한다 — "
-        f"현재 chat_id는 {chat_id}다. 사용자가 작업 중단을 지시하면 "
+        f"현재 chat_id는 {chat_id}다. 이때 slot·category를 되묻지 마라: start_job에는 "
+        "그런 인자가 없고, cycle은 현재 시각(KST) 슬롯으로 tech·markets 양쪽을 자동으로 돈다. "
+        "`/cycle`·`/weekly`·`/reflect` 슬래시 커맨드를 직접 실행하는 것도 금지다 — "
+        "그건 run_cycle.py 등이 슬롯을 채워서 부르는 내부용이라, 네가 부르면 입력파일이 "
+        "없어 실패한다. 실행 지시에는 언제나 start_job만 쓴다. "
+        "사용자가 작업 중단을 지시하면 "
         "`kill_job(job_id)`를 사용자 확인 후에만 호출한다.\n\n"
         "운영(ops) 권한도 있다. 사용자가 봇/서비스 상태나 재시작·로그를 묻거나 "
         "지시하면 `service_status`, `tail_logs(service, n)`, `restart_service(service)` "
