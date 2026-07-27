@@ -457,3 +457,87 @@ def test_snapshot_block_prepended_to_input(tmp_path, monkeypatch):
     snap_idx = text.find("## 시장 스냅샷")
     art_idx = text.find("Collected Articles")
     assert 0 <= snap_idx < art_idx
+
+
+# --- backlog wedge regression -------------------------------------------------
+# A failing category run skips the guids/mark_processed safety net, so the same
+# articles stay unprocessed and next cycle's input file is strictly larger. Left
+# unbounded that turns one failure into a permanent outage (tech stalled 5 days
+# behind a 112-article backlog). The batch cap is what stops the regrowth.
+
+def test_run_cycle_caps_batch_size(tmp_path):
+    for i in range(script.CYCLE_MAX_ARTICLES + 15):
+        insert_article(f"g{i:04d}", "src", f"t{i}", f"u{i}",
+                       f"2026-05-08T{i % 24:02d}:00:00Z", "body", category="tech")
+
+    seen_articles: list[list[dict]] = []
+
+    with patch("newsparser.scripts.run_cycle.run_claude",
+               side_effect=_fake_run_claude_writes_report), \
+         patch("newsparser.scripts.run_cycle.build_input_file",
+               side_effect=lambda s, c, articles=None: seen_articles.append(articles)), \
+         patch("newsparser.scripts.run_cycle.classify_article", return_value="tech"), \
+         patch("newsparser.scripts.run_cycle.send_long_message"):
+        script.main("2026-05-08-12")
+
+    assert len(seen_articles) == 1
+    assert len(seen_articles[0]) == script.CYCLE_MAX_ARTICLES
+
+    # Only the capped batch is claimed for processing — the rest stays pending
+    # and drains on the next cycle instead of inflating the same input file.
+    remaining = get_unprocessed(category="tech")
+    assert len(remaining) == 15
+
+
+def test_run_cycle_passes_same_articles_to_guids_and_input_file(tmp_path):
+    """The guids file and the input file must describe the identical article set.
+    Two independent get_unprocessed() calls can diverge when the poller inserts
+    between them, leaking articles that are indexed but never marked processed."""
+    insert_article("g1", "src", "t1", "u1", "2026-05-08T01:00:00Z", "body", category="tech")
+    insert_article("g2", "src", "t2", "u2", "2026-05-08T02:00:00Z", "body", category="tech")
+
+    seen_articles: list[list[dict]] = []
+
+    def fake_build(slot, category, articles=None):
+        seen_articles.append(articles)
+        # Simulate the poller landing a new article mid-run.
+        insert_article("g3", "src", "t3", "u3", "2026-05-08T03:00:00Z", "body", category="tech")
+
+    guids_text: list[str] = []
+
+    def fake_claude(prompt, **kw):
+        ws = Path(os.environ["WORKSPACE_DIR"])
+        slot, category = prompt.strip().split()[1:3]
+        guids_text.append((ws / "input" / category / f"{slot}-guids.txt").read_text())
+        return _fake_run_claude_writes_report(prompt, **kw)
+
+    with patch("newsparser.scripts.run_cycle.run_claude", side_effect=fake_claude), \
+         patch("newsparser.scripts.run_cycle.build_input_file", side_effect=fake_build), \
+         patch("newsparser.scripts.run_cycle.classify_article", return_value="tech"), \
+         patch("newsparser.scripts.run_cycle.send_long_message"):
+        script.main("2026-05-08-12")
+
+    assert seen_articles[0] is not None
+    assert [a["guid"] for a in seen_articles[0]] == guids_text[0].split()
+
+
+def test_run_cycle_records_category_failure_in_daily_log(tmp_path):
+    """A category that blows up must leave a FAIL line in the daily workspace log.
+    Today it only reaches the systemd journal, which is why a 5-day tech outage
+    read as 'no tech lines at all' instead of a recorded error."""
+    insert_article("g1", "src", "t1", "u1", None, "body", category="tech")
+
+    def fake_claude(prompt, **kw):
+        if " tech" in prompt:
+            raise RuntimeError("claude timed out after 1500s")
+        return _fake_run_claude_writes_report(prompt, **kw)
+
+    with patch("newsparser.scripts.run_cycle.run_claude", side_effect=fake_claude), \
+         patch("newsparser.scripts.run_cycle.build_input_file"), \
+         patch("newsparser.scripts.run_cycle.classify_article", return_value="tech"), \
+         patch("newsparser.scripts.run_cycle.send_long_message"):
+        script.main("2026-05-08-12")
+
+    log_text = (tmp_path / "workspace" / "logs" / "2026-05-08.log").read_text()
+    assert "cycle tech-2026-05-08-12 FAIL" in log_text
+    assert "claude timed out after 1500s" in log_text

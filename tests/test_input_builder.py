@@ -72,3 +72,19 @@ def test_index_order_matches_db_order(tmp_path):
     g_first = text.index("g-first")
     g_second = text.index("g-second")
     assert a001 < g_first < a002 < g_second
+
+
+def test_build_input_file_uses_supplied_articles(tmp_path):
+    """run_cycle.py passes the article list it already claimed, so the input file
+    and {slot}-guids.txt can't describe different sets."""
+    insert_article("g1", "Bloomberg", "T1", "u1", None, "body one", category="markets")
+    insert_article("g2", "FT", "T2", "u2", None, "body two", category="markets")
+
+    from newsparser.store.sqlite import get_unprocessed
+    only_first = get_unprocessed(category="markets")[:1]
+
+    path = build_input_file("2026-05-09-12", "markets", articles=only_first)
+    text = path.read_text()
+    assert "1 total" in text
+    assert "body one" in text
+    assert "body two" not in text
