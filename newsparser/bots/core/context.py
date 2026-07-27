@@ -46,16 +46,5 @@ class Context:
     def logger(self) -> logging.Logger:
         return logging.getLogger(f"newsparser.bots.{self.bot_name}")
 
-    async def claude(self, prompt: str, **kwargs) -> str:
-        from newsparser.bots.core.cost_db import record_run
-        from newsparser.claude.runner import run_claude_json
-        try:
-            text, meta = await asyncio.to_thread(run_claude_json, prompt, **kwargs)
-            await asyncio.to_thread(record_run, bot=self.bot_name, meta=meta, ok=True)
-            return text
-        except Exception as exc:
-            await asyncio.to_thread(record_run, bot=self.bot_name, meta={}, ok=False, error=str(exc))
-            raise
-
     async def run_in_thread(self, fn: Callable, *args, **kwargs) -> Any:
         return await asyncio.to_thread(fn, *args, **kwargs)

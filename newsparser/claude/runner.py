@@ -296,26 +296,3 @@ def run_claude(
     cmd = _build_cmd(prompt, mcp_config, model, system_prompt, allowed_tools, permission_mode)
     event = _run_stream(cmd, timeout, prompt)
     return event.get("result", "")
-
-
-def run_claude_json(
-    prompt: str,
-    timeout: int = 1500,
-    mcp_config: str | None = None,
-    model: str = "claude-sonnet-5",
-    system_prompt: str | None = None,
-    allowed_tools: list[str] | None = None,
-    permission_mode: str = "default",
-) -> tuple[str, dict]:
-    """Like run_claude() but also returns run metadata. Returns (text, meta).
-    Raises ClaudeError on failure (including timeout). Deny-by-default: see run_claude."""
-    cmd = _build_cmd(prompt, mcp_config, model, system_prompt, allowed_tools, permission_mode)
-    event = _run_stream(cmd, timeout, prompt)
-    usage = event.get("usage") or {}
-    meta = {
-        "duration_ms": event.get("duration_ms"),
-        "input_tokens": usage.get("input_tokens"),
-        "output_tokens": usage.get("output_tokens"),
-        "cost_usd": event.get("total_cost_usd", event.get("cost_usd")),
-    }
-    return event.get("result", ""), meta

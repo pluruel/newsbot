@@ -248,7 +248,7 @@ def _run_for_category(slot: str, category: str, workspace: Path) -> None:
     # Input file is scraped article text — run with the cycle allowlist so a
     # prompt-injected instruction can't reach arbitrary Bash/network tools.
     run_claude(f"/cycle {slot} {category}",
-               allowed_tools=CYCLE_TOOLS, permission_mode="default")
+               allowed_tools=CYCLE_TOOLS, permission_mode="default", timeout=3600)
     logger.info("[%s] Claude cycle complete", category)
 
     # Safety net: the CYCLE_TOOLS whitelist only matches the exact apply_graph
