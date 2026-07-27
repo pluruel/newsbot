@@ -70,6 +70,44 @@ def test_run_tracker_injects_category_hint():
     assert "tech" in captured["prompt"]
 
 
+def test_run_tracker_prompt_routes_run_orders_to_start_job():
+    """"사이클 돌려줘" must reach start_job, not the /cycle slash command.
+
+    The tracker runs with bypassPermissions, so the project's .claude/commands/
+    cycle.md is visible to it — and cycle.md's first job is parsing $ARGUMENTS
+    into slot+category. Without an explicit ban the model picks that over
+    start_job and asks the user for a slot, which start_job doesn't even take.
+    """
+    captured: dict = {}
+
+    def fake_run_claude(prompt, **kw):
+        captured["prompt"] = prompt
+        return "answer"
+
+    with patch("newsparser.bot.tracker.classify_query", return_value="tech"), \
+         patch("newsparser.bot.tracker.run_claude", side_effect=fake_run_claude):
+        run_tracker(chat_id="t1", query="사이클 돌려줘")
+
+    prompt = captured["prompt"]
+    assert "slot·category를 되묻지 마라" in prompt
+    assert "슬래시 커맨드를 직접 실행하는 것도 금지" in prompt
+    assert "실행 지시에는 언제나 start_job만 쓴다" in prompt
+
+
+def test_run_tracker_prompt_pins_timezone_to_kst():
+    captured: dict = {}
+
+    def fake_run_claude(prompt, **kw):
+        captured["prompt"] = prompt
+        return "answer"
+
+    with patch("newsparser.bot.tracker.classify_query", return_value="markets"), \
+         patch("newsparser.bot.tracker.run_claude", side_effect=fake_run_claude):
+        run_tracker(chat_id="t1", query="마지막 사이클 언제 돌았어?")
+
+    assert "KST(Asia/Seoul) 기준으로 해석하고 답한다" in captured["prompt"]
+
+
 def test_run_tracker_continues_if_classify_query_fails():
     def fake_run_claude(prompt, **kw):
         return "answer"
