@@ -1,5 +1,8 @@
 import pytest
+import re
+from datetime import datetime
 from unittest.mock import patch
+from zoneinfo import ZoneInfo
 from newsparser.bot.tracker import run_tracker, load_history
 from newsparser.store import conversations as conv
 
@@ -94,7 +97,14 @@ def test_run_tracker_prompt_routes_run_orders_to_start_job():
     assert "실행 지시에는 언제나 start_job만 쓴다" in prompt
 
 
-def test_run_tracker_prompt_pins_timezone_to_kst():
+def test_run_tracker_prompt_supplies_kst_clock():
+    """The prompt must carry a KST wall clock.
+
+    run_claude passes no TZ/date to the CLI subprocess, so the model's only clock
+    is the host's — and nothing in deploy/ pins the host to Asia/Seoul. Without
+    an interpolated value "오늘" resolves to the previous KST day on a UTC host
+    between 00:00 and 09:00 KST.
+    """
     captured: dict = {}
 
     def fake_run_claude(prompt, **kw):
@@ -105,7 +115,34 @@ def test_run_tracker_prompt_pins_timezone_to_kst():
          patch("newsparser.bot.tracker.run_claude", side_effect=fake_run_claude):
         run_tracker(chat_id="t1", query="마지막 사이클 언제 돌았어?")
 
-    assert "KST(Asia/Seoul) 기준으로 해석하고 답한다" in captured["prompt"]
+    # Matched by shape + KST date, not by an exact HH:MM equal to "now" — the
+    # minute can tick over between prompt build and assertion.
+    m = re.search(r"지금은 (\d{4}-\d{2}-\d{2}) \d{2}:\d{2} KST다", captured["prompt"])
+    assert m, captured["prompt"][:400]
+    assert m.group(1) == datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y-%m-%d")
+
+
+def test_run_tracker_prompt_flags_non_kst_tool_timestamps():
+    """Per-source timezones, not a blanket "everything is KST".
+
+    market_query's 1h `ts` is UTC (market/fetcher.py), its 1d `date` is the
+    market's session date, and the conversation tools render UTC timestamps
+    verbatim — only cycle slots and job_status are KST.
+    """
+    captured: dict = {}
+
+    def fake_run_claude(prompt, **kw):
+        captured["prompt"] = prompt
+        return "answer"
+
+    with patch("newsparser.bot.tracker.classify_query", return_value="markets"), \
+         patch("newsparser.bot.tracker.run_claude", side_effect=fake_run_claude):
+        run_tracker(chat_id="t1", query="어제 SPX 몇 시에 빠졌어?")
+
+    prompt = captured["prompt"]
+    assert "`ts`(freq=\"1h\") — UTC다" in prompt
+    assert "KST 날짜가 아니다" in prompt
+    assert "`[타임스탬프]` — UTC다" in prompt
 
 
 def test_run_tracker_continues_if_classify_query_fails():
