@@ -5,7 +5,7 @@ import time
 import pytest
 
 from newsparser.claude import runner
-from newsparser.claude.runner import run_claude, run_claude_json, ClaudeError, ClaudeKilled
+from newsparser.claude.runner import run_claude, ClaudeError, ClaudeKilled
 
 
 def _fake_claude(tmp_path, monkeypatch, body: str):
@@ -112,22 +112,6 @@ def test_run_claude_raises_claude_error_on_timeout(tmp_path, monkeypatch):
     with pytest.raises(ClaudeError, match="timed out after 1s"):
         run_claude("query", timeout=1)
     assert time.monotonic() - start < 10
-
-
-def test_run_claude_json_returns_text_and_meta(tmp_path, monkeypatch):
-    _fake_claude(tmp_path, monkeypatch, _SUCCESS_BODY)
-    text, meta = run_claude_json("/cycle")
-    assert text == "analysis output"
-    assert meta["duration_ms"] == 5000
-    assert meta["input_tokens"] == 100
-    assert meta["output_tokens"] == 50
-    assert meta["cost_usd"] == 0.002
-
-
-def test_run_claude_json_raises_claude_error_on_timeout(tmp_path, monkeypatch):
-    _fake_claude(tmp_path, monkeypatch, "import time\ntime.sleep(30)\n")
-    with pytest.raises(ClaudeError, match="timed out after 1s"):
-        run_claude_json("query", timeout=1)
 
 
 def test_active_runs_tagged_with_job_and_kill_job(tmp_path, monkeypatch):
