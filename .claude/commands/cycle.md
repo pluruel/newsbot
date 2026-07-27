@@ -33,7 +33,9 @@ Read `workspace/me/ignore.md`. 표의 모든 `대상`(종류 entity/storyline)�
 ## 작업
 
 1. `workspace/input/{category}/{slot}-input.md`를 읽는다.
-2. `workspace/cycles/{category}/`에서 가장 최근 파일을 읽어 직전 맥락으로 삼는다(없으면 생략). **무시 목록의 대상이 직전 리포트에 등장하더라도 이어받지 말 것** (위 "무시 목록" 참조).
+2. `Glob` 도구로 `workspace/cycles/{category}/*.md`를 나열한다. 파일명이 `{slot}` 꼴이라 사전순 정렬이 곧 시간순이므로, 마지막 항목을 `Read`로 읽어 직전 맥락으로 삼는다(파일이 없으면 생략).
+   이 사이클에서 Bash는 `apply_graph.py`·`mark_processed.py` 두 개만 허용된다 — `ls`/`sort`/`tail` 등으로 파일 목록을 얻으려 하면 자동 거부되니 쓰지 말 것.
+   **무시 목록의 대상이 직전 리포트에 등장하더라도 이어받지 말 것** (위 "무시 목록" 참조).
 3. 수집된 기사 전체를 분석한다:
    - 교차 출처 중복 제거: 여러 출처에 실린 같은 사건 → 병합.
    - 델타: 진짜 새로운 것과 기존 흐름의 연속을 구분.

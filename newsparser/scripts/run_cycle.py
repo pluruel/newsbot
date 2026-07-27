@@ -28,6 +28,16 @@ _KST = ZoneInfo("Asia/Seoul")
 
 _CYCLE_ITEM_RE = re.compile(r"^\s*[•\-\*]\s*\(중요도\s*([0-9]*\.?[0-9]+)\)\s*(.+)$")
 
+# Max articles fed to one category run. A failed run never reaches the
+# mark_processed safety net below, so its articles stay pending and the next
+# slot's input file is strictly larger — without a cap a single failure
+# compounds into a permanent outage (tech stalled 5 days behind a growing
+# backlog while markets, which never failed, kept running). Capping bounds the
+# input so a backlog drains over successive cycles instead of guaranteeing the
+# next run fails too. Oldest-first (get_unprocessed orders by published), so
+# nothing is dropped — only deferred. ~10x normal per-slot volume.
+CYCLE_MAX_ARTICLES = 60
+
 # Digest section headers in the report (cycle.md "Report file format").
 _SCORED_SECTIONS = ("새 소식", "이어지는 흐름")        # items carry a 중요도 score
 _UNSCORED_SECTIONS = ("조용한 영역", "오픈 스레드")     # items have no score
@@ -219,17 +229,32 @@ def _classify_pending() -> None:
         update_category(r["guid"], cat)
 
 
+def _append_daily_log(workspace: Path, slot: str, message: str) -> None:
+    log_path = workspace / "logs" / f"{slot[:10]}.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with log_path.open("a") as f:
+        f.write(f"{datetime.now(_KST).isoformat()} {message}\n")
+
+
 def _run_for_category(slot: str, category: str, workspace: Path) -> None:
     articles = get_unprocessed(category=category)
     if not articles:
         logger.info("No unprocessed articles for category=%s slot=%s", category, slot)
         return
 
+    backlog = len(articles)
+    if backlog > CYCLE_MAX_ARTICLES:
+        articles = articles[:CYCLE_MAX_ARTICLES]
+        logger.warning("[%s] backlog of %d unprocessed articles — capping this run at "
+                       "%d (oldest first); the rest drain next cycle",
+                       category, backlog, CYCLE_MAX_ARTICLES)
+
     guids_path = workspace / "input" / category / f"{slot}-guids.txt"
     guids_path.parent.mkdir(parents=True, exist_ok=True)
     guids_path.write_text("\n".join(a["guid"] for a in articles))
 
-    build_input_file(slot, category)
+    # Same list the guids file was written from — see build_input_file's docstring.
+    build_input_file(slot, category, articles=articles)
     logger.info("[%s] Built input file (%d articles)", category, len(articles))
 
     # Prepend a market snapshot block to the input file so Claude sees it first.
@@ -296,10 +321,7 @@ def _run_for_category(slot: str, category: str, workspace: Path) -> None:
         logger.warning("[%s] no report file at %s — skipping telegram",
                        category, report_path)
 
-    log_path = workspace / "logs" / f"{slot[:10]}.log"
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    with log_path.open("a") as f:
-        f.write(f"{datetime.now(_KST).isoformat()} cycle {category}-{slot} OK articles={len(articles)}\n")
+    _append_daily_log(workspace, slot, f"cycle {category}-{slot} OK articles={len(articles)}")
 
 
 def main(slot: str | None = None) -> None:
@@ -320,7 +342,13 @@ def main(slot: str | None = None) -> None:
             # JobManager consume the marker and report 🛑.
             raise
         except Exception as exc:
-            logger.error("[%s] cycle failed: %s", category, exc)
+            # The daily log is the first place a stalled category gets checked, and
+            # until now only successes were written there — a failing category left
+            # no trace at all, so an outage looked like "nothing ran" and the reason
+            # was buried in the dispatcher journal.
+            logger.error("[%s] cycle failed: %s", category, exc, exc_info=True)
+            _append_daily_log(workspace, slot,
+                              f"cycle {category}-{slot} FAIL {type(exc).__name__}: {exc}")
 
 
 if __name__ == "__main__":

@@ -4,14 +4,21 @@ from newsparser.paths import workspace_dir
 from newsparser.store.sqlite import get_unprocessed
 
 
-def build_input_file(slot: str, category: str) -> Path:
-    """Read unprocessed articles for `category` and write input.md for Claude.
-    Returns the file path. Each article gets an [A001]-style index and an
-    explicit GUID line so Claude can cite source articles via `src:A001,A007`
-    in graph block relations.
+def build_input_file(slot: str, category: str,
+                     articles: list[dict] | None = None) -> Path:
+    """Write input.md for Claude from `articles`, falling back to every
+    unprocessed article for `category`. Returns the file path. Each article gets
+    an [A001]-style index and an explicit GUID line so Claude can cite source
+    articles via `src:A001,A007` in graph block relations.
+
+    run_cycle.py passes the list it already claimed (and wrote {slot}-guids.txt
+    from) rather than letting this re-query: a second get_unprocessed() can pick
+    up articles the poller inserted in between, which would index articles that
+    the guids file never marks processed.
     """
     workspace = workspace_dir()
-    articles = get_unprocessed(category=category)
+    if articles is None:
+        articles = get_unprocessed(category=category)
 
     lines = [
         f"# Input {slot} KST [{category}]",
