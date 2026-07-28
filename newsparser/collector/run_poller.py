@@ -12,7 +12,9 @@ from newsparser.store.sqlite import init_db, get_recent, mark_alerted
 from newsparser.collector.sources import load_sources
 from newsparser.collector.poller import poll_all
 from newsparser.collector.alert import detect_convergence, detect_spike
-from newsparser.bot.sender import send_message
+from newsparser.market import pulse
+from newsparser.market.store import init_market_db
+from newsparser.bot.sender import send_long_message, send_message
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 # python-telegram-bot이 HTTP 요청 URL(토큰 포함)을 INFO로 출력하므로 억제
@@ -20,10 +22,16 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("telegram").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
-POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL_SECONDS", "600"))
+# 300s, not 600s: the volatility alerts below judge 15-minute bars, and the
+# headlines that explain a move have to be in the DB by the time the bar closes.
+# Measured cost of one pass is ~6s (20 feeds in 5.8s + ~0.1s per new article),
+# and halving the interval does not change the body-scraping total — only the
+# RSS fetches double.
+POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL_SECONDS", "300"))
 SPIKE_COOLDOWN_HOURS = 1
 BASELINE: dict[str, float] = {}  # accumulated at runtime
 _spike_alerted_at: dict[str, datetime] = {}
+MARKET_PULSE_ENABLED = os.environ.get("MARKET_PULSE", "1") != "0"
 
 
 def _send(msg: str) -> None:
@@ -33,10 +41,41 @@ def _send(msg: str) -> None:
         logger.error("Telegram send failed: %s", exc)
 
 
+def _send_plain(msg: str) -> None:
+    """Send without HTML parse mode.
+
+    send_message() posts as HTML, which is fine for text we compose but not for
+    text carrying verbatim article titles — a single `<` or `&` in a headline
+    makes Telegram reject the whole message. Pulse alerts embed full headlines
+    and use no markup, so plain text is both safer and sufficient.
+    """
+    try:
+        send_long_message(msg)
+    except Exception as exc:
+        logger.error("Telegram send failed: %s", exc)
+
+
+def _market_pulse() -> None:
+    """Fire volatility alerts for any 15m bar that just closed unusually.
+
+    Lives in the poller rather than in a bots/*/bot.py cron for two reasons: it
+    runs right after new articles land, so the headline window is as fresh as it
+    can be; and every cron bot goes through the JobManager, whose recent-job
+    list caps at 10 (jobs.py:26) — a 5-minute bot would evict the cycle/weekly
+    history that job_status exists to show.
+    """
+    for msg in pulse.check():
+        logger.warning("Market pulse: %s", msg.splitlines()[0])
+        _send_plain(msg)
+
+
 def run() -> None:
     init_db()
+    if MARKET_PULSE_ENABLED:
+        init_market_db()
     sources = load_sources()
-    logger.info("Loaded %d sources. Poll interval: %ds", len(sources), POLL_INTERVAL)
+    logger.info("Loaded %d sources. Poll interval: %ds. Market pulse: %s",
+                len(sources), POLL_INTERVAL, "on" if MARKET_PULSE_ENABLED else "off")
 
     while True:
         new_articles = poll_all(sources)
@@ -70,6 +109,13 @@ def run() -> None:
             logger.warning("Spike: %s", source)
             _send(msg)
             _spike_alerted_at[source] = now
+
+        # 시장 변동성 알림 (기사 수집 직후 — 헤드라인 창이 가장 신선한 시점)
+        if MARKET_PULSE_ENABLED:
+            try:
+                _market_pulse()
+            except Exception as exc:
+                logger.error("Market pulse failed: %s", exc, exc_info=True)
 
         # BASELINE 업데이트 (지수 이동 평균, α=0.3)
         counts: dict[str, float] = defaultdict(float)

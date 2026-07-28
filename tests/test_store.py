@@ -1,6 +1,9 @@
+from datetime import datetime, timezone
+
 from newsparser.store.sqlite import (
     init_db, is_seen, mark_seen, insert_article, get_unprocessed,
     mark_processed, mark_alerted, get_unclassified, update_category,
+    get_between, _connection,
 )
 
 def test_init_db_creates_tables():
@@ -97,3 +100,56 @@ def test_update_category():
     update_category("g1", "tech")
     rows = get_unprocessed()
     assert rows[0]["category"] == "tech"
+
+
+def _at(guid: str, fetched_at: str, category: str = "markets") -> None:
+    insert_article(guid, "S", f"T{guid}", f"https://x.com/{guid}", None, "b",
+                   category=category)
+    with _connection() as conn:
+        conn.execute("UPDATE pending_articles SET fetched_at=? WHERE guid=?",
+                     (fetched_at, guid))
+
+
+def test_get_between_filters_window_and_category():
+    _at("before", "2026-07-28T05:00:00+00:00")
+    _at("inside", "2026-07-28T05:40:00+00:00")
+    _at("after", "2026-07-28T06:30:00+00:00")
+    _at("wrongcat", "2026-07-28T05:45:00+00:00", category="tech")
+    rows = get_between(
+        datetime(2026, 7, 28, 5, 30, tzinfo=timezone.utc),
+        datetime(2026, 7, 28, 6, 0, tzinfo=timezone.utc),
+        category="markets",
+    )
+    assert [r["guid"] for r in rows] == ["inside"]
+
+
+def test_get_between_ignores_processed_flag():
+    _at("g1", "2026-07-28T05:40:00+00:00")
+    mark_processed(["g1"])
+    rows = get_between(
+        datetime(2026, 7, 28, 5, 0, tzinfo=timezone.utc),
+        datetime(2026, 7, 28, 6, 0, tzinfo=timezone.utc),
+    )
+    assert [r["guid"] for r in rows] == ["g1"]
+
+
+def test_get_between_matches_naive_legacy_timestamps():
+    """Pre-migration rows stored fetched_at without a UTC offset; both forms are
+    UTC and compare correctly on their shared prefix."""
+    _at("legacy", "2026-07-28T05:40:00")
+    rows = get_between(
+        datetime(2026, 7, 28, 5, 0, tzinfo=timezone.utc),
+        datetime(2026, 7, 28, 6, 0, tzinfo=timezone.utc),
+    )
+    assert [r["guid"] for r in rows] == ["legacy"]
+
+
+def test_get_between_orders_oldest_first_and_caps():
+    for i in range(5):
+        _at(f"g{i}", f"2026-07-28T05:4{i}:00+00:00")
+    rows = get_between(
+        datetime(2026, 7, 28, 5, 0, tzinfo=timezone.utc),
+        datetime(2026, 7, 28, 6, 0, tzinfo=timezone.utc),
+        limit=3,
+    )
+    assert [r["guid"] for r in rows] == ["g0", "g1", "g2"]

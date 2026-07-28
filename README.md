@@ -51,7 +51,7 @@ All jobs run inside the `dispatcher` service (APScheduler via the python-telegra
 
 | Schedule | Job |
 |----------|-----|
-| Continuous (600s; `POLL_INTERVAL_SECONDS`) | `poller` — collect news + fire breaking/spike alerts |
+| Continuous (300s; `POLL_INTERVAL_SECONDS`) | `poller` — collect news + fire breaking/spike alerts + market volatility alerts (`MARKET_PULSE=0` to disable) |
 | 00 / 06 / 12 / 18 daily | `cycle`, per category (tech + markets): classify pending → cycle report → update graph → post to Telegram |
 | 07:30 daily | `market_daily` — market / FX snapshot |
 | Mon 09:00 | `weekly` rollup |
@@ -239,7 +239,8 @@ Optional overrides (safe defaults, leave unset for a standard deploy): `CLAUDE_B
 (the units set it via `deploy/install.sh`), `NEO4J_URI` (`bolt://localhost:7687`;
 a compose-era `bolt://neo4j:7687` leftover makes `install.sh` fail — `EnvironmentFile`
 beats the unit's fallback), `NEO4J_USER` (`neo4j`), `DB_PATH`, `MARKET_DB_PATH`,
-`WORKSPACE_DIR`, `POLL_INTERVAL_SECONDS` (`600`). `IS_SANDBOX` is no longer needed —
+`WORKSPACE_DIR`, `POLL_INTERVAL_SECONDS` (`300`), `MARKET_PULSE` (`1`; set to `0`
+to turn off intraday volatility alerts). `IS_SANDBOX` is no longer needed —
 claude runs as the service user, not root.
 
 ### One-time manual steps
