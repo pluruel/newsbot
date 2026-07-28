@@ -81,3 +81,144 @@ def test_upsert_and_get_intraday():
     )
     assert len(rows) == 1
     assert rows[0]["close"] == 5233.0
+
+
+def _bar(ts: str, close: float) -> dict:
+    return {"instrument": "SPX", "ts": ts, "open": close, "high": close,
+            "low": close, "close": close, "volume": 0}
+
+
+def test_intraday_resolutions_do_not_collide():
+    """Same instrument, same timestamp, two resolutions: both must survive.
+    Before `interval` joined the PK these overwrote each other, and annotate.py's
+    ±60m lookup would read a 15m bar as the previous hour."""
+    ts = datetime(2026, 5, 9, 3, 0, tzinfo=timezone.utc).isoformat()
+    store.upsert_intraday([_bar(ts, 100.0)], interval="1h")
+    store.upsert_intraday([_bar(ts, 200.0)], interval="15m")
+    lo = datetime(2026, 5, 9, 0, 0, tzinfo=timezone.utc)
+    hi = datetime(2026, 5, 9, 23, 59, tzinfo=timezone.utc)
+    assert [r["close"] for r in store.get_intraday("SPX", lo, hi, "1h")] == [100.0]
+    assert [r["close"] for r in store.get_intraday("SPX", lo, hi, "15m")] == [200.0]
+
+
+def test_get_intraday_defaults_to_hourly():
+    """annotate.py and market_query call these without an interval — they must
+    keep seeing exactly the 1h series."""
+    ts = datetime(2026, 5, 9, 3, 0, tzinfo=timezone.utc).isoformat()
+    store.upsert_intraday([_bar(ts, 100.0)])
+    store.upsert_intraday([_bar(ts, 200.0)], interval="15m")
+    rows = store.get_intraday("SPX",
+                              datetime(2026, 5, 9, 0, 0, tzinfo=timezone.utc),
+                              datetime(2026, 5, 9, 23, 59, tzinfo=timezone.utc))
+    assert [r["close"] for r in rows] == [100.0]
+
+
+def test_upsert_intraday_stamps_interval_over_stale_row_key():
+    """A row read back via get_intraday* carries an `interval` column; a
+    write-back must file it under the interval the caller stated, not the stale
+    key — otherwise a resample round-trip silently mixes resolutions."""
+    ts = datetime(2026, 5, 9, 3, 0, tzinfo=timezone.utc).isoformat()
+    store.upsert_intraday([{**_bar(ts, 42.0), "interval": "1h"}], interval="15m")
+    assert store.get_intraday_tail("SPX", "15m", 5)[0]["close"] == 42.0
+    assert store.get_intraday_tail("SPX", "1h", 5) == []
+
+
+def test_get_intraday_tail_returns_newest_oldest_first():
+    rows = [_bar(datetime(2026, 5, 9, h, tzinfo=timezone.utc).isoformat(), float(h))
+            for h in range(10)]
+    store.upsert_intraday(rows, interval="15m")
+    tail = store.get_intraday_tail("SPX", "15m", 3)
+    assert [r["close"] for r in tail] == [7.0, 8.0, 9.0]
+
+
+def test_latest_intraday_ts_is_per_interval():
+    store.upsert_intraday([_bar("2026-05-09T03:00:00+00:00", 1.0)], interval="1h")
+    store.upsert_intraday([_bar("2026-05-09T09:00:00+00:00", 2.0)], interval="15m")
+    assert store.latest_intraday_ts("SPX", "1h") == "2026-05-09T03:00:00+00:00"
+    assert store.latest_intraday_ts("SPX", "15m") == "2026-05-09T09:00:00+00:00"
+    assert store.latest_intraday_ts("NDX", "15m") is None
+
+
+def test_record_pulse_roundtrip_and_dedup():
+    ts = "2026-07-28T05:45:00+00:00"
+    assert store.pulse_exists("KOSPI", "15m", ts) is False
+    store.record_pulse(instrument="KOSPI", interval="15m", ts=ts, delta_pct=-1.3,
+                       z_score=3.4, floor_pct=1.5, guids=["a", "b"])
+    assert store.pulse_exists("KOSPI", "15m", ts) is True
+    # Re-recording the same bar updates rather than raising.
+    store.record_pulse(instrument="KOSPI", interval="15m", ts=ts, delta_pct=-1.4,
+                       z_score=3.5, floor_pct=1.5, guids=["c"])
+    with sqlite3.connect(os.environ["MARKET_DB_PATH"]) as conn:
+        rows = conn.execute("SELECT delta_pct, guids FROM market_pulse").fetchall()
+    assert rows == [(-1.4, "c")]
+
+
+def test_pulse_is_scoped_by_interval():
+    ts = "2026-07-28T05:45:00+00:00"
+    store.record_pulse(instrument="KOSPI", interval="15m", ts=ts, delta_pct=-1.3,
+                       z_score=3.4, floor_pct=1.5)
+    assert store.pulse_exists("KOSPI", "1h", ts) is False
+
+
+def test_migration_tags_legacy_rows_as_hourly(tmp_path, monkeypatch):
+    """The pre-interval table keyed on (instrument, ts); every row in it predates
+    the 15m feed."""
+    path = tmp_path / "legacy.db"
+    with sqlite3.connect(path) as conn:
+        conn.executescript("""
+            CREATE TABLE market_intraday (
+                instrument TEXT NOT NULL, ts TEXT NOT NULL,
+                open REAL, high REAL, low REAL, close REAL, volume INTEGER,
+                PRIMARY KEY (instrument, ts)
+            );
+            CREATE INDEX idx_market_intraday_ts ON market_intraday(ts);
+            INSERT INTO market_intraday VALUES ('SPX','2026-05-09T03:00:00+00:00',1,1,1,1,7);
+        """)
+    monkeypatch.setenv("MARKET_DB_PATH", str(path))
+    store.init_market_db()
+    store.init_market_db()  # idempotent
+
+    with sqlite3.connect(path) as conn:
+        rows = conn.execute(
+            "SELECT instrument, interval, volume FROM market_intraday").fetchall()
+        tables = {r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'")}
+    assert rows == [("SPX", "1h", 7)]
+    assert "market_intraday_legacy" not in tables
+
+
+def test_migration_repairs_stranded_legacy_table(tmp_path, monkeypatch):
+    """The old executescript migration autocommitted per statement: a crash
+    after the RENAME left only market_intraday_legacy, and the next init created
+    a fresh empty market_intraday alongside it. Rows written since must win a
+    key collision (they are newer fetches of the same bar)."""
+    path = tmp_path / "stranded.db"
+    with sqlite3.connect(path) as conn:
+        conn.executescript("""
+            CREATE TABLE market_intraday_legacy (
+                instrument TEXT NOT NULL, ts TEXT NOT NULL,
+                open REAL, high REAL, low REAL, close REAL, volume INTEGER,
+                PRIMARY KEY (instrument, ts)
+            );
+            INSERT INTO market_intraday_legacy VALUES
+                ('SPX','2026-05-09T03:00:00+00:00',1,1,1,111.0,7),
+                ('SPX','2026-05-09T04:00:00+00:00',1,1,1,222.0,8);
+            CREATE TABLE market_intraday (
+                instrument TEXT NOT NULL, interval TEXT NOT NULL, ts TEXT NOT NULL,
+                open REAL, high REAL, low REAL, close REAL, volume INTEGER,
+                PRIMARY KEY (instrument, interval, ts)
+            );
+            INSERT INTO market_intraday VALUES
+                ('SPX','1h','2026-05-09T04:00:00+00:00',1,1,1,999.0,9);
+        """)
+    monkeypatch.setenv("MARKET_DB_PATH", str(path))
+    store.init_market_db()
+
+    with sqlite3.connect(path) as conn:
+        rows = conn.execute(
+            "SELECT ts, close FROM market_intraday ORDER BY ts").fetchall()
+        tables = {r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'")}
+    assert rows == [("2026-05-09T03:00:00+00:00", 111.0),
+                    ("2026-05-09T04:00:00+00:00", 999.0)]
+    assert "market_intraday_legacy" not in tables

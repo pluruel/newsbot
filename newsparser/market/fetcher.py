@@ -108,7 +108,8 @@ def fetch_daily(alias: str, start: date, end: date) -> list[dict]:
     return _df_to_daily_bars(alias, df)
 
 
-def fetch_intraday_hourly(alias: str, start: datetime, end: datetime) -> list[dict]:
+def fetch_intraday(alias: str, start: datetime, end: datetime,
+                   interval: str = "1h") -> list[dict]:
     symbol = TICKERS.get(alias)
     if symbol is None:
         logger.warning("Unknown alias: %s", alias)
@@ -124,9 +125,55 @@ def fetch_intraday_hourly(alias: str, start: datetime, end: datetime) -> list[di
         return yf.Ticker(symbol).history(
             start=start_ts,
             end=end_ts,
-            interval="1h",
+            interval=interval,
             auto_adjust=False,
         )
 
-    df = _call_with_retry(call, f"fetch_intraday_hourly {alias}")
+    df = _call_with_retry(call, f"fetch_intraday {alias} {interval}")
     return _df_to_intraday_bars(alias, df)
+
+
+def fetch_intraday_hourly(alias: str, start: datetime, end: datetime) -> list[dict]:
+    return fetch_intraday(alias, start, end, interval="1h")
+
+
+def fetch_intraday_batch(interval: str, period: str = "5d",
+                         aliases: list[str] | None = None) -> dict[str, list[dict]]:
+    """Fetch `interval` bars for several instruments in ONE yfinance request.
+
+    The per-ticker path above costs 8 HTTP round-trips; at the poller's cadence
+    that is thousands of requests a day against an endpoint that rate-limits.
+    yf.download batches them into a single call (~1s for all eight).
+
+    Note yfinance has no 10m interval — valid values are 1m/2m/5m/15m/30m/60m/
+    90m/1h/4h/1d and up — and sub-hourly history only reaches back ~60 days.
+    Returns {alias: bars}; instruments that came back empty are omitted.
+    """
+    aliases = aliases or list(TICKERS)
+    symbols = [TICKERS[a] for a in aliases if a in TICKERS]
+    if not symbols:
+        return {}
+
+    def call() -> pd.DataFrame:
+        return yf.download(
+            symbols, period=period, interval=interval, auto_adjust=False,
+            progress=False, group_by="ticker", threads=True, timeout=30,
+        )
+
+    df = _call_with_retry(call, f"fetch_intraday_batch {interval}")
+    if df is None or df.empty:
+        return {}
+
+    out: dict[str, list[dict]] = {}
+    for alias in aliases:
+        symbol = TICKERS.get(alias)
+        if symbol is None:
+            continue
+        try:
+            sub = df[symbol] if isinstance(df.columns, pd.MultiIndex) else df
+        except KeyError:
+            continue
+        bars = _df_to_intraday_bars(alias, sub.dropna(how="all"))
+        if bars:
+            out[alias] = bars
+    return out

@@ -113,6 +113,32 @@ def get_recent(minutes: int = 60) -> list[dict]:
         return [dict(r) for r in rows]
 
 
+def get_between(start: datetime, end: datetime, category: str | None = None,
+                limit: int = 100) -> list[dict]:
+    """Articles fetched within [start, end], oldest-first.
+
+    Unlike get_unprocessed this ignores the `processed` flag: the cycle marks
+    rows processed on its own 6-hourly schedule, and a volatility alert must see
+    the same window regardless of whether a cycle happened to run in between.
+    Both bounds are UTC; stored timestamps are ISO-8601 UTC (naive for
+    pre-migration rows, which compare correctly against the same prefix).
+
+    When the window holds more than `limit` rows the *newest* are kept: the
+    caller is headlines.candidates during a burst, and the articles nearest the
+    move are the ones worth keeping.
+    """
+    sql = "SELECT * FROM pending_articles WHERE fetched_at >= ? AND fetched_at <= ?"
+    params: list = [start.isoformat(), end.isoformat()]
+    if category is not None:
+        sql += " AND category = ?"
+        params.append(category)
+    sql += " ORDER BY fetched_at DESC LIMIT ?"
+    params.append(limit)
+    with _connection() as conn:
+        rows = conn.execute(sql, params).fetchall()
+        return [dict(r) for r in reversed(rows)]
+
+
 def mark_processed(guids: list[str]) -> None:
     with _connection() as conn:
         conn.executemany(
