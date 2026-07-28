@@ -48,6 +48,11 @@ BACKFILL_PERIOD = "60d"
 # A bar is only judged once it has closed. The grace period keeps a bar that
 # closed moments ago from being read while the provider is still filling it.
 BAR_CLOSE_GRACE_S = 30
+# A bar is only alertable while it is still news. After poller downtime, a
+# weekend, or a first-deploy backfill the newest closed bar can be hours or
+# days old; alerting on it then reads as a live move (the message shows HH:MM
+# with no date) and attaches headlines from the entire gap.
+MAX_ALERT_AGE_MIN = 60
 # Cold start: with fewer bars than this the rolling statistics are meaningless.
 MIN_BARS = BASELINE_BARS + 1
 
@@ -72,23 +77,42 @@ def _stdev(values: list[float]) -> float:
     return (sum((v - m) ** 2 for v in values) / (len(values) - 1)) ** 0.5
 
 
+# Aliases whose BACKFILL_PERIOD pull has been attempted this process. One shot
+# each: a symbol yfinance no longer serves (Yahoo does rename tickers) would
+# otherwise stay under FLOOR_BARS forever and drag the poll loop back into the
+# 60d download every tick. If the one attempt fails transiently the alias still
+# gets FETCH_PERIOD refreshes each tick — the floor is just noisier until
+# enough bars accumulate (or the process restarts and retries the backfill).
+_BACKFILL_ATTEMPTED: set[str] = set()
+
+
 def refresh(aliases: list[str] | None = None) -> int:
     """Pull the latest bars for every instrument in one request and store them.
 
-    Widens to BACKFILL_PERIOD while any instrument is still short of a full
-    floor window — in practice the first run after a deploy, and again for an
-    instrument that has been offline long enough to age out of the store.
+    An instrument still short of a full floor window — in practice the first
+    run after a deploy, or one offline long enough to age out of the store —
+    gets one widened BACKFILL_PERIOD pull; everything else fetches
+    FETCH_PERIOD.
     """
     aliases = aliases or list(fetcher.TICKERS)
-    thin = [a for a in aliases if store.count_intraday(a, INTERVAL) < FLOOR_BARS]
-    period = BACKFILL_PERIOD if thin else FETCH_PERIOD
+    thin = [a for a in aliases
+            if a not in _BACKFILL_ATTEMPTED
+            and store.count_intraday(a, INTERVAL) < FLOOR_BARS]
+    total = 0
     if thin:
         logger.info("pulse: backfilling %s (%s) — %d instrument(s) below %d bars",
                     INTERVAL, BACKFILL_PERIOD, len(thin), FLOOR_BARS)
-    batch = fetcher.fetch_intraday_batch(INTERVAL, period=period, aliases=aliases)
-    total = 0
-    for alias, bars in batch.items():
-        total += store.upsert_intraday(bars, interval=INTERVAL)
+        _BACKFILL_ATTEMPTED.update(thin)
+        batch = fetcher.fetch_intraday_batch(INTERVAL, period=BACKFILL_PERIOD,
+                                             aliases=thin)
+        for bars in batch.values():
+            total += store.upsert_intraday(bars, interval=INTERVAL)
+    fresh = [a for a in aliases if a not in thin]
+    if fresh:
+        batch = fetcher.fetch_intraday_batch(INTERVAL, period=FETCH_PERIOD,
+                                             aliases=fresh)
+        for bars in batch.values():
+            total += store.upsert_intraday(bars, interval=INTERVAL)
     return total
 
 
@@ -98,12 +122,17 @@ def _closed_bars(alias: str, now: datetime) -> list[dict]:
     yfinance returns the in-progress bar too, and its close is wherever the
     price happens to sit mid-interval — judging it would fire on a move that
     has not happened yet and then re-fire when the bar actually closes.
+
+    Non-positive closes are provider glitches (Yahoo emits occasional zero-price
+    rows — yfinance's repair= flag exists for them), not prices: kept, a single
+    0.0 close would fire a nonsense ~-100% alert and then poison the p99 floor
+    for the next ~FLOOR_BARS bars.
     """
     cutoff = now - timedelta(minutes=INTERVAL_MINUTES,
                              seconds=BAR_CLOSE_GRACE_S)
     bars = store.get_intraday_tail(alias, INTERVAL, FLOOR_BARS + 1)
     return [b for b in bars
-            if b["close"] is not None
+            if b["close"] is not None and b["close"] > 0
             and datetime.fromisoformat(b["ts"]) <= cutoff]
 
 
@@ -111,7 +140,8 @@ def detect(alias: str, now: datetime | None = None) -> dict | None:
     """Return the alert payload for `alias`'s newest closed bar, or None.
 
     None covers every non-event: not enough history, a flat bar, a market that
-    has not printed since the last check, and a bar that already alerted.
+    has not printed since the last check, a bar that already alerted, and a
+    newest bar too old to be news (MAX_ALERT_AGE_MIN).
     """
     now = now or datetime.now(timezone.utc)
     bars = _closed_bars(alias, now)
@@ -119,14 +149,17 @@ def detect(alias: str, now: datetime | None = None) -> dict | None:
         return None
 
     latest = bars[-1]
+    bar_end = datetime.fromisoformat(latest["ts"]) + timedelta(minutes=INTERVAL_MINUTES)
+    if now - bar_end > timedelta(minutes=MAX_ALERT_AGE_MIN):
+        return None
     if store.pulse_exists(alias, INTERVAL, latest["ts"]):
         return None
 
+    # _closed_bars guarantees positive closes, so every adjacent pair yields a
+    # return and returns[-1] is always the latest bar's move.
     closes = [b["close"] for b in bars]
     returns = [(closes[i] - closes[i - 1]) / closes[i - 1] * 100
-               for i in range(1, len(closes)) if closes[i - 1]]
-    if len(returns) < BASELINE_BARS:
-        return None
+               for i in range(1, len(closes))]
 
     delta = returns[-1]
     history = [abs(r) for r in returns[:-1]]

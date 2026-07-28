@@ -113,9 +113,12 @@ def test_get_intraday_defaults_to_hourly():
     assert [r["close"] for r in rows] == [100.0]
 
 
-def test_upsert_intraday_honours_per_row_interval():
+def test_upsert_intraday_stamps_interval_over_stale_row_key():
+    """A row read back via get_intraday* carries an `interval` column; a
+    write-back must file it under the interval the caller stated, not the stale
+    key — otherwise a resample round-trip silently mixes resolutions."""
     ts = datetime(2026, 5, 9, 3, 0, tzinfo=timezone.utc).isoformat()
-    store.upsert_intraday([{**_bar(ts, 42.0), "interval": "15m"}], interval="1h")
+    store.upsert_intraday([{**_bar(ts, 42.0), "interval": "1h"}], interval="15m")
     assert store.get_intraday_tail("SPX", "15m", 5)[0]["close"] == 42.0
     assert store.get_intraday_tail("SPX", "1h", 5) == []
 
@@ -181,4 +184,41 @@ def test_migration_tags_legacy_rows_as_hourly(tmp_path, monkeypatch):
         tables = {r[0] for r in conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table'")}
     assert rows == [("SPX", "1h", 7)]
+    assert "market_intraday_legacy" not in tables
+
+
+def test_migration_repairs_stranded_legacy_table(tmp_path, monkeypatch):
+    """The old executescript migration autocommitted per statement: a crash
+    after the RENAME left only market_intraday_legacy, and the next init created
+    a fresh empty market_intraday alongside it. Rows written since must win a
+    key collision (they are newer fetches of the same bar)."""
+    path = tmp_path / "stranded.db"
+    with sqlite3.connect(path) as conn:
+        conn.executescript("""
+            CREATE TABLE market_intraday_legacy (
+                instrument TEXT NOT NULL, ts TEXT NOT NULL,
+                open REAL, high REAL, low REAL, close REAL, volume INTEGER,
+                PRIMARY KEY (instrument, ts)
+            );
+            INSERT INTO market_intraday_legacy VALUES
+                ('SPX','2026-05-09T03:00:00+00:00',1,1,1,111.0,7),
+                ('SPX','2026-05-09T04:00:00+00:00',1,1,1,222.0,8);
+            CREATE TABLE market_intraday (
+                instrument TEXT NOT NULL, interval TEXT NOT NULL, ts TEXT NOT NULL,
+                open REAL, high REAL, low REAL, close REAL, volume INTEGER,
+                PRIMARY KEY (instrument, interval, ts)
+            );
+            INSERT INTO market_intraday VALUES
+                ('SPX','1h','2026-05-09T04:00:00+00:00',1,1,1,999.0,9);
+        """)
+    monkeypatch.setenv("MARKET_DB_PATH", str(path))
+    store.init_market_db()
+
+    with sqlite3.connect(path) as conn:
+        rows = conn.execute(
+            "SELECT ts, close FROM market_intraday ORDER BY ts").fetchall()
+        tables = {r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'")}
+    assert rows == [("2026-05-09T03:00:00+00:00", 111.0),
+                    ("2026-05-09T04:00:00+00:00", 999.0)]
     assert "market_intraday_legacy" not in tables

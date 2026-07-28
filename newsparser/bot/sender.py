@@ -30,14 +30,19 @@ async def _send_with_retry(bot: Bot, chat_id: str, text: str, **kwargs) -> None:
             await asyncio.sleep(2 * attempt)
 
 
-def send_message(text: str) -> None:
-    """Send a message to the configured chat with HTML parse mode. Blocks until sent."""
+def send_message(text: str, parse_mode: str | None = "HTML") -> None:
+    """Send a message to the configured chat. Blocks until sent.
+
+    parse_mode="HTML" suits text we compose; pass None for text carrying
+    verbatim scraped content — one unescaped `<` or `&` in a headline and
+    Telegram rejects the whole message with 400 Can't parse entities.
+    """
     token = os.environ["TELEGRAM_BOT_TOKEN"]
     chat_id = os.environ["TELEGRAM_CHAT_ID"]
 
     async def _send() -> None:
         async with _make_bot(token) as bot:
-            await _send_with_retry(bot, chat_id, text, parse_mode="HTML")
+            await _send_with_retry(bot, chat_id, text, parse_mode=parse_mode)
 
     asyncio.run(_send())
 

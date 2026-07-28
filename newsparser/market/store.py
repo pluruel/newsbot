@@ -39,14 +39,28 @@ def _migrate_intraday_interval(conn: sqlite3.Connection) -> None:
     annotate.py's ±60m before/after lookup would pick a 15m bar as "the previous
     hour", and market_query would interleave resolutions in one table. Every
     pre-existing row predates the 15m feed, so they are all 1h.
+
+    Runs as one explicit transaction of individual statements — executescript
+    would autocommit each one, and a crash between the RENAME and the INSERT
+    would strand every row in market_intraday_legacy while the next init
+    mistakes the missing table for a fresh DB and starts empty. The legacy-table
+    check repairs a DB already left in that half-migrated state: the surviving
+    legacy rows are folded in under any bars written since (INSERT OR IGNORE —
+    the newer re-fetched bar wins a key collision).
     """
-    cols = {r[1] for r in conn.execute("PRAGMA table_info(market_intraday)")}
-    if not cols or "interval" in cols:
-        return
-    conn.executescript("""
-        DROP INDEX IF EXISTS idx_market_intraday_ts;
-        ALTER TABLE market_intraday RENAME TO market_intraday_legacy;
-        CREATE TABLE market_intraday (
+    legacy = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='market_intraday_legacy'"
+    ).fetchone() is not None
+    if not legacy:
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(market_intraday)")}
+        if not cols or "interval" in cols:
+            return
+    conn.execute("BEGIN IMMEDIATE")
+    if not legacy:
+        conn.execute("DROP INDEX IF EXISTS idx_market_intraday_ts")
+        conn.execute("ALTER TABLE market_intraday RENAME TO market_intraday_legacy")
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS market_intraday (
             instrument TEXT NOT NULL,
             interval   TEXT NOT NULL,
             ts         TEXT NOT NULL,
@@ -56,13 +70,13 @@ def _migrate_intraday_interval(conn: sqlite3.Connection) -> None:
             close      REAL,
             volume     INTEGER,
             PRIMARY KEY (instrument, interval, ts)
-        );
-        INSERT INTO market_intraday
+        )""")
+    conn.execute("""
+        INSERT OR IGNORE INTO market_intraday
             (instrument, interval, ts, open, high, low, close, volume)
             SELECT instrument, '1h', ts, open, high, low, close, volume
-            FROM market_intraday_legacy;
-        DROP TABLE market_intraday_legacy;
-    """)
+            FROM market_intraday_legacy""")
+    conn.execute("DROP TABLE market_intraday_legacy")
 
 
 def init_market_db() -> None:
@@ -135,10 +149,12 @@ def upsert_daily(rows: Iterable[dict]) -> int:
 
 
 def upsert_intraday(rows: Iterable[dict], interval: str = "1h") -> int:
-    """Upsert intraday bars. `interval` is the per-row default — a row that
-    carries its own "interval" key wins, so batch fetches of mixed resolutions
-    round-trip unchanged."""
-    rows = [{**r, "interval": r.get("interval", interval)} for r in rows]
+    """Upsert intraday bars, all filed under `interval`. A row's own "interval"
+    key is deliberately overwritten: rows read back via get_intraday* carry the
+    column, so honouring it would let a stale value silently override the
+    caller's stated resolution on a round-trip — exactly the resolution mixing
+    the (instrument, interval, ts) key exists to prevent."""
+    rows = [{**r, "interval": interval} for r in rows]
     if not rows:
         return 0
     with _connection() as conn:

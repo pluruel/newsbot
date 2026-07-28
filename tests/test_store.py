@@ -144,7 +144,9 @@ def test_get_between_matches_naive_legacy_timestamps():
     assert [r["guid"] for r in rows] == ["legacy"]
 
 
-def test_get_between_orders_oldest_first_and_caps():
+def test_get_between_caps_to_newest_rows_oldest_first():
+    """Truncation must drop the *oldest* rows: in a burst the headlines nearest
+    the move are the ones headlines.candidates needs to see."""
     for i in range(5):
         _at(f"g{i}", f"2026-07-28T05:4{i}:00+00:00")
     rows = get_between(
@@ -152,4 +154,4 @@ def test_get_between_orders_oldest_first_and_caps():
         datetime(2026, 7, 28, 6, 0, tzinfo=timezone.utc),
         limit=3,
     )
-    assert [r["guid"] for r in rows] == ["g0", "g1", "g2"]
+    assert [r["guid"] for r in rows] == ["g2", "g3", "g4"]

@@ -122,17 +122,21 @@ def get_between(start: datetime, end: datetime, category: str | None = None,
     the same window regardless of whether a cycle happened to run in between.
     Both bounds are UTC; stored timestamps are ISO-8601 UTC (naive for
     pre-migration rows, which compare correctly against the same prefix).
+
+    When the window holds more than `limit` rows the *newest* are kept: the
+    caller is headlines.candidates during a burst, and the articles nearest the
+    move are the ones worth keeping.
     """
     sql = "SELECT * FROM pending_articles WHERE fetched_at >= ? AND fetched_at <= ?"
     params: list = [start.isoformat(), end.isoformat()]
     if category is not None:
         sql += " AND category = ?"
         params.append(category)
-    sql += " ORDER BY fetched_at LIMIT ?"
+    sql += " ORDER BY fetched_at DESC LIMIT ?"
     params.append(limit)
     with _connection() as conn:
         rows = conn.execute(sql, params).fetchall()
-        return [dict(r) for r in rows]
+        return [dict(r) for r in reversed(rows)]
 
 
 def mark_processed(guids: list[str]) -> None:

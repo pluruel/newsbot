@@ -9,6 +9,7 @@ from newsparser.market import pulse, store
 @pytest.fixture(autouse=True)
 def market_db(tmp_path, monkeypatch):
     monkeypatch.setenv("MARKET_DB_PATH", str(tmp_path / "market.db"))
+    monkeypatch.setattr(pulse, "_BACKFILL_ATTEMPTED", set())
     store.init_market_db()
 
 
@@ -66,6 +67,31 @@ def test_detect_skips_bar_still_forming():
     # Last bar opened 5 minutes ago — inside the 15m interval, so not closed.
     _store("KOSPI", _calm_then(5.0), end=NOW + timedelta(minutes=10))
     assert pulse.detect("KOSPI", now=NOW) is None
+
+
+def test_detect_skips_stale_bar():
+    """After downtime or a weekend the newest closed bar can be hours old —
+    alerting on it then would read as a live move with today's headlines."""
+    _store("KOSPI", _calm_then(5.0),
+           end=NOW - timedelta(minutes=pulse.MAX_ALERT_AGE_MIN + 20))
+    assert pulse.detect("KOSPI", now=NOW) is None
+
+
+def test_detect_ignores_zero_close_glitch_as_latest_bar():
+    """A zero-price provider glitch must not fire a ~-100% alert."""
+    _store("KOSPI", _calm_then(0.1) + [0.0])
+    assert pulse.detect("KOSPI", now=NOW) is None
+
+
+def test_zero_close_glitch_in_history_does_not_poison_stats():
+    """One 0.0 bar mid-series used to inject a -100% return into the rolling
+    stats, inflating the p99 floor enough to suppress real alerts."""
+    closes = _calm_then(5.0)
+    closes[50] = 0.0
+    _store("KOSPI", closes)
+    hit = pulse.detect("KOSPI", now=NOW)
+    assert hit is not None
+    assert hit["delta_pct"] == pytest.approx(5.0, abs=0.01)
 
 
 def test_detect_does_not_refire_recorded_bar():
@@ -136,3 +162,25 @@ def test_refresh_stores_batch_under_the_right_interval():
         assert pulse.refresh(["SPX"]) == 2
     assert len(store.get_intraday_tail("SPX", pulse.INTERVAL, 10)) == 2
     assert store.get_intraday_tail("SPX", "1h", 10) == []
+
+
+def test_refresh_backfills_only_thin_instruments():
+    """The 60d pull must not include instruments that already hold a full floor
+    window — they get the regular 5d fetch."""
+    _store("KOSPI", [100.0] * (pulse.FLOOR_BARS + 1))
+    with patch.object(pulse.fetcher, "fetch_intraday_batch", return_value={}) as fib:
+        pulse.refresh(["KOSPI", "SPX"])
+    calls = {c.kwargs["period"]: c.kwargs["aliases"] for c in fib.call_args_list}
+    assert calls == {pulse.BACKFILL_PERIOD: ["SPX"],
+                     pulse.FETCH_PERIOD: ["KOSPI"]}
+
+
+def test_refresh_attempts_backfill_only_once_per_process():
+    """A symbol yfinance never returns (rename/delisting) stays below
+    FLOOR_BARS forever; without the attempt memory every 300s tick would re-run
+    the full 60d download."""
+    with patch.object(pulse.fetcher, "fetch_intraday_batch", return_value={}) as fib:
+        pulse.refresh(["SPX"])
+        pulse.refresh(["SPX"])
+    periods = [c.kwargs["period"] for c in fib.call_args_list]
+    assert periods == [pulse.BACKFILL_PERIOD, pulse.FETCH_PERIOD]

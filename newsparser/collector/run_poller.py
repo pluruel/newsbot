@@ -29,26 +29,33 @@ logger = logging.getLogger(__name__)
 # RSS fetches double.
 POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL_SECONDS", "300"))
 SPIKE_COOLDOWN_HOURS = 1
+# The spike baseline decays per *tick*, so its wall-clock memory depends on the
+# poll interval — derive the per-tick α from a fixed half-life instead of
+# hard-coding it. α=0.3 was tuned at the original 600s cadence (half-life
+# ≈19.4min ≈ this constant); keeping α fixed while halving the interval would
+# halve the half-life, letting the baseline absorb a ~35min ramp fast enough to
+# suppress the spike alert it used to fire.
+BASELINE_HALFLIFE_S = 1200
+BASELINE_ALPHA = 1 - 0.5 ** (POLL_INTERVAL / BASELINE_HALFLIFE_S)
 BASELINE: dict[str, float] = {}  # accumulated at runtime
 _spike_alerted_at: dict[str, datetime] = {}
 MARKET_PULSE_ENABLED = os.environ.get("MARKET_PULSE", "1") != "0"
 
 
 def _send(msg: str) -> None:
+    """Send without a parse mode: every alert this loop composes (breaking,
+    spike, pulse) embeds verbatim article titles, and a single `<` or `&` in
+    one makes Telegram reject the whole message as broken HTML. None of them
+    use markup, so plain text is both safer and sufficient."""
     try:
-        send_message(msg)
+        send_message(msg, parse_mode=None)
     except Exception as exc:
         logger.error("Telegram send failed: %s", exc)
 
 
 def _send_plain(msg: str) -> None:
-    """Send without HTML parse mode.
-
-    send_message() posts as HTML, which is fine for text we compose but not for
-    text carrying verbatim article titles — a single `<` or `&` in a headline
-    makes Telegram reject the whole message. Pulse alerts embed full headlines
-    and use no markup, so plain text is both safer and sufficient.
-    """
+    """Like _send, but chunked past Telegram's 4096-char limit — pulse alerts
+    can carry several full headlines."""
     try:
         send_long_message(msg)
     except Exception as exc:
@@ -117,13 +124,14 @@ def run() -> None:
             except Exception as exc:
                 logger.error("Market pulse failed: %s", exc, exc_info=True)
 
-        # BASELINE 업데이트 (지수 이동 평균, α=0.3)
+        # BASELINE 업데이트 (지수 이동 평균, 반감기 BASELINE_HALFLIFE_S)
         counts: dict[str, float] = defaultdict(float)
         for a in recent:
             counts[a["source"]] += 1
         for source, count in counts.items():
             if source in BASELINE:
-                BASELINE[source] = BASELINE[source] * 0.7 + count * 0.3
+                BASELINE[source] = (BASELINE[source] * (1 - BASELINE_ALPHA)
+                                    + count * BASELINE_ALPHA)
             else:
                 BASELINE[source] = count
 
