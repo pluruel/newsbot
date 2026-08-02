@@ -7,19 +7,12 @@ on:
 jobs:
   claude-review:
     runs-on: ubuntu-latest
-    # The code-review plugin drives `gh pr view` / `gh pr comment`, and the
-    # action does not export a token into the Claude session. Without GH_TOKEN
-    # every gh call fails auth, so the review gives up after a couple of turns
-    # and finishes "successfully" having posted nothing.
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     permissions:
       contents: read
       pull-requests: write
       issues: write
-      # The action exchanges the workflow's GitHub OIDC token for a Claude
-      # GitHub App token; without this it cannot mint one and fails before it
-      # ever reaches the review step.
       id-token: write
     steps:
       - uses: actions/checkout@v4
@@ -32,12 +25,5 @@ jobs:
           plugin_marketplaces: "https://github.com/anthropics/claude-code.git"
           plugins: "code-review@claude-code-plugins"
           prompt: "/code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number }}"
-          # settingSources includes "project", so this repo's .claude/settings.json
-          # applies here too — and it ships `allow: []` with defaultMode "default"
-          # to keep news-tainted local runs on a short leash. Nothing being
-          # pre-approved means every gh call wants an interactive prompt, and a
-          # headless run has nobody to answer it: the review reads the diff fine
-          # and then silently fails to post. Grant the review its tools here
-          # rather than loosening settings.json, which also guards /cycle.
           claude_args: |
-            --allowedTools "Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr comment:*),Bash(gh pr review:*),Bash(gh api:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*)"
+            --allowedTools "Bash(gh issue view:*),Bash(gh search:*),Bash(gh issue list:*),Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr list:*),mcp__github_inline_comment__create_inline_comment"
