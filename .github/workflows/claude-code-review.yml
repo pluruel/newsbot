@@ -7,6 +7,12 @@ on:
 jobs:
   claude-review:
     runs-on: ubuntu-latest
+    # The code-review plugin drives `gh pr view` / `gh pr comment`, and the
+    # action does not export a token into the Claude session. Without GH_TOKEN
+    # every gh call fails auth, so the review gives up after a couple of turns
+    # and finishes "successfully" having posted nothing.
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     permissions:
       contents: read
       pull-requests: write
