@@ -11,6 +11,10 @@ jobs:
       contents: read
       pull-requests: write
       issues: write
+      # The action exchanges the workflow's GitHub OIDC token for a Claude
+      # GitHub App token; without this it cannot mint one and fails before it
+      # ever reaches the review step.
+      id-token: write
     steps:
       - uses: actions/checkout@v4
         with:
