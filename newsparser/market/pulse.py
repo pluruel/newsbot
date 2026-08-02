@@ -85,19 +85,25 @@ def _stdev(values: list[float]) -> float:
     return (sum((v - m) ** 2 for v in values) / (len(values) - 1)) ** 0.5
 
 
-# alias -> the newest stored ts when its BACKFILL_PERIOD pull was last tried.
-# A symbol yfinance no longer serves (Yahoo does rename tickers) would otherwise
-# drag the poll loop back into the 60d download every tick, so an attempt that
-# changed nothing is not repeated. Keying on the ts rather than a plain "seen"
-# set is what lets a *later* gap re-trigger: once real bars land the recorded ts
-# no longer matches, so the alias is eligible again. If the attempt fails
-# transiently the alias still gets FETCH_PERIOD refreshes each tick — the floor
-# is just noisier until enough bars accumulate (or the process restarts).
-_BACKFILL_ATTEMPTED: dict[str, str | None] = {}
+# Aliases owed a BACKFILL_PERIOD pull that has not yet produced bars.
+#
+# Detection is one-way: `_needs_backfill` can see that the newest stored bar is
+# old, but once any bar lands the hole *behind* it is invisible — a gap has no
+# marker of its own. So an alias that has been flagged stays flagged until a
+# widened pull actually returns something; re-deriving the answer from the DB on
+# the next tick would silently retract it. An earlier version did exactly that
+# (it keyed a memo on the pre-fetch `latest` ts), which made one transient
+# failure permanent: the memo suppressed the retry, the alias fell through to
+# the ordinary FETCH_PERIOD tier, and the first bar to arrive pushed `latest`
+# past STALE_AFTER — hiding the original multi-day hole for good, restart
+# included, because the recomputation read the now-recent `latest`.
+_BACKFILL_PENDING: set[str] = set()
 
-# `None` is a real recorded value (an alias that has never stored a bar), so the
-# "no attempt yet" case needs a marker that cannot collide with it.
-_NO_ATTEMPT = object()
+# Consecutive fruitless pulls per alias. A symbol yfinance no longer serves
+# (Yahoo does rename tickers) would otherwise drag the poll loop back into the
+# 60d download every tick, so it is abandoned after this many tries.
+_BACKFILL_FAILURES: dict[str, int] = {}
+_MAX_BACKFILL_FAILURES = 3
 
 
 def _needs_backfill(alias: str, now: datetime) -> bool:
@@ -109,9 +115,11 @@ def _needs_backfill(alias: str, now: datetime) -> bool:
     stocked instrument that has been offline a week is still well over
     FLOOR_BARS while accumulating a permanent hole.
     """
+    if _BACKFILL_FAILURES.get(alias, 0) >= _MAX_BACKFILL_FAILURES:
+        return False   # provider keeps returning nothing for this alias
+    if alias in _BACKFILL_PENDING:
+        return True    # still owed one; fresher bars do not fill the old hole
     latest = store.latest_intraday_ts(alias, INTERVAL)
-    if _BACKFILL_ATTEMPTED.get(alias, _NO_ATTEMPT) == latest:
-        return False   # already tried at this exact state; nothing has changed
     if store.count_intraday(alias, INTERVAL) < FLOOR_BARS:
         return True
     if latest is None:
@@ -142,12 +150,22 @@ def refresh(aliases: list[str] | None = None, now: datetime | None = None) -> in
         logger.info("pulse: backfilling %s (%s) — %d instrument(s) below %d bars "
                     "or staler than %s", INTERVAL, BACKFILL_PERIOD, len(thin),
                     FLOOR_BARS, STALE_AFTER)
-        for a in thin:
-            _BACKFILL_ATTEMPTED[a] = store.latest_intraday_ts(a, INTERVAL)
+        _BACKFILL_PENDING.update(thin)
         batch = fetcher.fetch_intraday_batch(INTERVAL, period=BACKFILL_PERIOD,
                                              aliases=thin)
-        for bars in batch.values():
-            total += store.upsert_intraday(bars, interval=INTERVAL)
+        for a in thin:
+            bars = batch.get(a) or []
+            if bars:
+                total += store.upsert_intraday(bars, interval=INTERVAL)
+                _BACKFILL_PENDING.discard(a)
+                _BACKFILL_FAILURES.pop(a, None)
+                continue
+            failures = _BACKFILL_FAILURES.get(a, 0) + 1
+            _BACKFILL_FAILURES[a] = failures
+            if failures >= _MAX_BACKFILL_FAILURES:
+                logger.warning("pulse: giving up on %s backfill after %d empty "
+                               "pulls — its gap will stay unfilled", a, failures)
+                _BACKFILL_PENDING.discard(a)
     fresh = [a for a in aliases if a not in thin]
     if fresh:
         batch = fetcher.fetch_intraday_batch(INTERVAL, period=FETCH_PERIOD,
