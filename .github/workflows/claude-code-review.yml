@@ -32,3 +32,12 @@ jobs:
           plugin_marketplaces: "https://github.com/anthropics/claude-code.git"
           plugins: "code-review@claude-code-plugins"
           prompt: "/code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number }}"
+          # settingSources includes "project", so this repo's .claude/settings.json
+          # applies here too — and it ships `allow: []` with defaultMode "default"
+          # to keep news-tainted local runs on a short leash. Nothing being
+          # pre-approved means every gh call wants an interactive prompt, and a
+          # headless run has nobody to answer it: the review reads the diff fine
+          # and then silently fails to post. Grant the review its tools here
+          # rather than loosening settings.json, which also guards /cycle.
+          claude_args: |
+            --allowedTools "Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr comment:*),Bash(gh pr review:*),Bash(gh api:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*)"
