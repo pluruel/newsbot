@@ -10,9 +10,21 @@ set -euo pipefail
 
 [ "$(id -u)" -eq 0 ] || { echo "run with sudo" >&2; exit 1; }
 USER_NAME="${SUDO_USER:-}"
+# Refusing root is deliberate: units would run as root and the sudoers entry
+# would be meaningless. Containers (LXC/LXD) are the exception — the container
+# IS the isolation boundary and there is often no non-root account at all, so
+# ALLOW_ROOT=1 opts in explicitly. Whoever does that must ALSO run backup.sh as
+# root: the DBs become root-owned, and a non-root backup then fails to snapshot
+# the WAL databases (see CLAUDE.md "State & Backups").
 if [ -z "$USER_NAME" ] || [ "$USER_NAME" = root ]; then
-  echo "run via sudo from the service user account (SUDO_USER is empty/root)" >&2
-  exit 1
+  if [ "${ALLOW_ROOT:-0}" = 1 ]; then
+    USER_NAME=root
+    echo "ALLOW_ROOT=1 — installing units to run as root (container deployment)" >&2
+  else
+    echo "run via sudo from the service user account (SUDO_USER is empty/root)" >&2
+    echo "  in a container with no service user: re-run with ALLOW_ROOT=1" >&2
+    exit 1
+  fi
 fi
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
