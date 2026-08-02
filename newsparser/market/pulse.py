@@ -39,6 +39,14 @@ FLOOR_BARS = 500
 # How much history to pull each refresh. 5d comfortably re-covers a weekend gap
 # while staying far inside yfinance's ~60-day limit for sub-hourly bars.
 FETCH_PERIOD = "5d"
+FETCH_PERIOD_DAYS = 5
+# A FETCH_PERIOD pull only reaches FETCH_PERIOD_DAYS back, so once the newest
+# stored bar is older than that the regular refresh lands *after* the gap and
+# leaves a hole nothing ever revisits — the poller being down for a week is
+# exactly this case. Backfill instead. The one-day margin absorbs the fetch's
+# own latency; a long market holiday can trip it too, which costs one wider
+# download and fills correctly anyway.
+STALE_AFTER = timedelta(days=FETCH_PERIOD_DAYS - 1)
 # Cold start: 5d only yields ~120 bars for an index, and a p99 estimated from
 # 120 samples is a noisy order statistic — the floor would sit wherever that
 # window's worst bar happened to land. Pull the provider's full sub-hourly
@@ -77,32 +85,65 @@ def _stdev(values: list[float]) -> float:
     return (sum((v - m) ** 2 for v in values) / (len(values) - 1)) ** 0.5
 
 
-# Aliases whose BACKFILL_PERIOD pull has been attempted this process. One shot
-# each: a symbol yfinance no longer serves (Yahoo does rename tickers) would
-# otherwise stay under FLOOR_BARS forever and drag the poll loop back into the
-# 60d download every tick. If the one attempt fails transiently the alias still
-# gets FETCH_PERIOD refreshes each tick — the floor is just noisier until
-# enough bars accumulate (or the process restarts and retries the backfill).
-_BACKFILL_ATTEMPTED: set[str] = set()
+# alias -> the newest stored ts when its BACKFILL_PERIOD pull was last tried.
+# A symbol yfinance no longer serves (Yahoo does rename tickers) would otherwise
+# drag the poll loop back into the 60d download every tick, so an attempt that
+# changed nothing is not repeated. Keying on the ts rather than a plain "seen"
+# set is what lets a *later* gap re-trigger: once real bars land the recorded ts
+# no longer matches, so the alias is eligible again. If the attempt fails
+# transiently the alias still gets FETCH_PERIOD refreshes each tick — the floor
+# is just noisier until enough bars accumulate (or the process restarts).
+_BACKFILL_ATTEMPTED: dict[str, str | None] = {}
+
+# `None` is a real recorded value (an alias that has never stored a bar), so the
+# "no attempt yet" case needs a marker that cannot collide with it.
+_NO_ATTEMPT = object()
 
 
-def refresh(aliases: list[str] | None = None) -> int:
+def _needs_backfill(alias: str, now: datetime) -> bool:
+    """True if a plain FETCH_PERIOD pull would not give `alias` a usable series.
+
+    Two ways that happens: too few bars to estimate the floor from (cold start),
+    or a newest bar so old that FETCH_PERIOD no longer reaches back to it
+    (poller downtime). The second is the one a bar *count* cannot see — a fully
+    stocked instrument that has been offline a week is still well over
+    FLOOR_BARS while accumulating a permanent hole.
+    """
+    latest = store.latest_intraday_ts(alias, INTERVAL)
+    if _BACKFILL_ATTEMPTED.get(alias, _NO_ATTEMPT) == latest:
+        return False   # already tried at this exact state; nothing has changed
+    if store.count_intraday(alias, INTERVAL) < FLOOR_BARS:
+        return True
+    if latest is None:
+        return True
+    try:
+        latest_dt = datetime.fromisoformat(latest)
+    except ValueError:
+        logger.warning("pulse: unparseable latest ts for %s: %r", alias, latest)
+        return True
+    if latest_dt.tzinfo is None:
+        latest_dt = latest_dt.replace(tzinfo=timezone.utc)
+    return latest_dt < now - STALE_AFTER
+
+
+def refresh(aliases: list[str] | None = None, now: datetime | None = None) -> int:
     """Pull the latest bars for every instrument in one request and store them.
 
-    An instrument still short of a full floor window — in practice the first
-    run after a deploy, or one offline long enough to age out of the store —
-    gets one widened BACKFILL_PERIOD pull; everything else fetches
-    FETCH_PERIOD.
+    An instrument a FETCH_PERIOD pull cannot serve — too few bars for the floor
+    (first run after a deploy), or a newest bar older than FETCH_PERIOD reaches
+    (the poller was down long enough to open a gap) — gets one widened
+    BACKFILL_PERIOD pull; everything else fetches FETCH_PERIOD.
     """
     aliases = aliases or list(fetcher.TICKERS)
-    thin = [a for a in aliases
-            if a not in _BACKFILL_ATTEMPTED
-            and store.count_intraday(a, INTERVAL) < FLOOR_BARS]
+    now = now or datetime.now(timezone.utc)
+    thin = [a for a in aliases if _needs_backfill(a, now)]
     total = 0
     if thin:
-        logger.info("pulse: backfilling %s (%s) — %d instrument(s) below %d bars",
-                    INTERVAL, BACKFILL_PERIOD, len(thin), FLOOR_BARS)
-        _BACKFILL_ATTEMPTED.update(thin)
+        logger.info("pulse: backfilling %s (%s) — %d instrument(s) below %d bars "
+                    "or staler than %s", INTERVAL, BACKFILL_PERIOD, len(thin),
+                    FLOOR_BARS, STALE_AFTER)
+        for a in thin:
+            _BACKFILL_ATTEMPTED[a] = store.latest_intraday_ts(a, INTERVAL)
         batch = fetcher.fetch_intraday_batch(INTERVAL, period=BACKFILL_PERIOD,
                                              aliases=thin)
         for bars in batch.values():
@@ -230,7 +271,7 @@ def check(aliases: list[str] | None = None, now: datetime | None = None) -> list
     """
     now = now or datetime.now(timezone.utc)
     try:
-        refresh(aliases)
+        refresh(aliases, now=now)
     except Exception as exc:
         logger.warning("pulse refresh failed: %s", exc)
         return []

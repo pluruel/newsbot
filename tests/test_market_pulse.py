@@ -9,7 +9,7 @@ from newsparser.market import pulse, store
 @pytest.fixture(autouse=True)
 def market_db(tmp_path, monkeypatch):
     monkeypatch.setenv("MARKET_DB_PATH", str(tmp_path / "market.db"))
-    monkeypatch.setattr(pulse, "_BACKFILL_ATTEMPTED", set())
+    monkeypatch.setattr(pulse, "_BACKFILL_ATTEMPTED", {})
     store.init_market_db()
 
 
@@ -169,10 +169,54 @@ def test_refresh_backfills_only_thin_instruments():
     window — they get the regular 5d fetch."""
     _store("KOSPI", [100.0] * (pulse.FLOOR_BARS + 1))
     with patch.object(pulse.fetcher, "fetch_intraday_batch", return_value={}) as fib:
-        pulse.refresh(["KOSPI", "SPX"])
+        pulse.refresh(["KOSPI", "SPX"], now=NOW)
     calls = {c.kwargs["period"]: c.kwargs["aliases"] for c in fib.call_args_list}
     assert calls == {pulse.BACKFILL_PERIOD: ["SPX"],
                      pulse.FETCH_PERIOD: ["KOSPI"]}
+
+
+def test_refresh_backfills_a_stocked_but_stale_instrument():
+    """The gap case a bar count cannot see: KOSPI holds a full floor window but
+    has been offline past FETCH_PERIOD, so a 5d pull would land after the hole
+    and leave it permanently unfilled."""
+    _store("KOSPI", [100.0] * (pulse.FLOOR_BARS + 1))
+    stale_now = NOW + pulse.STALE_AFTER + timedelta(hours=1)
+    with patch.object(pulse.fetcher, "fetch_intraday_batch", return_value={}) as fib:
+        pulse.refresh(["KOSPI"], now=stale_now)
+    assert fib.call_args_list[0].kwargs["period"] == pulse.BACKFILL_PERIOD
+
+
+def test_refresh_leaves_a_recently_updated_instrument_on_fetch_period():
+    """A weekend-sized gap stays inside FETCH_PERIOD — no wider pull."""
+    _store("KOSPI", [100.0] * (pulse.FLOOR_BARS + 1))
+    with patch.object(pulse.fetcher, "fetch_intraday_batch", return_value={}) as fib:
+        pulse.refresh(["KOSPI"], now=NOW + timedelta(days=2, hours=12))
+    assert fib.call_args_list[0].kwargs["period"] == pulse.FETCH_PERIOD
+
+
+def test_stale_backfill_is_not_repeated_while_nothing_arrives():
+    """A delisted symbol must not drag every tick back into the 60d download."""
+    _store("KOSPI", [100.0] * (pulse.FLOOR_BARS + 1))
+    stale_now = NOW + pulse.STALE_AFTER + timedelta(hours=1)
+    with patch.object(pulse.fetcher, "fetch_intraday_batch", return_value={}) as fib:
+        pulse.refresh(["KOSPI"], now=stale_now)
+        pulse.refresh(["KOSPI"], now=stale_now)
+    periods = [c.kwargs["period"] for c in fib.call_args_list]
+    assert periods == [pulse.BACKFILL_PERIOD, pulse.FETCH_PERIOD]
+
+
+def test_a_later_gap_can_backfill_again():
+    """The attempt memory keys on the newest stored ts, not a plain 'seen' flag:
+    once real bars land, a *subsequent* outage must be able to backfill too."""
+    _store("KOSPI", [100.0] * (pulse.FLOOR_BARS + 1))
+    first_gap = NOW + pulse.STALE_AFTER + timedelta(hours=1)
+    with patch.object(pulse.fetcher, "fetch_intraday_batch", return_value={}) as fib:
+        pulse.refresh(["KOSPI"], now=first_gap)          # attempt #1
+        _store("KOSPI", [100.0] * 3, end=first_gap)      # bars arrive
+        second_gap = first_gap + pulse.STALE_AFTER + timedelta(hours=1)
+        pulse.refresh(["KOSPI"], now=second_gap)         # attempt #2
+    periods = [c.kwargs["period"] for c in fib.call_args_list]
+    assert periods == [pulse.BACKFILL_PERIOD, pulse.BACKFILL_PERIOD]
 
 
 def test_refresh_attempts_backfill_only_once_per_process():

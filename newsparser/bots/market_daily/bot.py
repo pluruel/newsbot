@@ -10,6 +10,9 @@ async def run(ctx: Context) -> None:
 
 BOT = Bot(
     name="market_daily",
-    triggers=[Cron("30 7 * * *", tz="Asia/Seoul")],
+    # catchup: fetch_market_daily resumes from latest_daily_date, so a run that
+    # was missed while the dispatcher was down backfills the gap on restart
+    # instead of leaving a hole until the next 07:30.
+    triggers=[Cron("30 7 * * *", tz="Asia/Seoul", catchup=True)],
     run=run,
 )

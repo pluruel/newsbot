@@ -10,6 +10,11 @@ if TYPE_CHECKING:
 class Cron:
     schedule: str
     tz: str = "Asia/Seoul"
+    # Run once at dispatcher startup if this trigger came due while the process
+    # was down — APScheduler has no persistent job store, so an unfired trigger
+    # is otherwise lost until the next tick. Only for cheap, idempotent bots:
+    # it fires on every restart that spans a scheduled time.
+    catchup: bool = False
 
 
 @dataclass

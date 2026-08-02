@@ -11,6 +11,7 @@ worktrees/
 dist/
 
 # Runtime workspace data
+workspace/cron-state.json
 workspace/cycles/
 workspace/input/
 workspace/logs/

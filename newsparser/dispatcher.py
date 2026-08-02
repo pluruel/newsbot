@@ -3,13 +3,16 @@ import os
 import re
 import time
 import traceback
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 from apscheduler.triggers.cron import CronTrigger
 
+from newsparser.bots.core import cron_state
 from newsparser.bots.core.context import Context, TelegramSender
 from newsparser.bots.core.jobs import JobManager
 from newsparser.bots.core.registry import BotRegistry
@@ -137,10 +140,10 @@ async def _poll_job_requests(ptb_ctx: ContextTypes.DEFAULT_TYPE) -> None:
             await ctx.telegram.send(f"⚠️ {name} 이미 실행 중 — 요청 무시됨")
 
 
-def _make_cron_callback(bot: Bot):
+def _make_cron_callback(bot: Bot, trigger_kind: str = "cron"):
     async def _cb(ptb_ctx: ContextTypes.DEFAULT_TYPE) -> None:
         ctx = _make_ctx(bot.name, ptb_ctx.bot)
-        if jobs.start(bot, ctx, trigger="cron") is None:
+        if jobs.start(bot, ctx, trigger=trigger_kind) is None:
             running = jobs.running_for(bot.name)
             elapsed = int(time.time() - running.started_at) // 60 if running else 0
             logger.warning("Cron trigger skipped — %s already running (%d min)",
@@ -163,6 +166,35 @@ def _register_cron_jobs(app: Application) -> None:
             name=bot.name,
         )
         logger.info("Registered cron bot: %s  schedule=%s tz=%s", bot.name, trigger.schedule, trigger.tz)
+
+
+# Delay before a catch-up run so startup (registry load, PTB connect) settles
+# first and the run does not race the dispatcher's own boot.
+_CATCHUP_DELAY_S = 30
+
+
+def _iso_kst(ts: float) -> str:
+    return datetime.fromtimestamp(ts, ZoneInfo("Asia/Seoul")).isoformat(timespec="seconds")
+
+
+def _register_catchup_jobs(app: Application) -> None:
+    """Fire Cron(catchup=True) bots once at startup if their trigger came due
+    while the dispatcher was down. APScheduler holds no persistent job store, so
+    without this a restart spanning 07:30 KST silently skips that day."""
+    for bot, trigger in registry.cron_bots():
+        if not trigger.catchup:
+            continue
+        last = cron_state.last_run(bot.name)
+        if not cron_state.missed_fire(trigger, last):
+            continue
+        app.job_queue.run_once(
+            callback=_make_cron_callback(bot, trigger_kind="catchup"),
+            when=_CATCHUP_DELAY_S,
+            name=f"{bot.name}-catchup",
+        )
+        logger.warning("Catch-up scheduled: %s missed its %s trigger (last run: %s)",
+                       bot.name, trigger.schedule,
+                       "never" if last is None else _iso_kst(last))
 
 
 def start() -> None:
@@ -190,6 +222,7 @@ def start() -> None:
     )
 
     _register_cron_jobs(app)
+    _register_catchup_jobs(app)
     app.job_queue.run_repeating(_poll_job_requests, interval=3, first=3, name="job-requests")
     app.add_handler(CommandHandler("reload", _handle_reload))
     app.add_handler(MessageHandler(filters.TEXT, _handle_message))

@@ -12,6 +12,7 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from newsparser.bots.core import cron_state
 from newsparser.bots.core.context import Context
 from newsparser.bots.core.types import Bot
 from newsparser.claude import runner
@@ -93,6 +94,10 @@ class JobManager:
         try:
             await bot.run(ctx)
             job.status = "done"
+            # Durable last-run mark for Cron(catchup=True) — _recent is capped
+            # and cleared on restart, so it cannot answer "did we miss a fire".
+            if job.trigger in ("cron", "catchup"):
+                cron_state.record_run(bot.name)
         except asyncio.CancelledError:
             job.status = "cancelled"
             logger.warning("Job #%s (%s) cancelled", job.id, job.bot_name)
