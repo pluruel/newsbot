@@ -50,6 +50,12 @@ def init_db() -> None:
                 guid    TEXT PRIMARY KEY,
                 seen_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS feed_health (
+                source               TEXT PRIMARY KEY,
+                last_ok              TEXT,
+                consecutive_failures INTEGER NOT NULL DEFAULT 0,
+                last_error           TEXT
+            );
         """)
         # Idempotent column addition. SQLite raises OperationalError if column exists.
         try:
@@ -74,6 +80,43 @@ def mark_seen(guid: str) -> None:
             "INSERT OR IGNORE INTO seen_articles (guid, seen_at) VALUES (?, ?)",
             (guid, datetime.now(timezone.utc).isoformat()),
         )
+
+
+def record_feed_ok(source: str) -> None:
+    with _connection() as conn:
+        conn.execute(
+            """INSERT INTO feed_health (source, last_ok, consecutive_failures, last_error)
+               VALUES (?, ?, 0, NULL)
+               ON CONFLICT(source) DO UPDATE SET
+                   last_ok = excluded.last_ok,
+                   consecutive_failures = 0,
+                   last_error = NULL""",
+            (source, datetime.now(timezone.utc).isoformat()),
+        )
+
+
+def record_feed_failure(source: str, error: str) -> None:
+    with _connection() as conn:
+        conn.execute(
+            """INSERT INTO feed_health (source, last_ok, consecutive_failures, last_error)
+               VALUES (?, NULL, 1, ?)
+               ON CONFLICT(source) DO UPDATE SET
+                   consecutive_failures = feed_health.consecutive_failures + 1,
+                   last_error = excluded.last_error""",
+            (source, error),
+        )
+
+
+def get_failing_feeds(min_consecutive: int) -> list[dict]:
+    """Sources whose last min_consecutive polls all failed (fetch error or empty feed)."""
+    with _connection() as conn:
+        rows = conn.execute(
+            """SELECT source, last_ok, consecutive_failures, last_error
+               FROM feed_health WHERE consecutive_failures >= ?
+               ORDER BY consecutive_failures DESC""",
+            (min_consecutive,),
+        ).fetchall()
+        return [dict(r) for r in rows]
 
 
 def insert_article(

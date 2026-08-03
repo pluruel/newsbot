@@ -541,3 +541,25 @@ def test_run_cycle_records_category_failure_in_daily_log(tmp_path):
     log_text = (tmp_path / "workspace" / "logs" / "2026-05-08.log").read_text()
     assert "cycle tech-2026-05-08-12 FAIL" in log_text
     assert "claude timed out after 1500s" in log_text
+
+
+def test_report_feed_health_sends_only_when_persistent():
+    from newsparser.store.sqlite import record_feed_failure
+
+    # 임계 미만(11회) — 발송 없음
+    for _ in range(script.FEED_HEALTH_MIN_FAILURES - 1):
+        record_feed_failure("중앙일보", "HTTP 404")
+    with patch.object(script, "send_long_message") as mock_send:
+        script._report_feed_health()
+    mock_send.assert_not_called()
+
+    # 임계 도달 — 소스명·횟수·에러가 담긴 메시지 발송
+    record_feed_failure("중앙일보", "HTTP 404")
+    with patch.object(script, "send_long_message") as mock_send:
+        script._report_feed_health()
+    mock_send.assert_called_once()
+    msg = mock_send.call_args[0][0]
+    assert "피드 이상" in msg
+    assert "중앙일보" in msg
+    assert f"{script.FEED_HEALTH_MIN_FAILURES}회 연속 실패" in msg
+    assert "HTTP 404" in msg
