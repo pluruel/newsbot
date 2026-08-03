@@ -155,3 +155,25 @@ def test_get_between_caps_to_newest_rows_oldest_first():
         limit=3,
     )
     assert [r["guid"] for r in rows] == ["g2", "g3", "g4"]
+
+
+def test_feed_health_roundtrip():
+    from newsparser.store.sqlite import get_failing_feeds, record_feed_failure, record_feed_ok
+
+    for _ in range(3):
+        record_feed_failure("중앙일보", "HTTP 404")
+    record_feed_failure("한겨레", "timeout")
+    record_feed_ok("매일경제")
+
+    failing = get_failing_feeds(min_consecutive=3)
+    assert [r["source"] for r in failing] == ["중앙일보"]
+    assert failing[0]["consecutive_failures"] == 3
+    assert failing[0]["last_error"] == "HTTP 404"
+
+    # 성공하면 카운터 리셋
+    record_feed_ok("중앙일보")
+    assert get_failing_feeds(min_consecutive=1) == [{"source": "한겨레", "last_ok": None,
+                                                    "consecutive_failures": 1, "last_error": "timeout"}]
+    row = [r for r in get_failing_feeds(min_consecutive=0) if r["source"] == "중앙일보"][0]
+    assert row["consecutive_failures"] == 0
+    assert row["last_ok"] is not None

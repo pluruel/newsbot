@@ -6,7 +6,13 @@ import requests
 
 from newsparser.collector.scraper import fetch_body
 from newsparser.collector.sources import Source
-from newsparser.store.sqlite import insert_article, is_seen, mark_seen
+from newsparser.store.sqlite import (
+    insert_article,
+    is_seen,
+    mark_seen,
+    record_feed_failure,
+    record_feed_ok,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +47,15 @@ def poll_source(source: Source) -> list[dict]:
         feed = feedparser.parse(_fetch_feed(source.rss_url))
     except Exception as exc:
         logger.error("RSS fetch failed for %s: %s", source.name, exc)
+        record_feed_failure(source.name, str(exc))
         return []
+
+    if not feed.entries:
+        # A 200 that isn't a feed anymore (rss.joins.com) is as dead as a 404.
+        logger.warning("Feed %s returned no entries", source.name)
+        record_feed_failure(source.name, "feed has no entries")
+        return []
+    record_feed_ok(source.name)
 
     new_articles = []
     for entry in feed.entries:

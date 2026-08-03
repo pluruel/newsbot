@@ -138,3 +138,41 @@ def test_poll_source_skips_stale_backfill():
     # stale entry is marked seen but never scraped
     assert mock_seen.call_args_list[0][0][0] == "guid-old"
     mock_fetch.assert_called_once_with("https://example.com/guid-new")
+
+
+def test_poll_source_records_feed_health():
+    from unittest.mock import patch, MagicMock
+    from newsparser.collector.poller import poll_source
+    from newsparser.store.sqlite import get_failing_feeds
+
+    src = Source(name="중앙일보", rss_url="https://rss.joins.com/dead.xml",
+                 tier="domestic", paywall=False, category="markets")
+
+    # fetch 실패 → failure 기록
+    with patch("newsparser.collector.poller._fetch_feed", side_effect=OSError("boom")):
+        assert poll_source(src) == []
+    # 200이지만 엔트리 0건 → failure 기록
+    empty = MagicMock()
+    empty.entries = []
+    with patch("newsparser.collector.poller._fetch_feed", return_value=b""), \
+         patch("newsparser.collector.poller.feedparser.parse", return_value=empty):
+        assert poll_source(src) == []
+    assert get_failing_feeds(min_consecutive=2)[0]["source"] == "중앙일보"
+
+    # 엔트리가 돌아오면 카운터 리셋
+    entry = MagicMock()
+    entry.id = "g1"
+    entry.link = "https://example.com/g1"
+    entry.title = "t"
+    entry.published = "2026-08-03T00:00:00"
+    entry.published_parsed = None
+    entry.updated_parsed = None
+    entry.summary = "s"
+    ok = MagicMock()
+    ok.entries = [entry]
+    with patch("newsparser.collector.poller._fetch_feed", return_value=b""), \
+         patch("newsparser.collector.poller.feedparser.parse", return_value=ok), \
+         patch("newsparser.collector.poller.fetch_body", return_value="body"), \
+         patch("newsparser.collector.poller.insert_article"):
+        poll_source(src)
+    assert get_failing_feeds(min_consecutive=1) == []

@@ -18,7 +18,13 @@ from newsparser.classifier import classify_article, CATEGORIES
 from newsparser.market import snapshot as market_snapshot
 from newsparser.market import store as market_store
 from newsparser.scripts import apply_graph
-from newsparser.store.sqlite import get_unclassified, get_unprocessed, mark_processed, update_category
+from newsparser.store.sqlite import (
+    get_failing_feeds,
+    get_unclassified,
+    get_unprocessed,
+    mark_processed,
+    update_category,
+)
 from newsparser.scheduler.workspace import ensure_workspace
 from newsparser.ignore import load_ignore
 
@@ -324,6 +330,31 @@ def _run_for_category(slot: str, category: str, workspace: Path) -> None:
     _append_daily_log(workspace, slot, f"cycle {category}-{slot} OK articles={len(articles)}")
 
 
+# ~1h of continuous failure at the poller's 300s cadence — long enough to
+# ignore transient outages, short enough to surface a dead feed the same day.
+FEED_HEALTH_MIN_FAILURES = 12
+
+
+def _report_feed_health() -> None:
+    """Nag about dead feeds at the end of each cycle until they get fixed.
+
+    Rendered from feed_health rows (never model prose) and sent plain-text —
+    last_error can carry verbatim HTML fragments from a broken endpoint.
+    """
+    failing = get_failing_feeds(FEED_HEALTH_MIN_FAILURES)
+    if not failing:
+        return
+    lines = ["⚠️ 피드 이상 — sources.md 점검 필요"]
+    for row in failing:
+        last_ok = (row["last_ok"] or "")[:16].replace("T", " ") or "기록 없음"
+        error = (row["last_error"] or "?")[:80]
+        lines.append(
+            f"· {row['source']}: {row['consecutive_failures']}회 연속 실패"
+            f" (마지막 성공 {last_ok}) — {error}"
+        )
+    send_long_message("\n".join(lines))
+
+
 def main(slot: str | None = None) -> None:
     if slot is None:
         slot = datetime.now(_KST).strftime("%Y-%m-%d-%H")
@@ -349,6 +380,11 @@ def main(slot: str | None = None) -> None:
             logger.error("[%s] cycle failed: %s", category, exc, exc_info=True)
             _append_daily_log(workspace, slot,
                               f"cycle {category}-{slot} FAIL {type(exc).__name__}: {exc}")
+
+    try:
+        _report_feed_health()
+    except Exception as exc:
+        logger.warning("feed health report failed: %s", exc)
 
 
 if __name__ == "__main__":
