@@ -7,7 +7,11 @@ Context for working on this codebase with Claude Code.
 ## Architecture
 
 - Python handles all I/O, scheduling, DB, Telegram, and Neo4j.
-- Claude is invoked headless via CLI subprocess (`claude -p ...`) — see `newsparser/claude/runner.py`. Do not switch to the Anthropic API directly.
+- Claude is invoked headless via CLI subprocess (`claude -p ...`) — see `newsparser/claude/runner.py`. Do not switch to the Anthropic API directly, **except** for the short tool-less Haiku calls, which go through `newsparser/claude/haiku.py` (`ask_haiku`). Anything that needs a tool, MCP, a session, or a slash command stays on `run_claude`.
+  - Why the exception: a `claude -p` round trip is 5-8s regardless of prompt size — each one prefills ~21k tokens of Claude Code scaffolding and spends 200-1100 output tokens thinking before emitting one word, and no CLI flag disables either (`--effort low` does not move it). The same call over `/v1/messages` is ~0.9s. The tracker paid this twice serially before the user's answer even started.
+  - `ask_haiku` raises `ClaudeError` — the same type `runner.py` raises — so call sites keep one `except (ClaudeError, RuntimeError, OSError)` fallback whichever path they use.
+  - Auth reuses the CLI's own `CLAUDE_CODE_OAUTH_TOKEN`, which authenticates against `/v1/messages` as `Authorization: Bearer` (the SDK's `auth_token=`) but **401s as `x-api-key`**. `ANTHROPIC_API_KEY` overrides it when a host has a real key. No new secret to provision.
+  - **`ask_haiku` pins `max_retries=0`.** The SDK defaults to 2, which would turn `timeout` into a per-attempt bound instead of the wall-clock ceiling `run_claude`'s `threading.Timer` kill gave every call site — and timeouts are themselves retryable (`APITimeoutError` subclasses `APIConnectionError`). It also compounds: `resolver.py` and `scripts/audit_duplicates.py` already wrap their call in a 3-attempt backoff loop, so the default would make those 9 HTTP requests and stretch the resolver's worst case from ~183s to ~548s. Re-enable SDK retries only per call site, and divide the declared timeout when you do.
 - `CLAUDE.md` is auto-loaded by every `claude -p` call from the project root and acts as the system prompt — keep it minimal (role + style).
 - Slash command specs live in `.claude/commands/` (auto-loaded per `claude -p` call):
   - `.claude/commands/cycle.md` — `/cycle` analysis spec, invoked by `newsparser/scripts/run_cycle.py`.
@@ -52,9 +56,11 @@ Gotchas that bite, none obvious from the file tree:
 - **systemd gives units a minimal PATH** — the dispatcher unit sets `CLAUDE_BIN` (wired by
   install.sh) so `runner.py` finds the CLI.
 - **Headless tool policy lives in `newsparser/claude/policy.py`** (see `plan-tool-policy.md`):
-  news-tainted runs (cycle/reflect/weekly, classifier, resolver) get `permission_mode="default"`
-  + allowlists; only the tracker (trusted telegram input) runs `bypassPermissions`. Denied tool
-  calls are logged by `runner.py` and surface in `workspace/jobs.json` under `activity.denials`.
+  news-tainted runs (cycle/reflect/weekly) get `permission_mode="default"` + allowlists; only the
+  tracker (trusted telegram input) runs `bypassPermissions`. Denied tool calls are logged by
+  `runner.py` and surface in `workspace/jobs.json` under `activity.denials`. The classifier,
+  resolver, and headline picker are no longer on this list — they moved to `ask_haiku`, which has
+  no tool surface to police at all, so their taint is handled by construction rather than policy.
 - Auth is the env token (`CLAUDE_CODE_OAUTH_TOKEN` from `claude setup-token`) loaded via
   `EnvironmentFile=.env`. Persistent state is exactly `neo4j_data` + `workspace/`
   (see State & Backups below).
@@ -72,6 +78,41 @@ Gotchas that bite, none obvious from the file tree:
   ignored) — risk of committing binary state.
 - Minor: dispatcher/poller call `init_db()` but not `ensure_workspace()`, so `me/` interest /
   manifesto / ignore templates aren't seeded until the first `/cycle` (non-crash — writers self-mkdir).
+
+---
+
+## Market data
+
+Two resolutions, two writers, one table:
+
+- **Daily bars** — `market_daily`, written by the `market_daily` cron bot (07:30 KST).
+- **Intraday bars** — `market_intraday`, keyed `(instrument, interval, ts)`. The `interval`
+  column is load-bearing: it was added when 15m bars arrived because the old
+  `(instrument, ts)` key silently merged resolutions, which would make `annotate.py`'s ±60m
+  before/after lookup pick a 15m bar as "the previous hour". **Any new resolution must pass
+  `interval=` to `upsert_intraday`/`get_intraday`** — both default to `1h` so the pre-existing
+  callers (`annotate.py`, the `market_query` MCP tool) keep seeing exactly the hourly series.
+
+**Intraday volatility alerts live in `newsparser/collector/run_poller.py`, not in a
+`bots/*/bot.py` cron.** Two reasons, both easy to get wrong: the alert needs the headline
+window to be as fresh as possible, so it runs immediately after articles land; and every cron
+bot goes through the JobManager, whose recent-job list caps at 10 (`jobs.py:26`) — a 5-minute
+bot would evict the cycle/weekly history that `job_status` exists to show. `MARKET_PULSE=0`
+disables it.
+
+Detection is in `newsparser/market/pulse.py` and fires on `z > 3.0 AND |return| ≥ rolling p99`.
+Both halves are needed and the constants are measured, not guessed (60 days of real 15m bars,
+all eight instruments): z alone fires 7.2×/day with over half of it thin-session FX noise; a
+fixed percentage floor alone misses regime shifts. Together they land at ~3.4 alerts/day. A
+60-minute cooldown was measured too and removed only a further 0.3/day, so it is deliberately
+absent. **Re-measure before touching these numbers.** Headline attachment
+(`newsparser/market/headlines.py`) is one haiku call that returns *indices only* — the message
+is rendered from the DB rows those indices point at, never from model prose, same rule
+`run_cycle.py:304` follows.
+
+Gotcha: yfinance has **no 10m interval** (valid: 1m/2m/5m/15m/30m/60m/90m/1h/4h/1d…), and
+sub-hourly history only reaches back ~60 days — which is why `market_pulse` rows are the
+durable record of what fired, not the bars themselves.
 
 ---
 

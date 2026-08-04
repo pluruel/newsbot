@@ -55,8 +55,6 @@ def test_select_returns_rows_the_model_pointed_at():
     with patch.object(headlines, "ask_haiku", return_value="3,1") as rc:
         picks = headlines.select("KOSPI", "15분", "-1.30%", "14:15~14:30", arts)
     assert [p["title"] for p in picks] == ["셋째 기사", "첫 기사"]
-    # Untrusted input: ask_haiku is the tool-less path, so there is no tool
-    # policy to assert — only that headlines never reaches for the CLI runner.
     assert not hasattr(headlines, "run_claude")
 
 
