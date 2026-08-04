@@ -52,25 +52,23 @@ def test_dedupe_collapses_same_story_from_multiple_outlets():
 
 def test_select_returns_rows_the_model_pointed_at():
     arts = _articles(["첫 기사", "둘째 기사", "셋째 기사"])
-    with patch.object(headlines, "run_claude", return_value="3,1") as rc:
+    with patch.object(headlines, "ask_haiku", return_value="3,1") as rc:
         picks = headlines.select("KOSPI", "15분", "-1.30%", "14:15~14:30", arts)
     assert [p["title"] for p in picks] == ["셋째 기사", "첫 기사"]
-    # Untrusted input: no tools, deny-by-default.
-    kwargs = rc.call_args.kwargs
-    assert kwargs["permission_mode"] == "default"
-    assert "allowed_tools" not in kwargs
-    assert kwargs["model"] == headlines.HAIKU_MODEL
+    # Untrusted input: ask_haiku is the tool-less path, so there is no tool
+    # policy to assert — only that headlines never reaches for the CLI runner.
+    assert not hasattr(headlines, "run_claude")
 
 
 def test_select_survives_claude_failure():
     from newsparser.claude.runner import ClaudeError
     arts = _articles(["첫 기사"])
-    with patch.object(headlines, "run_claude", side_effect=ClaudeError("boom")):
+    with patch.object(headlines, "ask_haiku", side_effect=ClaudeError("boom")):
         assert headlines.select("KOSPI", "15분", "-1.30%", "14:15~14:30", arts) == []
 
 
 def test_select_skips_the_call_when_there_are_no_candidates():
-    with patch.object(headlines, "run_claude") as rc:
+    with patch.object(headlines, "ask_haiku") as rc:
         assert headlines.select("KOSPI", "15분", "+1%", "14:15~14:30", []) == []
     rc.assert_not_called()
 

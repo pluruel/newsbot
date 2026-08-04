@@ -18,14 +18,15 @@ import unicodedata
 from pathlib import Path
 
 from newsparser.claude.output_parser import EntityUpdate, RelationUpdate
-from newsparser.claude.runner import ClaudeError, run_claude
+from newsparser.claude.haiku import HAIKU_MODEL, ask_haiku
+from newsparser.claude.runner import ClaudeError
 from newsparser.graph.neo4j_client import get_driver
 from newsparser.ignore import load_ignore
 
 logger = logging.getLogger(__name__)
 
 # Same alias classifier.py/tracker.py use.
-HAIKU_MODEL = "claude-haiku-4-5"
+_MAX_TOKENS = 2048
 
 # All entity labels the resolver knows about — the full-text index and the
 # top-N fallback span these.
@@ -393,9 +394,7 @@ def _run_claude_with_retry(prompt: str) -> str | None:
     last_exc: Exception | None = None
     for attempt in range(_RETRIES):
         try:
-            # Entity names are derived from scraped article content — run tool-less.
-            return run_claude(prompt, timeout=_HAIKU_TIMEOUT, model=HAIKU_MODEL,
-                               system_prompt=_SYSTEM_PROMPT, permission_mode="default")
+            return ask_haiku(prompt, _SYSTEM_PROMPT, _MAX_TOKENS, timeout=_HAIKU_TIMEOUT)
         except (ClaudeError, RuntimeError, OSError) as exc:
             last_exc = exc
             if attempt == _RETRIES - 1:

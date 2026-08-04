@@ -16,13 +16,14 @@ import logging
 import re
 from datetime import datetime, timedelta, timezone
 
-from newsparser.claude.runner import ClaudeError, run_claude
+from newsparser.claude.haiku import ask_haiku
+from newsparser.claude.runner import ClaudeError
 from newsparser.collector.alert import _jaccard, _tokenize
 from newsparser.store.sqlite import get_between
 
 logger = logging.getLogger(__name__)
 
-HAIKU_MODEL = "claude-haiku-4-5"
+_MAX_TOKENS = 32
 
 # Cause precedes effect: reach back well past the bar's open, and forward only
 # to "now" (which already trails the bar by the feed delay).
@@ -101,8 +102,7 @@ def select(display: str, interval: str, delta_label: str, window_label: str,
     prompt = _PROMPT.format(display=display, interval=interval, delta=delta_label,
                             window=window_label, k=MAX_PICKS, numbered=numbered)
     try:
-        raw = run_claude(prompt, timeout=30, model=HAIKU_MODEL,
-                         system_prompt=_SYSTEM_PROMPT, permission_mode="default")
+        raw = ask_haiku(prompt, _SYSTEM_PROMPT, _MAX_TOKENS, timeout=30)
     except (ClaudeError, RuntimeError, OSError) as exc:
         logger.warning("headline select failed (%s) — sending price line only", exc)
         return []

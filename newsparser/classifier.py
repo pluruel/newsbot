@@ -1,13 +1,14 @@
 """Haiku-backed classification for articles and tracker queries."""
 import logging
 
-from newsparser.claude.runner import run_claude, ClaudeError
+from newsparser.claude.haiku import ask_haiku
+from newsparser.claude.runner import ClaudeError
 
 logger = logging.getLogger(__name__)
 
 CATEGORIES: tuple[str, str] = ("tech", "markets")
 
-HAIKU_MODEL = "claude-haiku-4-5"
+_MAX_TOKENS = 8
 
 _BODY_EXCERPT_CHARS = 500
 
@@ -57,10 +58,7 @@ def classify_article(title: str, body: str | None) -> str:
     body_excerpt = (body or "")[:_BODY_EXCERPT_CHARS]
     prompt = _ARTICLE_PROMPT.format(title=title, n=_BODY_EXCERPT_CHARS, body=body_excerpt)
     try:
-        # permission_mode="default": article bodies are untrusted web content and
-        # classification needs zero tools — every tool call gets auto-denied.
-        raw = run_claude(prompt, timeout=15, model=HAIKU_MODEL,
-                         system_prompt=_CLASSIFIER_SYSTEM_PROMPT, permission_mode="default")
+        raw = ask_haiku(prompt, _CLASSIFIER_SYSTEM_PROMPT, _MAX_TOKENS, timeout=15)
     except (ClaudeError, RuntimeError, OSError) as exc:
         logger.warning("classify_article failed (%s); defaulting to 'markets'", exc)
         return "markets"
@@ -79,8 +77,7 @@ def classify_query(query: str, history: list[dict] | None = None) -> str:
     parts.append(f"쿼리: {query}")
     prompt = "".join(parts)
     try:
-        raw = run_claude(prompt, timeout=15, model=HAIKU_MODEL,
-                         system_prompt=_CLASSIFIER_SYSTEM_PROMPT, permission_mode="default")
+        raw = ask_haiku(prompt, _CLASSIFIER_SYSTEM_PROMPT, _MAX_TOKENS, timeout=15)
     except (ClaudeError, RuntimeError, OSError) as exc:
         logger.warning("classify_query failed (%s); defaulting to 'both'", exc)
         return "both"

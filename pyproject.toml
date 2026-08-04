@@ -16,6 +16,7 @@ dependencies = [
     "neo4j>=6.2.0",
     "fastmcp>=2.0,<4",
     "yfinance>=0.2.40",
+    "anthropic>=0.120.2",
 ]
 
 [project.optional-dependencies]

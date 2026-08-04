@@ -35,9 +35,10 @@ from pathlib import Path
 from dotenv import load_dotenv
 load_dotenv()
 
-from newsparser.claude.runner import ClaudeError, run_claude
+from newsparser.claude.haiku import ask_haiku
+from newsparser.claude.runner import ClaudeError
 from newsparser.graph.neo4j_client import get_driver
-from newsparser.graph.resolver import HAIKU_MODEL, _normalize
+from newsparser.graph.resolver import _normalize
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +64,7 @@ _CONFIRM_SYSTEM = (
 _CONFIRM_LINE_RE = re.compile(r"^\s*P(\d+)\s*:\s*(SAME|DIFF)\s*$", re.IGNORECASE)
 _CONFIRM_TIMEOUT = 300
 _CONFIRM_RETRIES = 3
+_CONFIRM_MAX_TOKENS = 4096
 _CONFIRM_BACKOFF_BASE = 1.0  # seconds
 
 
@@ -169,8 +171,8 @@ def _confirm_pairs(candidates: list[dict]) -> dict[int, str] | None:
     raw = None
     for attempt in range(_CONFIRM_RETRIES):
         try:
-            raw = run_claude(prompt, timeout=_CONFIRM_TIMEOUT, model=HAIKU_MODEL,
-                             system_prompt=_CONFIRM_SYSTEM, permission_mode="default")
+            raw = ask_haiku(prompt, _CONFIRM_SYSTEM, _CONFIRM_MAX_TOKENS,
+                            timeout=_CONFIRM_TIMEOUT)
             break
         except (ClaudeError, RuntimeError, OSError) as exc:
             if attempt == _CONFIRM_RETRIES - 1:
