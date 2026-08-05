@@ -1,6 +1,7 @@
 """Entry point: run the RSS polling loop indefinitely."""
 import logging
 import os
+import statistics
 import time
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
@@ -8,7 +9,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from newsparser.store.sqlite import init_db, get_recent, mark_alerted
+from newsparser.store.sqlite import init_db, get_recent, hourly_counts, mark_alerted
 from newsparser.collector.sources import load_sources
 from newsparser.collector.poller import poll_all
 from newsparser.collector.alert import detect_convergence, detect_spike
@@ -38,6 +39,10 @@ SPIKE_COOLDOWN_HOURS = 1
 BASELINE_HALFLIFE_S = 1200
 BASELINE_ALPHA = 1 - 0.5 ** (POLL_INTERVAL / BASELINE_HALFLIFE_S)
 BASELINE: dict[str, float] = {}  # accumulated at runtime
+# Seeded at startup from per-source medians so a restart doesn't reset every
+# source to detect_spike's 5.0 default — busy sources tripped false spikes
+# during the ~20min the EMA needed to converge.
+BASELINE_SEED_DAYS = 14
 _spike_alerted_at: dict[str, datetime] = {}
 MARKET_PULSE_ENABLED = os.environ.get("MARKET_PULSE", "1") != "0"
 
@@ -76,8 +81,27 @@ def _market_pulse() -> None:
         _send_plain(msg)
 
 
+def _seed_baseline() -> None:
+    """현재 시각(UTC 시간대 버킷) 기준, 소스별 최근 N일 기사 수의 중앙값으로 BASELINE을 시딩한다.
+
+    시간대별 중앙값인 이유: 뉴스 유입은 시간대 편차가 커서 전체 평균으로 시딩하면
+    한산한 시간대 재시작 시 과대평가되고, 평균은 과거 스파이크에 오염된다.
+    """
+    hour = datetime.now(timezone.utc).strftime("%H")
+    by_source: dict[str, list[int]] = defaultdict(list)
+    for r in hourly_counts(BASELINE_SEED_DAYS):
+        if r["hour"] == hour:
+            by_source[r["source"]].append(r["n"])
+    for source, counts in by_source.items():
+        counts += [0] * (BASELINE_SEED_DAYS - len(counts))  # 기사 없던 날 = 0
+        # floor 1.0: median 0이면 임계가 0이 되어 기사 1건에도 스파이크가 뜬다
+        BASELINE[source] = max(statistics.median(counts), 1.0)
+    logger.info("Seeded spike baseline for %d sources (hour=%sZ)", len(BASELINE), hour)
+
+
 def run() -> None:
     init_db()
+    _seed_baseline()
     if MARKET_PULSE_ENABLED:
         init_market_db()
     sources = load_sources()

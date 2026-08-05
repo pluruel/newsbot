@@ -156,6 +156,20 @@ def get_recent(minutes: int = 60) -> list[dict]:
         return [dict(r) for r in rows]
 
 
+def hourly_counts(days: int = 14) -> list[dict]:
+    """소스별 (날짜, 시각) 버킷 기사 수. 스파이크 baseline 시딩용."""
+    with _connection() as conn:
+        rows = conn.execute(
+            """SELECT source, date(fetched_at) AS day,
+                      strftime('%H', fetched_at) AS hour, COUNT(*) AS n
+               FROM pending_articles
+               WHERE fetched_at >= strftime('%Y-%m-%dT%H:%M:%S', 'now', ?)
+               GROUP BY source, day, hour""",
+            (f"-{days} days",),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
 def get_between(start: datetime, end: datetime, category: str | None = None,
                 limit: int = 100) -> list[dict]:
     """Articles fetched within [start, end], oldest-first.
