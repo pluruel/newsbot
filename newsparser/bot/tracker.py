@@ -4,6 +4,7 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from newsparser.claude.haiku import ask_haiku
 from newsparser.claude.runner import run_claude
 from newsparser.classifier import classify_query
 from newsparser.store import conversations as conv
@@ -68,6 +69,7 @@ def _extract_pairs(history: list[dict]) -> list[tuple[dict, dict]]:
 
 
 _HAIKU_ASSISTANT_PREVIEW = 240
+_DEPTH_MAX_TOKENS = 8
 
 
 def _needed_history_depth(query: str, history: list[dict], max_depth: int) -> int:
@@ -90,14 +92,11 @@ def _needed_history_depth(query: str, history: list[dict], max_depth: int) -> in
         f"New query: {query}"
     )
     try:
-        result = run_claude(
+        result = ask_haiku(
             prompt,
+            f"Reply with only a single integer between 0 and {max_depth}. No other text.",
+            _DEPTH_MAX_TOKENS,
             timeout=30,
-            model="claude-haiku-4-5",
-            system_prompt=(
-                f"Reply with only a single integer between 0 and {max_depth}. No other text."
-            ),
-            permission_mode="default",  # history text is news-derived; no tools needed
         )
         token = result.strip().split()[0].strip(".,!?") if result.strip() else "1"
         n = int(token)

@@ -155,7 +155,7 @@ def test_parse_response_rejects_ambiguous_normalized_match():
 def test_resolve_entities_deterministic_match_skips_haiku():
     with patch("newsparser.graph.resolver.fetch_registry",
                return_value=([{"name": "Nvidia", "aliases": [], "label": "Company"}], True)), \
-         patch("newsparser.graph.resolver.run_claude") as mock_run:
+         patch("newsparser.graph.resolver.ask_haiku") as mock_run:
         rename = resolve_entities([_entity("NVIDIA", label="Company")])
     mock_run.assert_not_called()
     assert rename == {"NVIDIA": ("Nvidia", "Company")}
@@ -166,7 +166,7 @@ def test_resolve_entities_cross_label_override():
     name — the Company/Institution group is crossed and the label overridden."""
     with patch("newsparser.graph.resolver.fetch_registry",
                return_value=([{"name": "Anthropic", "aliases": [], "label": "Institution"}], True)), \
-         patch("newsparser.graph.resolver.run_claude") as mock_run:
+         patch("newsparser.graph.resolver.ask_haiku") as mock_run:
         rename = resolve_entities([_entity("Anthropic", label="Company")])
     mock_run.assert_not_called()
     assert rename == {"Anthropic": ("Anthropic", "Institution")}
@@ -178,7 +178,7 @@ def test_resolve_entities_incomplete_registry_routes_all_to_haiku():
     unambiguous. All candidates go to Haiku instead."""
     with patch("newsparser.graph.resolver.fetch_registry",
                return_value=([{"name": "Nvidia", "aliases": [], "label": "Company"}], False)), \
-         patch("newsparser.graph.resolver.run_claude", return_value="C1: Nvidia") as mock_run:
+         patch("newsparser.graph.resolver.ask_haiku", return_value="C1: Nvidia") as mock_run:
         rename = resolve_entities([_entity("NVIDIA", label="Company")])
     mock_run.assert_called_once()
     assert rename == {"NVIDIA": ("Nvidia", "Company")}
@@ -189,7 +189,7 @@ def test_resolve_entities_haiku_label_only_override():
     node's label — the write must MERGE onto that node, not fork a new label."""
     with patch("newsparser.graph.resolver.fetch_registry",
                return_value=([{"name": "Anthropic", "aliases": [], "label": "Institution"}], False)), \
-         patch("newsparser.graph.resolver.run_claude", return_value="C1: Anthropic"):
+         patch("newsparser.graph.resolver.ask_haiku", return_value="C1: Anthropic"):
         rename = resolve_entities([_entity("Anthropic", label="Company")])
     assert rename == {"Anthropic": ("Anthropic", "Institution")}
 
@@ -197,7 +197,7 @@ def test_resolve_entities_haiku_label_only_override():
 def test_resolve_entities_haiku_self_answer_same_label_is_noop():
     with patch("newsparser.graph.resolver.fetch_registry",
                return_value=([{"name": "Anthropic", "aliases": [], "label": "Company"}], False)), \
-         patch("newsparser.graph.resolver.run_claude", return_value="C1: Anthropic"):
+         patch("newsparser.graph.resolver.ask_haiku", return_value="C1: Anthropic"):
         rename = resolve_entities([_entity("Anthropic", label="Company")])
     assert rename == {}
 
@@ -208,7 +208,7 @@ def test_resolve_entities_skips_names_extracted_under_multiple_groups():
     group's meaning with the other's) — both are left as-is."""
     with patch("newsparser.graph.resolver.fetch_registry",
                return_value=([{"name": "비트코인 시장", "aliases": ["비트코인"], "label": "Market"}], True)) as mock_fetch, \
-         patch("newsparser.graph.resolver.run_claude") as mock_run:
+         patch("newsparser.graph.resolver.ask_haiku") as mock_run:
         rename = resolve_entities([_entity("비트코인", label="Market"),
                                    _entity("비트코인", label="Indicator")])
     assert rename == {}
@@ -237,7 +237,7 @@ def test_build_prompt_adds_event_hint_for_event_candidates():
 
 def test_resolve_entities_skips_haiku_when_registry_empty():
     with patch("newsparser.graph.resolver.fetch_registry", return_value=([], True)), \
-         patch("newsparser.graph.resolver.run_claude") as mock_run:
+         patch("newsparser.graph.resolver.ask_haiku") as mock_run:
         rename = resolve_entities([_entity("OpenAI")])
     mock_run.assert_not_called()
     assert rename == {}
@@ -250,12 +250,12 @@ def test_resolve_entities_groups_candidates_by_label_group_in_separate_calls():
         tag = "-".join(labels)
         return [{"name": f"Existing-{tag}", "aliases": [], "label": labels[0]}], True
 
-    def fake_run(prompt, **kw):
+    def fake_run(prompt, *a, **kw):
         calls.append(prompt)
         return "C1: NEW"
 
     with patch("newsparser.graph.resolver.fetch_registry", side_effect=fake_fetch), \
-         patch("newsparser.graph.resolver.run_claude", side_effect=fake_run):
+         patch("newsparser.graph.resolver.ask_haiku", side_effect=fake_run):
         resolve_entities([_entity("A", label="Company"), _entity("B", label="Person")])
     # Company and Person are different groups → two separate calls.
     assert len(calls) == 2
@@ -270,11 +270,11 @@ def test_resolve_entities_company_and_institution_share_one_call():
         fetch_calls.append(labels)
         return [{"name": "Goldman Sachs", "aliases": [], "label": "Institution"}], True
 
-    def fake_run(prompt, **kw):
+    def fake_run(prompt, *a, **kw):
         return "C1: NEW\nC2: NEW"
 
     with patch("newsparser.graph.resolver.fetch_registry", side_effect=fake_fetch), \
-         patch("newsparser.graph.resolver.run_claude", side_effect=fake_run) as mock_run:
+         patch("newsparser.graph.resolver.ask_haiku", side_effect=fake_run) as mock_run:
         resolve_entities([_entity("Acme", label="Company"),
                           _entity("Some Bank", label="Institution")])
     assert len(fetch_calls) == 1
@@ -285,7 +285,7 @@ def test_resolve_entities_company_and_institution_share_one_call():
 def test_resolve_entities_applies_rename_from_haiku_response():
     with patch("newsparser.graph.resolver.fetch_registry",
                return_value=([{"name": "Tesla", "aliases": ["TSLA"], "label": "Company"}], True)), \
-         patch("newsparser.graph.resolver.run_claude", return_value="C1: Tesla"):
+         patch("newsparser.graph.resolver.ask_haiku", return_value="C1: Tesla"):
         rename = resolve_entities([_entity("테슬라", label="Company")])
     assert rename == {"테슬라": ("Tesla", "Company")}
 
@@ -293,7 +293,7 @@ def test_resolve_entities_applies_rename_from_haiku_response():
 def test_resolve_entities_tolerates_haiku_failure_after_retries_exhausted():
     with patch("newsparser.graph.resolver.fetch_registry",
                return_value=([{"name": "Tesla", "aliases": []}], True)), \
-         patch("newsparser.graph.resolver.run_claude", side_effect=ClaudeError("boom")) as mock_run, \
+         patch("newsparser.graph.resolver.ask_haiku", side_effect=ClaudeError("boom")) as mock_run, \
          patch("newsparser.graph.resolver.time.sleep"):
         rename = resolve_entities([_entity("테슬라")])
     assert rename == {}
@@ -303,7 +303,7 @@ def test_resolve_entities_tolerates_haiku_failure_after_retries_exhausted():
 def test_resolve_entities_retries_then_succeeds():
     with patch("newsparser.graph.resolver.fetch_registry",
                return_value=([{"name": "Tesla", "aliases": [], "label": "Company"}], True)), \
-         patch("newsparser.graph.resolver.run_claude",
+         patch("newsparser.graph.resolver.ask_haiku",
                side_effect=[ClaudeError("timed out"), "C1: Tesla"]) as mock_run, \
          patch("newsparser.graph.resolver.time.sleep"):
         rename = resolve_entities([_entity("테슬라")])
@@ -313,7 +313,7 @@ def test_resolve_entities_retries_then_succeeds():
 
 def test_resolve_entities_tolerates_registry_fetch_failure():
     with patch("newsparser.graph.resolver.fetch_registry", side_effect=RuntimeError("neo4j down")), \
-         patch("newsparser.graph.resolver.run_claude") as mock_run:
+         patch("newsparser.graph.resolver.ask_haiku") as mock_run:
         rename = resolve_entities([_entity("테슬라")])
     mock_run.assert_not_called()
     assert rename == {}

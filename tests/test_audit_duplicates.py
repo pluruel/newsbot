@@ -75,7 +75,7 @@ def test_confirm_pairs_parses_same_diff():
         {"from": _e("Citi"), "to": _e("Citigroup"), "reason": "x"},
         {"from": _e("Apple"), "to": _e("Apricot"), "reason": "x"},
     ]
-    with patch("scripts.audit_duplicates.run_claude", return_value="P1: SAME\nP2: DIFF"):
+    with patch("scripts.audit_duplicates.ask_haiku", return_value="P1: SAME\nP2: DIFF"):
         answers = script._confirm_pairs(cands)
     assert answers == {0: "SAME", 1: "DIFF"}
 
@@ -83,7 +83,7 @@ def test_confirm_pairs_parses_same_diff():
 def test_confirm_pairs_returns_none_after_retries_exhausted():
     from newsparser.claude.runner import ClaudeError
     cands = [{"from": _e("A"), "to": _e("B"), "reason": "x"}]
-    with patch("scripts.audit_duplicates.run_claude", side_effect=ClaudeError("timed out")) as mock_run, \
+    with patch("scripts.audit_duplicates.ask_haiku", side_effect=ClaudeError("timed out")) as mock_run, \
          patch("scripts.audit_duplicates.time.sleep"):
         assert script._confirm_pairs(cands) is None
     assert mock_run.call_count == 3  # retried before giving up
@@ -92,7 +92,7 @@ def test_confirm_pairs_returns_none_after_retries_exhausted():
 def test_confirm_pairs_retries_then_succeeds():
     from newsparser.claude.runner import ClaudeError
     cands = [{"from": _e("Citi"), "to": _e("Citigroup"), "reason": "x"}]
-    with patch("scripts.audit_duplicates.run_claude",
+    with patch("scripts.audit_duplicates.ask_haiku",
                side_effect=[ClaudeError("timed out"), "P1: SAME"]) as mock_run, \
          patch("scripts.audit_duplicates.time.sleep"):
         out = script._confirm_pairs(cands)
@@ -143,7 +143,7 @@ def test_audit_marks_unanswered_pairs_unconfirmed_not_rejected():
     session = MagicMock()
     # Reply only covers P1; P2 is silently missing (e.g. truncation).
     with patch("scripts.audit_duplicates.fetch_entities", side_effect=fake_fetch), \
-         patch("scripts.audit_duplicates.run_claude", return_value="P1: DIFF"):
+         patch("scripts.audit_duplicates.ask_haiku", return_value="P1: DIFF"):
         out = script.audit(session, use_llm=True)
     assert len(out) == 2
     assert out[0]["verdict"] == "rejected"      # explicitly judged DIFF
