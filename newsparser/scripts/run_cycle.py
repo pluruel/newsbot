@@ -13,7 +13,7 @@ load_dotenv()
 from newsparser.bot.sender import send_long_message
 from newsparser.claude.input_builder import build_input_file
 from newsparser.claude.policy import CYCLE_TOOLS
-from newsparser.claude.runner import ClaudeKilled, run_claude
+from newsparser.claude.runner import ClaudeError, ClaudeKilled, run_claude
 from newsparser.classifier import classify_article, CATEGORIES
 from newsparser.market import snapshot as market_snapshot
 from newsparser.market import store as market_store
@@ -43,6 +43,14 @@ _CYCLE_ITEM_RE = re.compile(r"^\s*[•\-\*]\s*\(중요도\s*([0-9]*\.?[0-9]+)\)\
 # next run fails too. Oldest-first (get_unprocessed orders by published), so
 # nothing is dropped — only deferred. ~10x normal per-slot volume.
 CYCLE_MAX_ARTICLES = 60
+
+# "Success" for a cycle run is the report file existing, not run_claude returning —
+# a run can exit 0 in seconds with no output (observed 2026-08-05: 16s, no report),
+# and treating that as success let the mark_processed net below eat 18 articles
+# that then appeared in no report and were never retried. Retry the claude run
+# (fresh timeout each attempt) and, if it still ends report-less, raise so the
+# articles stay pending for the next slot instead of being marked processed.
+CYCLE_CLAUDE_ATTEMPTS = 3
 
 # Digest section headers in the report (cycle.md "Report file format").
 _SCORED_SECTIONS = ("새 소식", "이어지는 흐름")        # items carry a 중요도 score
@@ -276,10 +284,34 @@ def _run_for_category(slot: str, category: str, workspace: Path) -> None:
         existing = input_path.read_text(encoding="utf-8")
         input_path.write_text(snapshot_block + "\n\n" + existing, encoding="utf-8")
 
+    report_path = workspace / "cycles" / category / f"{slot}.md"
+
     # Input file is scraped article text — run with the cycle allowlist so a
     # prompt-injected instruction can't reach arbitrary Bash/network tools.
-    run_claude(f"/cycle {slot} {category}",
-               allowed_tools=CYCLE_TOOLS, permission_mode="default", timeout=3600)
+    for attempt in range(1, CYCLE_CLAUDE_ATTEMPTS + 1):
+        try:
+            result = run_claude(f"/cycle {slot} {category}",
+                                allowed_tools=CYCLE_TOOLS, permission_mode="default",
+                                timeout=3600)
+        except ClaudeKilled:
+            raise
+        except ClaudeError as exc:
+            logger.error("[%s] claude attempt %d/%d failed: %s",
+                         category, attempt, CYCLE_CLAUDE_ATTEMPTS, exc)
+            if attempt == CYCLE_CLAUDE_ATTEMPTS:
+                raise
+            continue
+        if report_path.exists():
+            break
+        # Exit 0 but no report. The result text is the only trace of why the
+        # model stopped (it isn't persisted anywhere else) — log it before
+        # retrying so a repeat of the silent-early-exit case is diagnosable.
+        logger.error("[%s] claude attempt %d/%d exited cleanly without writing %s — "
+                     "result text: %s", category, attempt, CYCLE_CLAUDE_ATTEMPTS,
+                     report_path.name, (result or "<empty>")[:500])
+    else:
+        raise ClaudeError(
+            f"no report after {CYCLE_CLAUDE_ATTEMPTS} claude attempts ({report_path})")
     logger.info("[%s] Claude cycle complete", category)
 
     # Safety net: the CYCLE_TOOLS whitelist only matches the exact apply_graph
@@ -288,7 +320,6 @@ def _run_for_category(slot: str, category: str, workspace: Path) -> None:
     # success marker tells us whether it ran; if not, apply directly. Must happen
     # BEFORE the mark_processed net below, which deletes the guids file
     # apply_graph needs to resolve source indices.
-    report_path = workspace / "cycles" / category / f"{slot}.md"
     if report_path.exists() and not apply_graph.marker_path(workspace, category, slot).exists():
         logger.warning("[%s] apply_graph did not run during the claude cycle — applying directly", category)
         try:

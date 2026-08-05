@@ -79,6 +79,76 @@ def test_run_cycle_writes_guids_file_before_calling_run_claude(tmp_path):
     assert guids_seen == [True], "guids file must exist when run_claude is called"
 
 
+def test_run_cycle_retries_until_report_appears(tmp_path):
+    """A clean exit without a report file is a failed attempt, not success."""
+    insert_article("g1", "src", "t1", "u1", None, "body", category="tech")
+
+    calls: list[str] = []
+
+    def flaky_claude(prompt, **kw):
+        calls.append(prompt)
+        if len(calls) < 3:
+            return ""              # exit 0, no report — the silent-early-exit case
+        return _fake_run_claude_writes_report(prompt, **kw)
+
+    with patch("newsparser.scripts.run_cycle.run_claude", side_effect=flaky_claude), \
+         patch("newsparser.scripts.run_cycle.build_input_file"), \
+         patch("newsparser.scripts.run_cycle.classify_article", return_value="tech"), \
+         patch("newsparser.scripts.run_cycle.send_long_message"):
+        script.main("2026-05-08-12")
+
+    assert len(calls) == 3
+    assert get_unprocessed(category="tech") == []   # 3rd attempt succeeded → processed
+
+
+def test_run_cycle_keeps_articles_pending_when_no_report_after_all_attempts(tmp_path):
+    insert_article("g1", "src", "t1", "u1", None, "body", category="tech")
+
+    calls: list[str] = []
+    sent: list[str] = []
+
+    def silent_claude(prompt, **kw):
+        calls.append(prompt)
+        return ""                  # never writes a report
+
+    with patch("newsparser.scripts.run_cycle.run_claude", side_effect=silent_claude), \
+         patch("newsparser.scripts.run_cycle.build_input_file"), \
+         patch("newsparser.scripts.run_cycle.classify_article", return_value="tech"), \
+         patch("newsparser.scripts.run_cycle.send_long_message", side_effect=lambda m: sent.append(m)):
+        script.main("2026-05-08-12")
+
+    assert len(calls) == script.CYCLE_CLAUDE_ATTEMPTS
+    assert sent == []
+    # The whole point: articles must stay pending for the next slot, not be
+    # swallowed by the mark_processed safety net.
+    assert [a["guid"] for a in get_unprocessed(category="tech")] == ["g1"]
+    log = (Path(os.environ["WORKSPACE_DIR"]) / "logs" / "2026-05-08.log").read_text()
+    assert "FAIL" in log and "OK" not in log
+
+
+def test_run_cycle_retries_on_claude_error(tmp_path):
+    from newsparser.claude.runner import ClaudeError
+
+    insert_article("g1", "src", "t1", "u1", None, "body", category="tech")
+
+    calls: list[str] = []
+
+    def crashy_claude(prompt, **kw):
+        calls.append(prompt)
+        if len(calls) < 2:
+            raise ClaudeError("boom")
+        return _fake_run_claude_writes_report(prompt, **kw)
+
+    with patch("newsparser.scripts.run_cycle.run_claude", side_effect=crashy_claude), \
+         patch("newsparser.scripts.run_cycle.build_input_file"), \
+         patch("newsparser.scripts.run_cycle.classify_article", return_value="tech"), \
+         patch("newsparser.scripts.run_cycle.send_long_message"):
+        script.main("2026-05-08-12")
+
+    assert len(calls) == 2
+    assert get_unprocessed(category="tech") == []
+
+
 def test_run_cycle_sends_terse_importance_list(tmp_path):
     insert_article("g1", "src", "t1", "u1", None, "body", category="tech")
 
