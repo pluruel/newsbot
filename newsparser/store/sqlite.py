@@ -57,12 +57,14 @@ def init_db() -> None:
                 last_error           TEXT
             );
         """)
-        # Idempotent column addition. SQLite raises OperationalError if column exists.
-        try:
-            conn.execute("ALTER TABLE pending_articles ADD COLUMN category TEXT")
-            conn.commit()
-        except sqlite3.OperationalError:
-            pass
+        # Idempotent column additions. SQLite raises OperationalError if column exists.
+        for ddl in ("ALTER TABLE pending_articles ADD COLUMN category TEXT",
+                    "ALTER TABLE pending_articles ADD COLUMN duplicate_of TEXT"):
+            try:
+                conn.execute(ddl)
+                conn.commit()
+            except sqlite3.OperationalError:
+                pass
     finally:
         conn.close()
 
@@ -202,6 +204,29 @@ def mark_processed(guids: list[str]) -> None:
             "UPDATE pending_articles SET processed = 1 WHERE guid = ?",
             [(g,) for g in guids],
         )
+
+
+def mark_duplicates(pairs: list[tuple[str, str]]) -> None:
+    """Mark each (duplicate_guid, kept_guid) pair's duplicate as processed
+    without a cycle ever seeing it, recording which article absorbed it."""
+    with _connection() as conn:
+        conn.executemany(
+            "UPDATE pending_articles SET processed = 1, duplicate_of = ? WHERE guid = ?",
+            [(kept, dup) for dup, kept in pairs],
+        )
+
+
+def get_processed_since(category: str, since_iso: str) -> list[dict]:
+    """Processed non-duplicate rows fetched at/after since_iso — dedup anchors,
+    so a story analyzed last cycle still absorbs copies arriving this cycle."""
+    with _connection() as conn:
+        rows = conn.execute(
+            """SELECT * FROM pending_articles
+               WHERE processed = 1 AND duplicate_of IS NULL
+                 AND category = ? AND fetched_at >= ?""",
+            (category, since_iso),
+        ).fetchall()
+        return [dict(r) for r in rows]
 
 
 def mark_alerted(guid: str) -> None:
