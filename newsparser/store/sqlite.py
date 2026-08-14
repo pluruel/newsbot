@@ -1,7 +1,9 @@
+import re
 import sqlite3
 import os
 from contextlib import contextmanager
 from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Generator
 
@@ -135,16 +137,43 @@ def insert_article(
         )
 
 
+# 매일경제 writes RFC-822 dates with an ISO-style "+09:00" offset, which
+# parsedate_to_datetime silently drops (returning a naive datetime that would
+# then be misread as UTC, +9h off). Collapse the colon to the RFC form first.
+_OFFSET_COLON_RE = re.compile(r"([+-]\d{2}):(\d{2})\s*$")
+
+
+def article_ts(row: dict) -> datetime:
+    """Best-effort article timestamp. `published` is the raw feed string (ISO
+    or RFC-822 depending on the source); `fetched_at` is always our own ISO."""
+    for key in ("published", "fetched_at"):
+        raw = row.get(key)
+        if not raw:
+            continue
+        try:
+            ts = datetime.fromisoformat(raw)
+        except ValueError:
+            try:
+                ts = parsedate_to_datetime(_OFFSET_COLON_RE.sub(r"\1\2", raw))
+            except (ValueError, TypeError):
+                continue
+        return ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
+    return datetime.now(timezone.utc)
+
+
 def get_unprocessed(category: str | None = None) -> list[dict]:
     sql = "SELECT * FROM pending_articles WHERE processed = 0"
     params: tuple = ()
     if category is not None:
         sql += " AND category = ?"
         params = (category,)
-    sql += " ORDER BY COALESCE(published, fetched_at)"
     with _connection() as conn:
-        rows = conn.execute(sql, params).fetchall()
-        return [dict(r) for r in rows]
+        rows = [dict(r) for r in conn.execute(sql, params).fetchall()]
+    # Oldest first. Sorted here, not in SQL: `published` mixes ISO and RFC-822
+    # strings per source, and a string ORDER BY groups by format (digits sort
+    # before weekday names), starving RFC-822 sources behind the ISO backlog.
+    rows.sort(key=article_ts)
+    return rows
 
 
 def get_recent(minutes: int = 60) -> list[dict]:

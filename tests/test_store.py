@@ -81,6 +81,19 @@ def test_get_unprocessed_filters_by_category():
     assert markets[0]["guid"] == "g2"
 
 
+def test_get_unprocessed_orders_mixed_date_formats_chronologically():
+    """`published` is stored raw, so ISO and RFC-822 sources coexist. A string
+    sort groups by format (digits before weekday names), starving RFC-822
+    sources behind the entire ISO backlog — order must follow the parsed date."""
+    insert_article("iso-late", "연합인포맥스", "T1", "u1", "2026-07-05 11:58:29", "b")
+    insert_article("rfc-early", "Bloomberg Markets", "T2", "u2",
+                   "Sun, 05 Jul 2026 10:17:44 GMT", "b")
+    insert_article("rfc-kst", "매일경제", "T3", "u3", "Sun, 05 Jul 2026 18:02:01 +09:00", "b")
+    insert_article("iso-early", "Yahoo Finance", "T4", "u4", "2026-07-05T08:00:00Z", "b")
+    rows = get_unprocessed()
+    assert [r["guid"] for r in rows] == ["iso-early", "rfc-kst", "rfc-early", "iso-late"]
+
+
 def test_get_unprocessed_no_filter_returns_all():
     insert_article("g1", "S1", "T1", "https://x.com/1", None, "b", category="tech")
     insert_article("g2", "S2", "T2", "https://x.com/2", None, "b")

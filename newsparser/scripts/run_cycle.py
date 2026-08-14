@@ -3,7 +3,7 @@ import logging
 import os
 import re
 import sys
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -20,6 +20,7 @@ from newsparser.market import snapshot as market_snapshot
 from newsparser.market import store as market_store
 from newsparser.scripts import apply_graph
 from newsparser.store.sqlite import (
+    article_ts,
     get_failing_feeds,
     get_unclassified,
     get_unprocessed,
@@ -44,6 +45,13 @@ _CYCLE_ITEM_RE = re.compile(r"^\s*[•\-\*]\s*\(중요도\s*([0-9]*\.?[0-9]+)\)\
 # next run fails too. Oldest-first (get_unprocessed orders by published), so
 # nothing is dropped — only deferred. ~10x normal per-slot volume.
 CYCLE_MAX_ARTICLES = 60
+
+# Articles older than this at cycle time are retired unanalyzed: a week-old
+# story is no longer "새 소식", and a backlog of them starves fresh news out of
+# the CYCLE_MAX_ARTICLES cap for days. Mirrors the poller's MAX_AGE_DAYS — an
+# article too old to collect today is too old to analyze today. Retired rows
+# stay in the DB for search/get_between; they just never reach a report.
+CYCLE_MAX_AGE_DAYS = 7
 
 # "Success" for a cycle run is the report file existing, not run_claude returning —
 # a run can exit 0 in seconds with no output (observed 2026-08-05: 16s, no report),
@@ -252,7 +260,18 @@ def _append_daily_log(workspace: Path, slot: str, message: str) -> None:
 
 
 def _run_for_category(slot: str, category: str, workspace: Path) -> None:
-    # Collapse re-reported stories first so the CYCLE_MAX_ARTICLES cap is spent
+    # Retire aged-out articles first: with an oldest-first cap, a stale backlog
+    # would otherwise monopolize every run until it drains. Slot-relative, not
+    # wall-clock, so a catch-up run for an old slot judges age as of that slot.
+    slot_dt = datetime.strptime(slot, "%Y-%m-%d-%H").replace(tzinfo=_KST)
+    cutoff = slot_dt - timedelta(days=CYCLE_MAX_AGE_DAYS)
+    stale = [a for a in get_unprocessed(category=category) if article_ts(a) < cutoff]
+    if stale:
+        mark_processed([a["guid"] for a in stale])
+        logger.warning("[%s] retired %d article(s) older than %d days unanalyzed",
+                       category, len(stale), CYCLE_MAX_AGE_DAYS)
+
+    # Collapse re-reported stories so the CYCLE_MAX_ARTICLES cap is spent
     # on distinct events, not on outlets re-filing what a previous cycle (or an
     # earlier article in this batch) already covers. Fail-open: a dedup error
     # must never cost a cycle — worst case the run just sees duplicates again.

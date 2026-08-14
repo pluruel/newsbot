@@ -559,6 +559,30 @@ def test_run_cycle_caps_batch_size(tmp_path):
     assert len(remaining) == 15
 
 
+def test_run_cycle_retires_stale_articles_unanalyzed(tmp_path):
+    """Articles older than CYCLE_MAX_AGE_DAYS at slot time are marked processed
+    without entering the input file — a stale backlog must not monopolize the
+    oldest-first cap. Age is judged against the slot, and RFC-822 dates parse."""
+    insert_article("fresh", "src", "fresh title", "u1",
+                   "2026-05-08T01:00:00Z", "body", category="tech")
+    insert_article("stale", "src", "stale title", "u2",
+                   "Mon, 20 Apr 2026 09:00:00 GMT", "body", category="tech")
+
+    seen_articles: list[list[dict]] = []
+
+    with patch("newsparser.scripts.run_cycle.run_claude",
+               side_effect=_fake_run_claude_writes_report), \
+         patch("newsparser.scripts.run_cycle.build_input_file",
+               side_effect=lambda s, c, articles=None: seen_articles.append(articles)), \
+         patch("newsparser.scripts.run_cycle.classify_article", return_value="tech"), \
+         patch("newsparser.scripts.run_cycle.send_long_message"):
+        script.main("2026-05-08-12")
+
+    assert [a["guid"] for a in seen_articles[0]] == ["fresh"]
+    # Retired, not deferred: the stale article must not resurface next cycle.
+    assert get_unprocessed(category="tech") == []
+
+
 def test_run_cycle_passes_same_articles_to_guids_and_input_file(tmp_path):
     """The guids file and the input file must describe the identical article set.
     Two independent get_unprocessed() calls can diverge when the poller inserts

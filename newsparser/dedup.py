@@ -17,10 +17,10 @@ full drop list.
 """
 import logging
 import re
-from datetime import datetime, timedelta, timezone
-from email.utils import parsedate_to_datetime
+from datetime import datetime, timedelta
 
 from newsparser.store.sqlite import (
+    article_ts,
     get_processed_since,
     get_unprocessed,
     init_db,
@@ -83,24 +83,6 @@ def _is_duplicate(a: frozenset, b: frozenset) -> bool:
             and (a <= b or b <= a))
 
 
-def _parse_ts(row: dict) -> datetime:
-    """Best-effort article timestamp. `published` is the raw feed string (ISO
-    or RFC-822 depending on the source); `fetched_at` is always our own ISO."""
-    for key in ("published", "fetched_at"):
-        raw = row.get(key)
-        if not raw:
-            continue
-        try:
-            ts = datetime.fromisoformat(raw)
-        except ValueError:
-            try:
-                ts = parsedate_to_datetime(raw)
-            except (ValueError, TypeError):
-                continue
-        return ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
-    return datetime.now(timezone.utc)
-
-
 def dedupe_pending(category: str) -> int:
     """Mark pending articles that duplicate another pending article — or one
     processed within the window — as processed. Returns how many were marked.
@@ -115,13 +97,13 @@ def dedupe_pending(category: str) -> int:
     if not pending:
         return 0
 
-    articles = [{**row, "ts": _parse_ts(row), "tokens": _tokenize(row["title"]),
+    articles = [{**row, "ts": article_ts(row), "tokens": _tokenize(row["title"]),
                  "frozen": False} for row in pending]
     # Stories analyzed in a recent cycle still absorb copies arriving now —
     # that inter-cycle re-reporting is the bulk of the duplication.
     since = (min(a["ts"] for a in articles) - timedelta(hours=WINDOW_HOURS)).isoformat()
     for row in get_processed_since(category, since):
-        articles.append({**row, "ts": _parse_ts(row), "tokens": _tokenize(row["title"]),
+        articles.append({**row, "ts": article_ts(row), "tokens": _tokenize(row["title"]),
                          "frozen": True})
     articles.sort(key=lambda a: a["ts"])
 
