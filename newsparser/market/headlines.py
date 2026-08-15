@@ -102,7 +102,8 @@ def select(display: str, interval: str, delta_label: str, window_label: str,
     prompt = _PROMPT.format(display=display, interval=interval, delta=delta_label,
                             window=window_label, k=MAX_PICKS, numbered=numbered)
     try:
-        raw = ask_haiku(prompt, _SYSTEM_PROMPT, _MAX_TOKENS, timeout=30)
+        raw = ask_haiku(prompt, _SYSTEM_PROMPT, _MAX_TOKENS, timeout=30,
+                        usage_tag="market_headlines")
     except (ClaudeError, RuntimeError, OSError) as exc:
         logger.warning("headline select failed (%s) — sending price line only", exc)
         return []

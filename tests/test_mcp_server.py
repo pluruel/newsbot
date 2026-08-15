@@ -239,3 +239,20 @@ def test_mcp_server_entrypoint_uses_stdio():
                     ):
                         return
     pytest.fail("mcp.run(transport='stdio') not found in mcp_server.py")
+
+
+def test_haiku_usage_reports_daily_rows_and_totals():
+    from newsparser.mcp_server import haiku_usage
+    from newsparser.store.sqlite import record_haiku_usage
+    record_haiku_usage("triage", 700, 10)
+    record_haiku_usage("triage", 300, 5)
+    record_haiku_usage("classify_query", 40, 2)
+    out = haiku_usage(days=1)
+    assert "triage: 2 calls · in 1,000 tok · out 15 tok" in out
+    assert "classify_query: 1 calls" in out
+    assert "Totals by tag:" in out
+
+
+def test_haiku_usage_empty():
+    from newsparser.mcp_server import haiku_usage
+    assert "No Haiku usage" in haiku_usage(days=1)

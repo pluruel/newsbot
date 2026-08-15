@@ -2,7 +2,7 @@ import re
 import sqlite3
 import os
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Generator
@@ -58,10 +58,20 @@ def init_db() -> None:
                 consecutive_failures INTEGER NOT NULL DEFAULT 0,
                 last_error           TEXT
             );
+            CREATE TABLE IF NOT EXISTS haiku_usage (
+                day           TEXT NOT NULL,
+                tag           TEXT NOT NULL,
+                calls         INTEGER NOT NULL DEFAULT 0,
+                input_tokens  INTEGER NOT NULL DEFAULT 0,
+                output_tokens INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (day, tag)
+            );
         """)
         # Idempotent column additions. SQLite raises OperationalError if column exists.
         for ddl in ("ALTER TABLE pending_articles ADD COLUMN category TEXT",
-                    "ALTER TABLE pending_articles ADD COLUMN duplicate_of TEXT"):
+                    "ALTER TABLE pending_articles ADD COLUMN duplicate_of TEXT",
+                    "ALTER TABLE pending_articles ADD COLUMN bucket TEXT",
+                    "ALTER TABLE pending_articles ADD COLUMN salience REAL"):
             try:
                 conn.execute(ddl)
                 conn.commit()
@@ -280,6 +290,56 @@ def update_category(guid: str, category: str) -> None:
         conn.execute(
             "UPDATE pending_articles SET category = ? WHERE guid = ?",
             (category, guid),
+        )
+
+
+def get_untriaged(limit: int) -> list[dict]:
+    """Unprocessed rows with no triage bucket yet, oldest first — input for
+    the poller's triage pass and the cycle-time backstop."""
+    with _connection() as conn:
+        rows = conn.execute(
+            "SELECT * FROM pending_articles WHERE processed = 0 AND bucket IS NULL "
+            "ORDER BY COALESCE(published, fetched_at) LIMIT ?",
+            (limit,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def record_haiku_usage(tag: str, input_tokens: int, output_tokens: int) -> None:
+    """Accumulate one Haiku call's token usage into the per-(UTC day, tag)
+    counters — the cost record for per-article call sites like triage."""
+    day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    with _connection() as conn:
+        conn.execute(
+            """INSERT INTO haiku_usage (day, tag, calls, input_tokens, output_tokens)
+               VALUES (?, ?, 1, ?, ?)
+               ON CONFLICT(day, tag) DO UPDATE SET
+                 calls = calls + 1,
+                 input_tokens = input_tokens + excluded.input_tokens,
+                 output_tokens = output_tokens + excluded.output_tokens""",
+            (day, tag, input_tokens, output_tokens),
+        )
+
+
+def get_haiku_usage(days: int = 7) -> list[dict]:
+    """Recent per-(day, tag) Haiku token totals, newest first."""
+    since = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d")
+    with _connection() as conn:
+        rows = conn.execute(
+            "SELECT * FROM haiku_usage WHERE day >= ? ORDER BY day DESC, tag",
+            (since,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def update_triage(guid: str, category: str, bucket: str, salience: float) -> None:
+    """Record one triage verdict. Sets category too: triage supersedes both
+    the source-config hint and the old category-only classifier."""
+    with _connection() as conn:
+        conn.execute(
+            "UPDATE pending_articles SET category = ?, bucket = ?, salience = ? "
+            "WHERE guid = ?",
+            (category, bucket, salience, guid),
         )
 
 

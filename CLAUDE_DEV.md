@@ -11,6 +11,24 @@ Context for working on this codebase with Claude Code.
   - Why the exception: a `claude -p` round trip is 5-8s regardless of prompt size — each one prefills ~21k tokens of Claude Code scaffolding and spends 200-1100 output tokens thinking before emitting one word, and no CLI flag disables either (`--effort low` does not move it). The same call over `/v1/messages` is ~0.9s. The tracker paid this twice serially before the user's answer even started.
   - `ask_haiku` raises `ClaudeError` — the same type `runner.py` raises — so call sites keep one `except (ClaudeError, RuntimeError, OSError)` fallback whichever path they use.
   - Auth reuses the CLI's own `CLAUDE_CODE_OAUTH_TOKEN`, which authenticates against `/v1/messages` as `Authorization: Bearer` (the SDK's `auth_token=`) but **401s as `x-api-key`**. `ANTHROPIC_API_KEY` overrides it when a host has a real key. No new secret to provision.
+  - **Every `ask_haiku` call site passes `usage_tag=`** — usage accumulates in the
+    `haiku_usage` table (per UTC day × tag) and is exposed by the `haiku_usage` MCP tool.
+    The tag list is *enumerated by hand in two places* — `mcp_server.py`'s `haiku_usage`
+    docstring and `CLAUDE.md`'s MCP list — so adding/renaming a call site means updating
+    both, or they drift silently (`classify_article` was missed once already). Current
+    tags: triage, classify_article, classify_query, market_headlines, graph_resolver,
+    tracker_depth. Note `classify_article` has no pipeline callers anymore
+    (`triage.triage_article` replaced it in `run_cycle`); it stays as a tested utility.
+  - **Article triage is `newsparser/triage.py`**: the bucket axis is fixed in code; weights
+    are runtime state at `workspace/me/triage_weights_{category}.json`, written weekly by
+    `/reflect` (absent file → 1.0 per bucket, i.e. pure salience ranking). Haiku returns
+    only `(bucket, salience)`; the score `weight × salience` is multiplied in Python at
+    cycle selection time. **Keep it that way** — putting weights into the prompt would make
+    model behavior shift with every weekly refresh and lose retroactive re-scoring of the
+    pending queue. The poller tags per pass (row cap + wall-clock budget, after alert
+    handling); every failure is fail-open (untriaged rows score `DEFAULT_SCORE` and stay
+    queued). `/reflect` can't run the module (no Bash in its tool policy), so
+    `run_reflect.py` snapshots the axis to `workspace/me/triage-buckets.json` pre-run.
   - **`ask_haiku` pins `max_retries=0`.** The SDK defaults to 2, which would turn `timeout` into a per-attempt bound instead of the wall-clock ceiling `run_claude`'s `threading.Timer` kill gave every call site — and timeouts are themselves retryable (`APITimeoutError` subclasses `APIConnectionError`). It also compounds: `resolver.py` and `scripts/audit_duplicates.py` already wrap their call in a 3-attempt backoff loop, so the default would make those 9 HTTP requests and stretch the resolver's worst case from ~183s to ~548s. Re-enable SDK retries only per call site, and divide the declared timeout when you do.
 - `CLAUDE.md` is auto-loaded by every `claude -p` call from the project root and acts as the system prompt — keep it minimal (role + style).
 - Slash command specs live in `.claude/commands/` (auto-loaded per `claude -p` call):

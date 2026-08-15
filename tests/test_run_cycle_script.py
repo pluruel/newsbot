@@ -6,8 +6,15 @@ from unittest.mock import patch
 import pytest
 
 from newsparser.store.sqlite import insert_article, get_unprocessed
+from newsparser.triage import TriageResult
 from newsparser.ignore import IgnoreList, IgnoreEntry
 import newsparser.scripts.run_cycle as script
+
+
+def _fake_triage(title, body, category_hint=None):
+    """Stand-in for the Haiku triage call: keep the category the article
+    was inserted with, fixed high salience so selection keeps everything."""
+    return TriageResult(category_hint or "tech", "기타기술", 0.9)
 
 
 @pytest.fixture(autouse=True)
@@ -72,7 +79,7 @@ def test_run_cycle_writes_guids_file_before_calling_run_claude(tmp_path):
 
     with patch("newsparser.scripts.run_cycle.run_claude", side_effect=fake_claude), \
          patch("newsparser.scripts.run_cycle.build_input_file"), \
-         patch("newsparser.scripts.run_cycle.classify_article", return_value="tech"), \
+         patch("newsparser.triage.triage_article", side_effect=_fake_triage), \
          patch("newsparser.scripts.run_cycle.send_long_message"):
         script.main("2026-05-08-12")
 
@@ -93,7 +100,7 @@ def test_run_cycle_retries_until_report_appears(tmp_path):
 
     with patch("newsparser.scripts.run_cycle.run_claude", side_effect=flaky_claude), \
          patch("newsparser.scripts.run_cycle.build_input_file"), \
-         patch("newsparser.scripts.run_cycle.classify_article", return_value="tech"), \
+         patch("newsparser.triage.triage_article", side_effect=_fake_triage), \
          patch("newsparser.scripts.run_cycle.send_long_message"):
         script.main("2026-05-08-12")
 
@@ -113,7 +120,7 @@ def test_run_cycle_keeps_articles_pending_when_no_report_after_all_attempts(tmp_
 
     with patch("newsparser.scripts.run_cycle.run_claude", side_effect=silent_claude), \
          patch("newsparser.scripts.run_cycle.build_input_file"), \
-         patch("newsparser.scripts.run_cycle.classify_article", return_value="tech"), \
+         patch("newsparser.triage.triage_article", side_effect=_fake_triage), \
          patch("newsparser.scripts.run_cycle.send_long_message", side_effect=lambda m: sent.append(m)):
         script.main("2026-05-08-12")
 
@@ -141,7 +148,7 @@ def test_run_cycle_retries_on_claude_error(tmp_path):
 
     with patch("newsparser.scripts.run_cycle.run_claude", side_effect=crashy_claude), \
          patch("newsparser.scripts.run_cycle.build_input_file"), \
-         patch("newsparser.scripts.run_cycle.classify_article", return_value="tech"), \
+         patch("newsparser.triage.triage_article", side_effect=_fake_triage), \
          patch("newsparser.scripts.run_cycle.send_long_message"):
         script.main("2026-05-08-12")
 
@@ -156,7 +163,7 @@ def test_run_cycle_sends_terse_importance_list(tmp_path):
 
     with patch("newsparser.scripts.run_cycle.run_claude", side_effect=_fake_run_claude_writes_report), \
          patch("newsparser.scripts.run_cycle.build_input_file"), \
-         patch("newsparser.scripts.run_cycle.classify_article", return_value="tech"), \
+         patch("newsparser.triage.triage_article", side_effect=_fake_triage), \
          patch("newsparser.scripts.run_cycle.send_long_message", side_effect=lambda m: sent.append(m)):
         script.main("2026-05-08-12")
 
@@ -186,7 +193,7 @@ def test_run_cycle_renders_from_file_ignoring_stdout(tmp_path):
 
     with patch("newsparser.scripts.run_cycle.run_claude", side_effect=fake_garbage_stdout), \
          patch("newsparser.scripts.run_cycle.build_input_file"), \
-         patch("newsparser.scripts.run_cycle.classify_article", return_value="tech"), \
+         patch("newsparser.triage.triage_article", side_effect=_fake_triage), \
          patch("newsparser.scripts.run_cycle.send_long_message", side_effect=lambda m: sent.append(m)):
         script.main("2026-05-08-12")
 
@@ -227,7 +234,7 @@ def test_run_cycle_drops_ignored_headline_from_telegram(tmp_path):
     sent: list[str] = []
     with patch("newsparser.scripts.run_cycle.run_claude", side_effect=fake_claude), \
          patch("newsparser.scripts.run_cycle.build_input_file"), \
-         patch("newsparser.scripts.run_cycle.classify_article", return_value="tech"), \
+         patch("newsparser.triage.triage_article", side_effect=_fake_triage), \
          patch("newsparser.scripts.run_cycle.send_long_message", side_effect=lambda m: sent.append(m)):
         script.main("2026-05-08-12")
 
@@ -407,11 +414,13 @@ def test_run_cycle_warns_when_report_has_items_but_render_empty(tmp_path, caplog
     with caplog.at_level(logging.WARNING), \
          patch("newsparser.scripts.run_cycle.run_claude", side_effect=fake_claude), \
          patch("newsparser.scripts.run_cycle.build_input_file"), \
-         patch("newsparser.scripts.run_cycle.classify_article", return_value="tech"), \
+         patch("newsparser.triage.triage_article", side_effect=_fake_triage), \
          patch("newsparser.scripts.run_cycle.send_long_message", side_effect=lambda m: sent.append(m)):
         script.main("2026-05-08-12")
 
-    assert sent == ["[TECH]\n새 소식 없음"]
+    assert len(sent) == 1
+    assert sent[0].startswith("[TECH]\n새 소식 없음")
+    assert "트리아지: 후보 1건" in sent[0]
     assert any("format drift" in r.getMessage() for r in caplog.records)
 
 
@@ -427,7 +436,7 @@ def test_run_cycle_skips_empty_category(tmp_path):
 
     with patch("newsparser.scripts.run_cycle.run_claude", side_effect=fake_claude), \
          patch("newsparser.scripts.run_cycle.build_input_file"), \
-         patch("newsparser.scripts.run_cycle.classify_article", return_value="tech"), \
+         patch("newsparser.triage.triage_article", side_effect=_fake_triage), \
          patch("newsparser.scripts.run_cycle.send_long_message"):
         script.main("2026-05-08-12")
 
@@ -452,7 +461,7 @@ def test_run_cycle_kill_aborts_remaining_categories(tmp_path):
 
     with patch("newsparser.scripts.run_cycle.run_claude", side_effect=fake_claude), \
          patch("newsparser.scripts.run_cycle.build_input_file"), \
-         patch("newsparser.scripts.run_cycle.classify_article", return_value="tech"), \
+         patch("newsparser.triage.triage_article", side_effect=_fake_triage), \
          patch("newsparser.scripts.run_cycle.send_long_message"), \
          pytest.raises(ClaudeKilled):
         script.main("2026-05-08-12")
@@ -475,7 +484,7 @@ def test_run_cycle_category_error_doesnt_stop_other(tmp_path):
 
     with patch("newsparser.scripts.run_cycle.run_claude", side_effect=fake_claude), \
          patch("newsparser.scripts.run_cycle.build_input_file"), \
-         patch("newsparser.scripts.run_cycle.classify_article", return_value="markets"), \
+         patch("newsparser.triage.triage_article", side_effect=_fake_triage), \
          patch("newsparser.scripts.run_cycle.send_long_message", side_effect=lambda m: sent.append(m)):
         script.main("2026-05-08-12")
 
@@ -546,7 +555,7 @@ def test_run_cycle_caps_batch_size(tmp_path):
                side_effect=_fake_run_claude_writes_report), \
          patch("newsparser.scripts.run_cycle.build_input_file",
                side_effect=lambda s, c, articles=None: seen_articles.append(articles)), \
-         patch("newsparser.scripts.run_cycle.classify_article", return_value="tech"), \
+         patch("newsparser.triage.triage_article", side_effect=_fake_triage), \
          patch("newsparser.scripts.run_cycle.send_long_message"):
         script.main("2026-05-08-12")
 
@@ -574,7 +583,7 @@ def test_run_cycle_retires_stale_articles_unanalyzed(tmp_path):
                side_effect=_fake_run_claude_writes_report), \
          patch("newsparser.scripts.run_cycle.build_input_file",
                side_effect=lambda s, c, articles=None: seen_articles.append(articles)), \
-         patch("newsparser.scripts.run_cycle.classify_article", return_value="tech"), \
+         patch("newsparser.triage.triage_article", side_effect=_fake_triage), \
          patch("newsparser.scripts.run_cycle.send_long_message"):
         script.main("2026-05-08-12")
 
@@ -607,7 +616,7 @@ def test_run_cycle_passes_same_articles_to_guids_and_input_file(tmp_path):
 
     with patch("newsparser.scripts.run_cycle.run_claude", side_effect=fake_claude), \
          patch("newsparser.scripts.run_cycle.build_input_file", side_effect=fake_build), \
-         patch("newsparser.scripts.run_cycle.classify_article", return_value="tech"), \
+         patch("newsparser.triage.triage_article", side_effect=_fake_triage), \
          patch("newsparser.scripts.run_cycle.send_long_message"):
         script.main("2026-05-08-12")
 
@@ -628,7 +637,7 @@ def test_run_cycle_records_category_failure_in_daily_log(tmp_path):
 
     with patch("newsparser.scripts.run_cycle.run_claude", side_effect=fake_claude), \
          patch("newsparser.scripts.run_cycle.build_input_file"), \
-         patch("newsparser.scripts.run_cycle.classify_article", return_value="tech"), \
+         patch("newsparser.triage.triage_article", side_effect=_fake_triage), \
          patch("newsparser.scripts.run_cycle.send_long_message"):
         script.main("2026-05-08-12")
 

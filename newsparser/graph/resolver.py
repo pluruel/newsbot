@@ -394,7 +394,8 @@ def _run_claude_with_retry(prompt: str) -> str | None:
     last_exc: Exception | None = None
     for attempt in range(_RETRIES):
         try:
-            return ask_haiku(prompt, _SYSTEM_PROMPT, _MAX_TOKENS, timeout=_HAIKU_TIMEOUT)
+            return ask_haiku(prompt, _SYSTEM_PROMPT, _MAX_TOKENS, timeout=_HAIKU_TIMEOUT,
+                             usage_tag="graph_resolver")
         except (ClaudeError, RuntimeError, OSError) as exc:
             last_exc = exc
             if attempt == _RETRIES - 1:
