@@ -58,7 +58,8 @@ def classify_article(title: str, body: str | None) -> str:
     body_excerpt = (body or "")[:_BODY_EXCERPT_CHARS]
     prompt = _ARTICLE_PROMPT.format(title=title, n=_BODY_EXCERPT_CHARS, body=body_excerpt)
     try:
-        raw = ask_haiku(prompt, _CLASSIFIER_SYSTEM_PROMPT, _MAX_TOKENS, timeout=15)
+        raw = ask_haiku(prompt, _CLASSIFIER_SYSTEM_PROMPT, _MAX_TOKENS, timeout=15,
+                        usage_tag="classify_article")
     except (ClaudeError, RuntimeError, OSError) as exc:
         logger.warning("classify_article failed (%s); defaulting to 'markets'", exc)
         return "markets"
@@ -77,7 +78,8 @@ def classify_query(query: str, history: list[dict] | None = None) -> str:
     parts.append(f"쿼리: {query}")
     prompt = "".join(parts)
     try:
-        raw = ask_haiku(prompt, _CLASSIFIER_SYSTEM_PROMPT, _MAX_TOKENS, timeout=15)
+        raw = ask_haiku(prompt, _CLASSIFIER_SYSTEM_PROMPT, _MAX_TOKENS, timeout=15,
+                        usage_tag="classify_query")
     except (ClaudeError, RuntimeError, OSError) as exc:
         logger.warning("classify_query failed (%s); defaulting to 'both'", exc)
         return "both"

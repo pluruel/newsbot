@@ -321,6 +321,35 @@ def search_articles(keyword: str, category: str | None = None, n: int = 5) -> st
     return "\n".join(out)
 
 
+@mcp.tool()
+def haiku_usage(days: int = 7) -> str:
+    """Token usage of the direct-API Haiku call sites (triage, classify_query,
+    market_headlines, graph_resolver, tracker_depth), aggregated per UTC day and
+    tag: call count, input tokens, output tokens. Returns daily rows plus
+    per-tag totals for the window. Use when the user asks how many tokens or
+    how much cost the Haiku classifiers are consuming."""
+    rows = _sqlite_store.get_haiku_usage(days=days)
+    if not rows:
+        return f"No Haiku usage recorded in the last {days} day(s)."
+    out: list[str] = [f"Haiku usage, last {days} day(s) (UTC days):"]
+    for r in rows:
+        out.append(
+            f"- {r['day']} {r['tag']}: {r['calls']} calls · "
+            f"in {r['input_tokens']:,} tok · out {r['output_tokens']:,} tok"
+        )
+    totals: dict[str, list[int]] = {}
+    for r in rows:
+        t = totals.setdefault(r["tag"], [0, 0, 0])
+        t[0] += r["calls"]
+        t[1] += r["input_tokens"]
+        t[2] += r["output_tokens"]
+    out.append("")
+    out.append("Totals by tag:")
+    for tag, (c, i, o) in sorted(totals.items()):
+        out.append(f"- {tag}: {c} calls · in {i:,} tok · out {o:,} tok")
+    return "\n".join(out)
+
+
 # --- Job tools ---------------------------------------------------------------
 # Background jobs (cycle/weekly/reflect) run inside the dispatcher process; it
 # mirrors their state to workspace/jobs.json (see bots/core/jobs.py). These tools

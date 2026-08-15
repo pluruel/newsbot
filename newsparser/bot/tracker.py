@@ -97,6 +97,7 @@ def _needed_history_depth(query: str, history: list[dict], max_depth: int) -> in
             f"Reply with only a single integer between 0 and {max_depth}. No other text.",
             _DEPTH_MAX_TOKENS,
             timeout=30,
+            usage_tag="tracker_depth",
         )
         token = result.strip().split()[0].strip(".,!?") if result.strip() else "1"
         n = int(token)
