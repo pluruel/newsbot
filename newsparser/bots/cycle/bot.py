@@ -16,7 +16,7 @@ async def run(ctx: Context) -> None:
 
 BOT = Bot(
     name="cycle",
-    triggers=[Cron("0 0,3,6,10,12,15,18,21 * * *", tz="Asia/Seoul")],
+    triggers=[Cron("0 0,3,6,9,12,15,18,21 * * *", tz="Asia/Seoul")],
     run=run,
     background=True,
 )

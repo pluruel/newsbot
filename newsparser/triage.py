@@ -8,7 +8,8 @@ per bucket, so ranking degrades to pure salience order and the pipeline never
 depends on reflect having run.
 
 Scoring is deliberately split: Haiku judges (bucket, salience) only; the final
-score ``weight × salience`` is computed in Python at selection time. The
+score ``weight × salience`` (ranked with a recency decay on top) is computed
+in Python at selection time. The
 prompt therefore never changes when weights do, weight updates apply
 retroactively to everything already triaged, and a cut can always be
 decomposed into "which bucket" vs "how salient" vs "what weight".
@@ -18,9 +19,11 @@ Run ``python3 -m newsparser.triage`` to print the bucket axis as JSON — the
 """
 import json
 import logging
+import math
 import os
 import re
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 from newsparser.claude.haiku import ask_haiku
@@ -80,6 +83,17 @@ DEFAULT_SCORE = 0.5
 # Articles scoring below this at selection time are retired untriaged-into-cycle
 # (recorded, searchable, absorbed by dedup — just never analyzed).
 THRESHOLD = float(os.environ.get("TRIAGE_THRESHOLD", "0.2"))
+
+# Recency boost at ranking time: fresh articles keep their full score, older
+# ones decay toward RECENCY_FLOOR with this half-life. Applied only to the
+# rank order (who wins the cap), never to the threshold cut — being old alone
+# must not retire an article early; the cycle's age-out already bounds that.
+# Age is quantized to RECENCY_STEP_HOURS (≈ one cycle window: 8 cycles/day)
+# before the decay, so articles from the same cycle window share a factor and
+# compete on raw score alone; the factor drops only across cycle boundaries.
+RECENCY_HALF_LIFE_HOURS = float(os.environ.get("TRIAGE_RECENCY_HALF_LIFE_HOURS", "24"))
+RECENCY_FLOOR = float(os.environ.get("TRIAGE_RECENCY_FLOOR", "0.5"))
+RECENCY_STEP_HOURS = float(os.environ.get("TRIAGE_RECENCY_STEP_HOURS", "3"))
 
 _MAX_TOKENS = 16
 _BODY_EXCERPT_CHARS = 500
@@ -197,22 +211,35 @@ def article_score(row: dict, weights: dict[str, float]) -> float:
     return weights.get(bucket, 1.0) * float(salience)
 
 
+def recency_factor(row: dict, now: datetime | None = None) -> float:
+    """1.0 for the current cycle window, stepping down per RECENCY_STEP_HOURS
+    with RECENCY_HALF_LIFE_HOURS decay toward RECENCY_FLOOR. Future-dated rows
+    clamp to 1.0."""
+    now = now or datetime.now(timezone.utc)
+    age_hours = max(0.0, (now - article_ts(row)).total_seconds() / 3600)
+    stepped = math.floor(age_hours / RECENCY_STEP_HOURS) * RECENCY_STEP_HOURS
+    return RECENCY_FLOOR + (1.0 - RECENCY_FLOOR) * 0.5 ** (stepped / RECENCY_HALF_LIFE_HOURS)
+
+
 def select(
     articles: list[dict],
     weights: dict[str, float],
     cap: int,
     threshold: float = THRESHOLD,
+    now: datetime | None = None,
 ) -> tuple[list[dict], list[dict], int]:
     """Split candidates into (selected, cut, n_passed).
 
     ``cut`` scored below ``threshold`` — retire immediately. Of the rest
-    (``n_passed``), the top ``cap`` by (score desc, published desc) are
-    ``selected``; the remainder stays pending and competes again next cycle.
+    (``n_passed``), the top ``cap`` by (score × recency desc, published desc)
+    are ``selected``; the remainder stays pending and competes again next
+    cycle. The threshold cut uses the raw score — recency only reorders.
     """
+    now = now or datetime.now(timezone.utc)
     scored = [(article_score(a, weights), a) for a in articles]
     cut = [a for s, a in scored if s < threshold]
-    passed = [(s, a) for s, a in scored if s >= threshold]
-    # Score desc, ties broken by recency (newest first) via stable sort.
+    passed = [(s * recency_factor(a, now), a) for s, a in scored if s >= threshold]
+    # Rank score desc, ties broken by recency (newest first) via stable sort.
     passed.sort(key=lambda sa: article_ts(sa[1]), reverse=True)
     passed.sort(key=lambda sa: sa[0], reverse=True)
     selected = [a for _, a in passed[:cap]]
