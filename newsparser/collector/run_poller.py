@@ -9,7 +9,10 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from newsparser.store.sqlite import init_db, get_recent, hourly_counts, mark_alerted
+from newsparser.store.sqlite import (
+    init_db, get_recent, get_untriaged, hourly_counts, mark_alerted, update_triage,
+)
+from newsparser.triage import triage_article
 from newsparser.collector.sources import load_sources
 from newsparser.collector.poller import poll_all
 from newsparser.collector.alert import detect_convergence, detect_spike
@@ -43,6 +46,13 @@ BASELINE: dict[str, float] = {}  # accumulated at runtime
 # source to detect_spike's 5.0 default — busy sources tripped false spikes
 # during the ~20min the EMA needed to converge.
 BASELINE_SEED_DAYS = 14
+# Triage runs last in each poll pass (alerts must not wait behind Haiku calls)
+# and is bounded twice: by row count, and by wall-clock — 120 rows at the
+# usual ~1.5s/call fits a 300s interval, but a degraded API at the 15s call
+# timeout would otherwise hold one pass for 30 minutes. Leftovers just wait
+# for the next pass; the cycle-time backstop catches anything still untriaged.
+TRIAGE_MAX_PER_PASS = int(os.environ.get("TRIAGE_MAX_PER_PASS", "120"))
+TRIAGE_TIME_BUDGET_S = int(os.environ.get("TRIAGE_TIME_BUDGET_S", "180"))
 _spike_alerted_at: dict[str, datetime] = {}
 MARKET_PULSE_ENABLED = os.environ.get("MARKET_PULSE", "1") != "0"
 
@@ -97,6 +107,29 @@ def _seed_baseline() -> None:
         # floor 1.0: median 0이면 임계가 0이 되어 기사 1건에도 스파이크가 뜬다
         BASELINE[source] = max(statistics.median(counts), 1.0)
     logger.info("Seeded spike baseline for %d sources (hour=%sZ)", len(BASELINE), hour)
+
+
+def _triage_pass() -> None:
+    """Tag untriaged articles with (category, bucket, salience) via Haiku.
+
+    Fail-open at every level: a failed or unparseable call leaves the row
+    bucket-NULL (retried next pass, scored DEFAULT_SCORE at selection), and
+    the caller wraps the whole pass so triage can never take down ingest."""
+    rows = get_untriaged(limit=TRIAGE_MAX_PER_PASS)
+    if not rows:
+        return
+    deadline = time.monotonic() + TRIAGE_TIME_BUDGET_S
+    done = 0
+    for row in rows:
+        if time.monotonic() > deadline:
+            logger.warning("triage pass hit %ds budget after %d/%d rows",
+                           TRIAGE_TIME_BUDGET_S, done, len(rows))
+            break
+        result = triage_article(row["title"], row["body"], category_hint=row["category"])
+        if result is not None:
+            update_triage(row["guid"], result.category, result.bucket, result.salience)
+        done += 1
+    logger.info("Triage pass: %d/%d rows tagged", done, len(rows))
 
 
 def run() -> None:
@@ -158,6 +191,12 @@ def run() -> None:
                                     + count * BASELINE_ALPHA)
             else:
                 BASELINE[source] = count
+
+        # 트리아지 태깅 (알림 처리 뒤 — Haiku 지연이 breaking 감지를 막지 않게)
+        try:
+            _triage_pass()
+        except Exception as exc:
+            logger.error("Triage pass failed: %s", exc, exc_info=True)
 
         time.sleep(POLL_INTERVAL)
 

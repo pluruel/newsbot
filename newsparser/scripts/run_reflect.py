@@ -11,6 +11,7 @@ from newsparser.claude.policy import TAINTED_FILE_TOOLS
 from newsparser.claude.runner import run_claude
 from newsparser.scheduler.demand import write_demand_digest
 from newsparser.scheduler.workspace import ensure_workspace
+from newsparser import triage
 
 logger = logging.getLogger(__name__)
 _KST = ZoneInfo("Asia/Seoul")
@@ -24,6 +25,10 @@ def main(date: str | None = None) -> None:
     # Snapshot the user's actual query demand into a file the /reflect spec reads
     # (the run has no MCP/DB access — see scheduler/demand.py).
     write_demand_digest(workspace, date, days=_DEMAND_DAYS)
+    # Same pattern for the triage bucket axis: the spec derives bucket weights
+    # but must not invent bucket names, and the run has no Bash to ask the
+    # module — snapshot the axis to workspace/me/triage-buckets.json.
+    triage.write_axis_snapshot(workspace)
     # Failures propagate to the JobManager, which notifies ❌ (or 🛑 on kill) —
     # swallowing them here would make the job look successful.
     # Cycle reports are news-derived (taint propagates) — file tools only.

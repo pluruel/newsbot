@@ -14,7 +14,7 @@ from newsparser.bot.sender import send_long_message
 from newsparser.claude.input_builder import build_input_file
 from newsparser.claude.policy import CYCLE_TOOLS
 from newsparser.claude.runner import ClaudeError, ClaudeKilled, run_claude
-from newsparser.classifier import classify_article, CATEGORIES
+from newsparser.classifier import CATEGORIES
 from newsparser.dedup import dedupe_pending
 from newsparser.market import snapshot as market_snapshot
 from newsparser.market import store as market_store
@@ -22,11 +22,12 @@ from newsparser.scripts import apply_graph
 from newsparser.store.sqlite import (
     article_ts,
     get_failing_feeds,
-    get_unclassified,
     get_unprocessed,
+    get_untriaged,
     mark_processed,
-    update_category,
+    update_triage,
 )
+from newsparser import triage
 from newsparser.scheduler.workspace import ensure_workspace
 from newsparser.ignore import load_ignore
 
@@ -238,18 +239,27 @@ def _render_telegram(report_text: str, ignore, label: str = "") -> list[str]:
     return out
 
 
-def _classify_pending() -> None:
-    rows = get_unclassified()
+# Backstop cap: the poller normally keeps the untriaged set near zero, so a
+# large batch here means the poller was down — bound the serial Haiku calls
+# so a cycle isn't delayed indefinitely; the rest score DEFAULT_SCORE and get
+# tagged by later poller passes.
+CYCLE_TRIAGE_BACKSTOP = 300
+
+
+def _triage_pending() -> None:
+    rows = get_untriaged(limit=CYCLE_TRIAGE_BACKSTOP)
     if not rows:
         return
-    logger.info("Classifying %d untagged articles", len(rows))
+    logger.info("Triaging %d untagged articles (cycle backstop)", len(rows))
     for r in rows:
         try:
-            cat = classify_article(r["title"], r["body"])
+            result = triage.triage_article(r["title"], r["body"],
+                                           category_hint=r["category"])
         except Exception as exc:
-            logger.warning("Classifier error on %s: %s — defaulting to markets", r["guid"], exc)
-            cat = "markets"
-        update_category(r["guid"], cat)
+            logger.warning("Triage error on %s: %s — leaving untriaged", r["guid"], exc)
+            continue
+        if result is not None:
+            update_triage(r["guid"], result.category, result.bucket, result.salience)
 
 
 def _append_daily_log(workspace: Path, slot: str, message: str) -> None:
@@ -283,17 +293,31 @@ def _run_for_category(slot: str, category: str, workspace: Path) -> None:
     except Exception as exc:
         logger.warning("[%s] dedup failed — running cycle without it: %s", category, exc)
 
-    articles = get_unprocessed(category=category)
-    if not articles:
+    candidates = get_unprocessed(category=category)
+    if not candidates:
         logger.info("No unprocessed articles for category=%s slot=%s", category, slot)
         return
 
-    backlog = len(articles)
-    if backlog > CYCLE_MAX_ARTICLES:
-        articles = articles[:CYCLE_MAX_ARTICLES]
-        logger.warning("[%s] backlog of %d unprocessed articles — capping this run at "
-                       "%d (oldest first); the rest drain next cycle",
-                       category, backlog, CYCLE_MAX_ARTICLES)
+    # Triage selection: score = bucket_weight × salience, computed here (not in
+    # the model) so the weekly weight refresh applies retroactively to the whole
+    # queue. Below-threshold rows are retired immediately — recorded and
+    # searchable, absorbed by dedup, just never analyzed. Above-threshold rows
+    # that miss the cap stay pending and compete again next cycle by score;
+    # the age-out above still bounds how long they can wait.
+    weights = triage.load_weights(category)
+    articles, cut, n_passed = triage.select(candidates, weights, CYCLE_MAX_ARTICLES)
+    if cut:
+        mark_processed([a["guid"] for a in cut])
+        logger.info("[%s] triage cut %d article(s) below threshold %.2f",
+                    category, len(cut), triage.THRESHOLD)
+    triage_stats = (f"트리아지: 후보 {len(candidates)}건 · threshold {triage.THRESHOLD:.2f} "
+                    f"통과 {n_passed}건 · 상위 {len(articles)}건 분석 · 컷 {len(cut)}건")
+    logger.info("[%s] %s", category, triage_stats)
+    if not articles:
+        logger.info("[%s] every candidate fell below the triage threshold — no cycle run",
+                    category)
+        _append_daily_log(workspace, slot, f"cycle {category}-{slot} SKIP {triage_stats}")
+        return
 
     guids_path = workspace / "input" / category / f"{slot}-guids.txt"
     guids_path.parent.mkdir(parents=True, exist_ok=True)
@@ -383,14 +407,24 @@ def _run_for_category(slot: str, category: str, workspace: Path) -> None:
         lines = _render_telegram(report_text, ignore, label=f"{category}/{slot}")
         body = "\n".join(lines) if lines else "새 소식 없음"
         try:
-            send_long_message(f"[{category.upper()}]\n{body}")
+            send_long_message(f"[{category.upper()}]\n{body}\n\n{triage_stats}")
         except Exception as e:
             logger.error("Telegram send failed for %s/%s: %s", category, slot, e)
+        # Persist the coverage stats in the report too (after rendering, so the
+        # renderer never sees the line) — reflect reads these files and can use
+        # threshold-pass counts when it re-derives the bucket weights.
+        try:
+            with report_path.open("a", encoding="utf-8") as f:
+                f.write(f"\n\n{triage_stats}\n")
+        except OSError as exc:
+            logger.warning("[%s] could not append triage stats to report: %s",
+                           category, exc)
     else:
         logger.warning("[%s] no report file at %s — skipping telegram",
                        category, report_path)
 
-    _append_daily_log(workspace, slot, f"cycle {category}-{slot} OK articles={len(articles)}")
+    _append_daily_log(workspace, slot,
+                      f"cycle {category}-{slot} OK articles={len(articles)} | {triage_stats}")
 
 
 # ~1h of continuous failure at the poller's 300s cadence — long enough to
@@ -424,9 +458,9 @@ def main(slot: str | None = None) -> None:
     workspace = ensure_workspace()
 
     try:
-        _classify_pending()
+        _triage_pending()
     except Exception as exc:
-        logger.warning("classify_pending failed: %s", exc)
+        logger.warning("triage_pending failed: %s", exc)
 
     for category in CATEGORIES:
         try:

@@ -53,6 +53,7 @@ def ask_haiku(
     max_tokens: int,
     timeout: float = 30.0,
     model: str = HAIKU_MODEL,
+    usage_tag: str | None = None,
 ) -> str:
     """Run one tool-less Haiku turn and return its text.
 
@@ -64,6 +65,10 @@ def ask_haiku(
     Size `max_tokens` to the longest legitimate answer: a truncated reply comes
     back as ordinary text with no exception, so a caller's parser would see a
     short answer rather than an error.
+
+    `usage_tag` opts a call site into token accounting: the call's input/output
+    token counts are accumulated per (day, tag) in the haiku_usage table.
+    Recording is fail-open — an accounting error never fails the call.
 
     Raises ClaudeError on any API or transport failure.
     """
@@ -79,6 +84,18 @@ def ask_haiku(
         raise ClaudeError(f"haiku api error {exc.status_code} ({exc.type})") from exc
     except anthropic.APIError as exc:
         raise ClaudeError(f"haiku api failure: {exc}") from exc
+
+    if usage_tag is not None:
+        try:
+            # Local import: the store layer imports nothing from claude/, but
+            # keeping this out of module scope avoids widening haiku.py's
+            # import-time dependencies for the call sites that don't account.
+            from newsparser.store.sqlite import record_haiku_usage
+            record_haiku_usage(usage_tag,
+                               message.usage.input_tokens,
+                               message.usage.output_tokens)
+        except Exception as exc:
+            logger.warning("haiku usage recording failed (tag=%s): %s", usage_tag, exc)
 
     if message.stop_reason == "max_tokens":
         logger.warning(
