@@ -17,7 +17,7 @@ full drop list.
 """
 import logging
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from newsparser.store.sqlite import (
     article_ts,
@@ -101,7 +101,11 @@ def dedupe_pending(category: str) -> int:
                  "frozen": False} for row in pending]
     # Stories analyzed in a recent cycle still absorb copies arriving now —
     # that inter-cycle re-reporting is the bulk of the duplication.
-    since = (min(a["ts"] for a in articles) - timedelta(hours=WINDOW_HOURS)).isoformat()
+    # Normalized to UTC: `fetched_at` is always stored as a UTC ISO string and
+    # SQLite compares it lexicographically, so a since carrying a source's own
+    # offset (+09:00 for Korean feeds) would silently skew the window.
+    since = (min(a["ts"] for a in articles)
+             - timedelta(hours=WINDOW_HOURS)).astimezone(timezone.utc).isoformat()
     for row in get_processed_since(category, since):
         articles.append({**row, "ts": article_ts(row), "tokens": _tokenize(row["title"]),
                          "frozen": True})

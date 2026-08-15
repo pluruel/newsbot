@@ -12,10 +12,20 @@ T0 = datetime(2026, 8, 1, 9, 0, tzinfo=timezone.utc)
 
 
 def _insert(guid, title, *, body="x" * 100, category="markets",
-            hours=0, source="src"):
+            hours=0, source="src", published=None):
     insert_article(guid, source, title, f"https://e.x/{guid}",
-                   (T0 + timedelta(hours=hours)).isoformat(), body,
+                   published or (T0 + timedelta(hours=hours)).isoformat(), body,
                    category=category)
+
+
+def _set_fetched_at(guid, iso):
+    conn = _connect()
+    try:
+        conn.execute("UPDATE pending_articles SET fetched_at = ? WHERE guid = ?",
+                     (iso, guid))
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def _pending_guids(category="markets"):
@@ -106,6 +116,21 @@ def test_duplicate_of_recently_processed_dropped():
     _insert("a", "WHO Declares Ebola Outbreak a Global Health Emergency")
     mark_processed(["a"])
     _insert("b", "WHO Declares Ebola Outbreak a Global Health Emergency", hours=4)
+    assert dedupe_pending("markets") == 1
+    assert _pending_guids() == set()
+
+
+def test_anchor_found_when_published_carries_non_utc_offset():
+    """`since` must be UTC-normalized: `fetched_at` is stored as a UTC ISO
+    string and SQLite compares it lexicographically, so a since carrying a
+    Korean feed's +09:00 would skip anchors that are genuinely in-window."""
+    title = "Samsung to Build $17B Chip Plant in Taylor, Texas"
+    _insert("a", title, published="2026-08-01T08:00:00+09:00")
+    mark_processed(["a"])
+    # In-window in real time (since is 2026-07-30T00:00Z), but its digits sort
+    # below "2026-07-30T09:00:00+09:00" — the un-normalized since.
+    _set_fetched_at("a", "2026-07-30T05:00:00+00:00")
+    _insert("b", title, published="2026-08-01T09:00:00+09:00")
     assert dedupe_pending("markets") == 1
     assert _pending_guids() == set()
 
