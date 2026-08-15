@@ -298,14 +298,17 @@ def _run_for_category(slot: str, category: str, workspace: Path) -> None:
         logger.info("No unprocessed articles for category=%s slot=%s", category, slot)
         return
 
-    # Triage selection: score = bucket_weight × salience, computed here (not in
-    # the model) so the weekly weight refresh applies retroactively to the whole
-    # queue. Below-threshold rows are retired immediately — recorded and
+    # Triage selection: score = bucket_weight × salience (ranked with a recency
+    # decay on top), computed here (not in the model) so the weekly weight
+    # refresh applies retroactively to the whole queue. Below-threshold rows are retired immediately — recorded and
     # searchable, absorbed by dedup, just never analyzed. Above-threshold rows
     # that miss the cap stay pending and compete again next cycle by score;
     # the age-out above still bounds how long they can wait.
     weights = triage.load_weights(category)
-    articles, cut, n_passed = triage.select(candidates, weights, CYCLE_MAX_ARTICLES)
+    # now=slot_dt: like the age-out above, a catch-up run for an old slot
+    # judges recency as of that slot, not the wall clock.
+    articles, cut, n_passed = triage.select(candidates, weights, CYCLE_MAX_ARTICLES,
+                                            now=slot_dt)
     if cut:
         mark_processed([a["guid"] for a in cut])
         logger.info("[%s] triage cut %d article(s) below threshold %.2f",

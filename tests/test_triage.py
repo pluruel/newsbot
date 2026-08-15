@@ -1,4 +1,5 @@
 import json
+from datetime import datetime, timezone
 from unittest.mock import patch
 
 import pytest
@@ -20,6 +21,7 @@ from newsparser.triage import (
     _parse_response,
     article_score,
     load_weights,
+    recency_factor,
     select,
     triage_article,
 )
@@ -169,6 +171,52 @@ def test_select_orders_by_score_then_recency():
 def test_select_fail_open_rows_pass_default_threshold():
     selected, cut, n_passed = select([_row("untriaged")], {}, cap=5)
     assert selected and not cut
+
+
+# --- recency boost ---
+
+NOW = datetime(2026, 8, 15, 12, 0, tzinfo=timezone.utc)
+
+
+def test_recency_factor_fresh_is_one_and_decays_to_floor():
+    fresh = _row("f", published="2026-08-15T12:00:00+00:00")
+    day_old = _row("d", published="2026-08-14T12:00:00+00:00")
+    ancient = _row("a", published="2026-08-01T12:00:00+00:00")
+    future = _row("x", published="2026-08-16T12:00:00+00:00")
+    assert recency_factor(fresh, NOW) == 1.0
+    assert recency_factor(day_old, NOW) == pytest.approx(
+        triage.RECENCY_FLOOR + (1 - triage.RECENCY_FLOOR) * 0.5
+    )
+    assert recency_factor(ancient, NOW) == pytest.approx(triage.RECENCY_FLOOR, abs=1e-3)
+    assert recency_factor(future, NOW) == 1.0
+
+
+def test_recency_factor_is_discrete_per_cycle_window():
+    # Same 3h cycle window → identical factor; the step drops only at the
+    # window boundary.
+    in_window_a = _row("a", published="2026-08-15T11:00:00+00:00")  # 1h old
+    in_window_b = _row("b", published="2026-08-15T09:30:00+00:00")  # 2.5h old
+    next_window = _row("c", published="2026-08-15T08:30:00+00:00")  # 3.5h old
+    assert recency_factor(in_window_a, NOW) == recency_factor(in_window_b, NOW) == 1.0
+    assert recency_factor(next_window, NOW) < 1.0
+
+
+def test_select_recency_boost_lets_fresh_article_outrank_older_higher_salience():
+    articles = [
+        _row("old_high", "한국증시", 0.8, "2026-08-13T12:00:00+00:00"),
+        _row("new_mid", "환율", 0.6, "2026-08-15T11:00:00+00:00"),
+    ]
+    # old_high raw 0.8 decays two days (×~0.625 → ~0.5); new_mid ~0.6 wins.
+    selected, _, _ = select(articles, {}, cap=2, threshold=0.2, now=NOW)
+    assert [a["guid"] for a in selected] == ["new_mid", "old_high"]
+
+
+def test_select_threshold_cut_ignores_recency():
+    # Raw score 0.25 passes threshold 0.2 even though the decayed rank score
+    # (~0.125) would not — recency must never retire an article.
+    old = _row("old", "환율", 0.25, "2026-08-01T00:00:00+00:00")
+    selected, cut, n_passed = select([old], {}, cap=5, threshold=0.2, now=NOW)
+    assert selected == [old] and not cut and n_passed == 1
 
 
 # --- store roundtrip ---
