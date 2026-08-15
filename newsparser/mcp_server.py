@@ -323,11 +323,11 @@ def search_articles(keyword: str, category: str | None = None, n: int = 5) -> st
 
 @mcp.tool()
 def haiku_usage(days: int = 7) -> str:
-    """Token usage of the direct-API Haiku call sites (triage, classify_query,
-    market_headlines, graph_resolver, tracker_depth), aggregated per UTC day and
-    tag: call count, input tokens, output tokens. Returns daily rows plus
-    per-tag totals for the window. Use when the user asks how many tokens or
-    how much cost the Haiku classifiers are consuming."""
+    """Token usage of the direct-API Haiku call sites (triage, classify_article,
+    classify_query, market_headlines, graph_resolver, tracker_depth), aggregated
+    per UTC day and tag: call count, input tokens, output tokens. Returns daily
+    rows plus per-tag totals for the window. Use when the user asks how many
+    tokens or how much cost the Haiku classifiers are consuming."""
     rows = _sqlite_store.get_haiku_usage(days=days)
     if not rows:
         return f"No Haiku usage recorded in the last {days} day(s)."

@@ -34,6 +34,6 @@ When answering as the chat/tracker agent, these are available in addition to Bas
 - `classify_query(query)` — classifies a query as `tech`/`markets`/`both`.
 - `market_query(instruments, start, end, freq="1d")` — OHLCV tables for SPX/NDX/KOSPI/USDKRW/USDJPY/DXY/VIX/TNX; dates must be absolute, resolve relative expressions first.
 - `search_articles(keyword, category=None, n=5)` — keyword search over ingested articles; use when the user references a specific story.
-- `haiku_usage(days=7)` — per-UTC-day, per-tag token usage of the direct-API Haiku call sites (triage, classify_query, market_headlines, graph_resolver, tracker_depth); use for "분류기 토큰/비용 얼마 썼어" questions.
+- `haiku_usage(days=7)` — per-UTC-day, per-tag token usage of the direct-API Haiku call sites (triage, classify_article, classify_query, market_headlines, graph_resolver, tracker_depth); use for "분류기 토큰/비용 얼마 썼어" questions.
 - `job_status()` / `start_job(bot, chat_id=None)` / `kill_job(job_id)` — inspect/start/stop background bots (cycle, weekly, reflect, market_daily) via the dispatcher's file queue; `kill_job` needs user confirmation first.
 - `service_status()` / `restart_service(service)` / `tail_logs(service, n=50)` — status/restart/logs for `neo4j`, `poller`, `dispatcher` via the root-owned `newsbot-ops` script; prefer these over raw `docker`/`systemctl` via Bash. Restarting `dispatcher` kills any running background job — confirm with the user first.
