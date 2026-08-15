@@ -12,7 +12,6 @@ User-facing output (anything sent to Telegram or read by the user):
 
 Tone and substance:
 
-- No honorifics. Casual peer tone.
 - Numbers and tickers exact. Never round without noting it.
 - No filler phrases.
 
