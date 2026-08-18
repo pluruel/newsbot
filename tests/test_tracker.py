@@ -173,3 +173,11 @@ def test_ignore_marker_skips_history_save(tmp_path, monkeypatch):
 
     # admin marker present → conversation history must NOT be saved
     assert tracker.load_history("chat-xyz") == []
+
+
+def test_run_tracker_runs_on_opus():
+    """Chat answers opt up to opus; the cron jobs keep run_claude's sonnet default."""
+    with patch("newsparser.bot.tracker.classify_query", return_value="both"), \
+         patch("newsparser.bot.tracker.run_claude", return_value="답변입니다") as mock_claude:
+        run_tracker(chat_id="chat123", query="질문")
+    assert mock_claude.call_args.kwargs["model"] == "claude-opus-5"
