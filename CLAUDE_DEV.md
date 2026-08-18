@@ -34,6 +34,11 @@ Context for working on this codebase with Claude Code.
 - Slash command specs live in `.claude/commands/` (auto-loaded per `claude -p` call):
   - `.claude/commands/cycle.md` — `/cycle` analysis spec, invoked by `newsparser/scripts/run_cycle.py`.
 - The `/tracker` flow is different: `newsparser/bot/tracker.py` builds its prompt inline and uses MCP tools via `mcp.json`.
+- **YouTube links leave the Claude stack entirely.** A chat message containing a YouTube URL is routed by `newsparser/bots/tracker/bot.py` to `run_youtube` instead of `run_tracker`: Claude cannot watch a video, so `newsparser/gemini.py` sends the watch URL to Gemini on Vertex AI (the SDK's `client.interactions` + `VideoContent(uri=...)`, which takes a YouTube URL directly — no download, no upload). This is the only non-Anthropic model call in the system.
+  - Auth is a GCP service-account key at `gcp-key.json` in the project root (`GCP_KEY_FILE` overrides); the project comes from the key's `project_id`. The file is gitignored and dockerignored — it is never checked in. `GEMINI_MODEL` (default `gemini-3.7-flash`) and `GOOGLE_CLOUD_LOCATION` (default `global`) override the rest.
+  - **No fallback to Claude on failure.** Missing key, missing SDK, blocked video — all raise `GeminiError` and the bot reports it. A Claude answer here would be written without having seen the video, which is worse than an error.
+  - The summary is persisted through the same `_persist_exchange` the tracker uses, so a follow-up question ("그 영상 내용이 우리 사이클이랑 어떻게 엮여?") reaches Claude with the video already in history. That split is deliberate: the video summary stays uncontaminated by cycle reports, and the graph context arrives on the next turn.
+  - `PLAIN_KOREAN_STYLE` lives in `gemini.py` and is injected into both this system prompt and the tracker's Claude prompt — one constant so the two answer paths cannot drift into different voices.
 
 ---
 

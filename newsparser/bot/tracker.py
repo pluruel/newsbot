@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 from newsparser.claude.haiku import ask_haiku
 from newsparser.claude.runner import run_claude
 from newsparser.classifier import classify_query
+from newsparser.gemini import PLAIN_KOREAN_STYLE, summarize_youtube
 from newsparser.store import conversations as conv
 
 logger = logging.getLogger(__name__)
@@ -191,10 +192,7 @@ def run_tracker(chat_id: str, query: str) -> str:
         "ignore.md updated / interest events cleared / Conversation history cleared)를 답변에 "
         "반드시 그 형태 그대로 한 번 포함한다 — 이 문구로 관리 작업을 식별해 대화 기록에서 제외하기 "
         "때문이다. 편집을 하지 않았다면 이 문구들을 쓰지 않는다.\n\n"
-        "답변은 사용자에게 존댓말로 쓴다. 반말·평어체는 쓰지 않는다.\n"
-        "형식은 평문 대화체 문단으로만 한다. 마크다운 금지: 헤더(#), "
-        "볼드(**), 불릿(-/*), 표, 수평선(---) 모두 쓰지 않는다. "
-        "섹션 구분은 빈 줄로만 한다."
+        f"{PLAIN_KOREAN_STYLE}"
         f"{prev_context}\n\n"
         f"사용자 질문: {query}"
     )
@@ -207,6 +205,16 @@ def run_tracker(chat_id: str, query: str) -> str:
         permission_mode="bypassPermissions",
     )
 
+    _persist_exchange(chat_id, query, answer)
+    return answer
+
+
+def _persist_exchange(chat_id: str, query: str, answer: str) -> None:
+    """Record one user→assistant turn and mirror it into the graph.
+
+    Shared by every path that answers the user, so a YouTube summary lands in
+    the same history a follow-up question reads back.
+    """
     # Admin/workspace-edit answers are recorded with kind='admin' — kept for audit
     # but excluded from the conversational context that load_history returns.
     kind = "admin" if any(marker in answer for marker in _ADMIN_MARKERS) else "chat"
@@ -225,6 +233,21 @@ def run_tracker(chat_id: str, query: str) -> str:
             args=(chat_id, user_id, asst_id),
             daemon=True,
         ).start()
+
+
+def run_youtube(chat_id: str, query: str, url: str, instruction: str) -> str:
+    """Summarise a YouTube link with Gemini and record the turn.
+
+    Deliberately skips the tracker's MCP tools: the user asked for the video's
+    own content, and mixing in cycle reports and graph context muddies it. The
+    summary goes into history, so a follow-up question reaches the tracker with
+    the video already in context.
+
+    Raises GeminiError — the caller reports it rather than silently falling back
+    to a Claude answer written without having watched the video.
+    """
+    answer = summarize_youtube(url, instruction)
+    _persist_exchange(chat_id, query, answer)
     return answer
 
 

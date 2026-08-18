@@ -181,3 +181,47 @@ def test_run_tracker_runs_on_opus():
          patch("newsparser.bot.tracker.run_claude", return_value="답변입니다") as mock_claude:
         run_tracker(chat_id="chat123", query="질문")
     assert mock_claude.call_args.kwargs["model"] == "claude-opus-5"
+
+
+def test_run_youtube_saves_the_summary_to_history():
+    """A follow-up question must reach the tracker with the video in context."""
+    from newsparser.bot.tracker import run_youtube
+
+    with patch("newsparser.bot.tracker.summarize_youtube", return_value="영상 요약입니다"):
+        answer = run_youtube(
+            chat_id="chat123",
+            query="https://youtu.be/dQw4w9WgXcQ 요약해줘",
+            url="https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+            instruction="요약해줘",
+        )
+
+    assert answer == "영상 요약입니다"
+    history = load_history("chat123")
+    assert [m["role"] for m in history] == ["user", "assistant"]
+    assert history[1]["content"] == "영상 요약입니다"
+
+
+def test_run_youtube_does_not_invoke_claude():
+    """The video summary is Gemini's alone — no cycle reports mixed in."""
+    from newsparser.bot.tracker import run_youtube
+
+    with patch("newsparser.bot.tracker.summarize_youtube", return_value="요약"), \
+         patch("newsparser.bot.tracker.run_claude") as mock_claude:
+        run_youtube("c1", "link", "https://www.youtube.com/watch?v=dQw4w9WgXcQ", "")
+
+    mock_claude.assert_not_called()
+
+
+def test_tracker_prompt_uses_the_shared_style_constant():
+    from newsparser.gemini import PLAIN_KOREAN_STYLE
+    captured: dict = {}
+
+    def fake_run_claude(prompt, **kw):
+        captured["prompt"] = prompt
+        return "answer"
+
+    with patch("newsparser.bot.tracker.classify_query", return_value="both"), \
+         patch("newsparser.bot.tracker.run_claude", side_effect=fake_run_claude):
+        run_tracker(chat_id="t1", query="질문")
+
+    assert PLAIN_KOREAN_STYLE in captured["prompt"]
