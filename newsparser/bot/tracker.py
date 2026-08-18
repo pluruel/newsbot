@@ -17,14 +17,8 @@ _KST = ZoneInfo("Asia/Seoul")
 
 _MCP_CONFIG = Path(__file__).parent.parent.parent / "mcp.json"
 
-# Answers containing one of these markers are workspace edits (interests,
-# manifesto, ignore list, history clears), not conversation — they get kind='admin'
-# so they stay out of the conversational context and the demand signal.
-#
-# Each marker is the exact confirmation string an admin MCP tool returns, and the
-# tracker prompt instructs the model to echo that string verbatim after such an
-# edit. They must stay specific — a bare "cleared" would misclassify any answer
-# that merely quotes an English headline containing the word.
+TRACKER_MODEL = "claude-opus-5"
+
 _ADMIN_MARKERS = (
     "interests_tech.md updated",
     "interests_markets.md updated",
@@ -197,7 +191,8 @@ def run_tracker(chat_id: str, query: str) -> str:
         "ignore.md updated / interest events cleared / Conversation history cleared)를 답변에 "
         "반드시 그 형태 그대로 한 번 포함한다 — 이 문구로 관리 작업을 식별해 대화 기록에서 제외하기 "
         "때문이다. 편집을 하지 않았다면 이 문구들을 쓰지 않는다.\n\n"
-        "답변은 평문 대화체 문단으로만 쓴다 — 마크다운 금지: 헤더(#), "
+        "답변은 사용자에게 존댓말로 쓴다. 반말·평어체는 쓰지 않는다.\n"
+        "형식은 평문 대화체 문단으로만 한다. 마크다운 금지: 헤더(#), "
         "볼드(**), 불릿(-/*), 표, 수평선(---) 모두 쓰지 않는다. "
         "섹션 구분은 빈 줄로만 한다."
         f"{prev_context}\n\n"
@@ -207,6 +202,7 @@ def run_tracker(chat_id: str, query: str) -> str:
     answer = run_claude(
         prompt,
         mcp_config=str(_MCP_CONFIG),
+        model=TRACKER_MODEL,
         allowed_tools=["Bash", "Read", "Edit", "Write", "Grep", "Glob"],
         permission_mode="bypassPermissions",
     )
