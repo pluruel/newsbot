@@ -179,6 +179,12 @@ def run_tracker(chat_id: str, query: str) -> str:
         "이 외에 호스트 환경을 볼 필요가 있으면 Bash 도구로 직접 명령을 실행할 수 있다 "
         "(ls, cat, journalctl, .venv/bin/python 등). 단, 파괴적 명령(rm -rf, drop, force push)은 "
         "사용자 확인을 받는다.\n\n"
+        "유튜브 링크를 보내면 그 요약은 Gemini가 만들어 대화 기록에는 남기지만 "
+        "지식그래프에는 넣지 않는다 — 영상 속 주장이 검증된 기사 사실과 섞이지 않게 하려는 것이다. "
+        "사용자가 나중에 그 영상을 그래프에 넣어달라고 하면"
+        "(\"방금 그 영상 지식그래프에도 반영해\", \"그래프에 넣어줘\") "
+        f"`project_conversation(chat_id, n)`을 호출한다 — 현재 chat_id는 {chat_id}, "
+        "n은 그래프에 넣을 최근 턴 수다(직전 요약 한 건이면 2).\n\n"
         "무시 목록 관리 권한도 있다. 사용자가 특정 엔티티/서사를 더는 다루지 말라고 하면"
         "(\"무시: X\", \"X 무시해\"), `workspace/me/ignore.md` 표에 행을 추가한다. "
         "단일 엔티티명이면 종류=entity, 서사·주장 문구면 종류=storyline, 추가일은 오늘(YYYY-MM-DD). "
@@ -209,11 +215,15 @@ def run_tracker(chat_id: str, query: str) -> str:
     return answer
 
 
-def _persist_exchange(chat_id: str, query: str, answer: str) -> None:
-    """Record one user→assistant turn and mirror it into the graph.
+def _persist_exchange(chat_id: str, query: str, answer: str,
+                      project: bool = True) -> None:
+    """Record one user→assistant turn and, unless told otherwise, mirror it
+    into the graph.
 
     Shared by every path that answers the user, so a YouTube summary lands in
-    the same history a follow-up question reads back.
+    the same history a follow-up question reads back. `project=False` keeps a
+    turn out of Neo4j — see run_youtube for why video content does not belong
+    in the news graph.
     """
     # Admin/workspace-edit answers are recorded with kind='admin' — kept for audit
     # but excluded from the conversational context that load_history returns.
@@ -223,7 +233,7 @@ def _persist_exchange(chat_id: str, query: str, answer: str) -> None:
         chat_id, "assistant", answer, reply_to_id=user_id, kind=kind
     )
 
-    if kind == "chat":
+    if kind == "chat" and project:
         # Project into Neo4j off the reply path: a Neo4j outage stalls the driver
         # for its whole connection timeout, and blocking the reply on a best-effort
         # mirror is wrong (SQLite is already the source of truth). Fire-and-forget
@@ -240,14 +250,21 @@ def run_youtube(chat_id: str, query: str, url: str, instruction: str) -> str:
 
     Deliberately skips the tracker's MCP tools: the user asked for the video's
     own content, and mixing in cycle reports and graph context muddies it. The
-    summary goes into history, so a follow-up question reaches the tracker with
-    the video already in context.
+    summary still lands in conversation history, so a follow-up question
+    ("그 영상이랑 이번 사이클이랑 어떻게 엮여?") reaches the tracker with the
+    video already in context — the graph lookup happens on that next turn.
+
+    The Neo4j projection is skipped: projecting entity-links the summary, so a
+    video's claims would sit in the knowledge graph next to vetted
+    article-derived facts with nothing to tell them apart. When the user does
+    want it in there they say so on a later turn, and the tracker puts it in
+    with the `project_conversation` MCP tool.
 
     Raises GeminiError — the caller reports it rather than silently falling back
     to a Claude answer written without having watched the video.
     """
     answer = summarize_youtube(url, instruction)
-    _persist_exchange(chat_id, query, answer)
+    _persist_exchange(chat_id, query, answer, project=False)
     return answer
 
 

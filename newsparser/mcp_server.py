@@ -115,6 +115,24 @@ def get_conversation_thread(message_id: str) -> str:
 
 
 @mcp.tool()
+def project_conversation(chat_id: str, n: int = 2) -> str:
+    """Put the last `n` stored turns of a chat into the knowledge graph (entity-linked).
+
+    For turns that were deliberately held out of the graph — YouTube summaries are
+    stored in conversation history but never projected, so a video's claims cannot
+    be mistaken for a vetted article-derived fact. Call this only when the user
+    explicitly asks for one of those in the graph ("방금 그 영상도 그래프에 반영해").
+    `n=2` covers one exchange (their message plus the summary)."""
+    rows = _conv.get_recent_messages(chat_id, n)
+    if not rows:
+        return f"No stored turns for chat {chat_id}."
+    from newsparser.graph.conversation_projector import project_message
+    for row in rows:
+        project_message(row)
+    return f"Projected {len(rows)} turn(s) from chat {chat_id} into the graph."
+
+
+@mcp.tool()
 def conversations_about_entity(entity: str, n: int = 10) -> str:
     """Find past conversation turns that mentioned a news-graph entity (by canonical
     name), newest-first — bridges the chat history and the knowledge graph. Answers

@@ -183,24 +183,6 @@ def test_run_tracker_runs_on_opus():
     assert mock_claude.call_args.kwargs["model"] == "claude-opus-5"
 
 
-def test_run_youtube_saves_the_summary_to_history():
-    """A follow-up question must reach the tracker with the video in context."""
-    from newsparser.bot.tracker import run_youtube
-
-    with patch("newsparser.bot.tracker.summarize_youtube", return_value="영상 요약입니다"):
-        answer = run_youtube(
-            chat_id="chat123",
-            query="https://youtu.be/dQw4w9WgXcQ 요약해줘",
-            url="https://www.youtube.com/watch?v=dQw4w9WgXcQ",
-            instruction="요약해줘",
-        )
-
-    assert answer == "영상 요약입니다"
-    history = load_history("chat123")
-    assert [m["role"] for m in history] == ["user", "assistant"]
-    assert history[1]["content"] == "영상 요약입니다"
-
-
 def test_run_youtube_does_not_invoke_claude():
     """The video summary is Gemini's alone — no cycle reports mixed in."""
     from newsparser.bot.tracker import run_youtube
@@ -225,3 +207,67 @@ def test_tracker_prompt_uses_the_shared_style_constant():
         run_tracker(chat_id="t1", query="질문")
 
     assert PLAIN_KOREAN_STYLE in captured["prompt"]
+
+
+def test_run_youtube_saves_the_summary_to_history():
+    """A follow-up question must reach the tracker with the video in context."""
+    from newsparser.bot.tracker import run_youtube
+
+    with patch("newsparser.bot.tracker.summarize_youtube", return_value="영상 요약입니다"):
+        answer = run_youtube(
+            chat_id="chat123",
+            query="https://youtu.be/dQw4w9WgXcQ 요약해줘",
+            url="https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+            instruction="요약해줘",
+        )
+
+    assert answer == "영상 요약입니다"
+    history = load_history("chat123")
+    assert [m["role"] for m in history] == ["user", "assistant"]
+    assert history[1]["content"] == "영상 요약입니다"
+
+
+def test_run_youtube_is_not_projected_into_the_graph():
+    """Video claims must stay out of the knowledge graph — graph_query would
+    otherwise surface them next to article-derived facts with nothing to tell
+    them apart. Putting one in is an explicit later request."""
+    from newsparser.bot.tracker import run_youtube
+
+    with patch("newsparser.bot.tracker.summarize_youtube", return_value="영상 요약"), \
+         patch("newsparser.bot.tracker._project_exchange_bg") as mock_project:
+        run_youtube("chat123", "링크", "https://www.youtube.com/watch?v=dQw4w9WgXcQ", "")
+
+    mock_project.assert_not_called()
+
+
+def test_tracker_answers_are_still_projected():
+    """The opt-out is scoped to the YouTube path, not applied to every turn."""
+    import newsparser.bot.tracker as tracker
+
+    with patch("newsparser.bot.tracker.classify_query", return_value="both"), \
+         patch("newsparser.bot.tracker.run_claude", return_value="답변"), \
+         patch("newsparser.bot.tracker._project_exchange_bg") as mock_project, \
+         patch.object(tracker.threading, "Thread") as mock_thread:
+        run_tracker(chat_id="chat123", query="질문")
+
+    mock_thread.assert_called_once()
+    assert mock_thread.call_args.kwargs["target"] is mock_project
+
+
+def test_tracker_prompt_explains_the_youtube_graph_opt_in():
+    """Without this the model has no way to know YouTube turns were held back,
+    and would answer "이미 반영돼 있습니다" to a request to project one."""
+    captured: dict = {}
+
+    def fake_run_claude(prompt, **kw):
+        captured["prompt"] = prompt
+        return "answer"
+
+    with patch("newsparser.bot.tracker.classify_query", return_value="both"), \
+         patch("newsparser.bot.tracker.run_claude", side_effect=fake_run_claude):
+        run_tracker(chat_id="chat-777", query="방금 그 영상 그래프에 넣어줘")
+
+    prompt = captured["prompt"]
+    assert "지식그래프에는 넣지 않는다" in prompt
+    assert "project_conversation(chat_id, n)" in prompt
+    assert "chat-777" in prompt

@@ -27,6 +27,7 @@ When answering as the chat/tracker agent, these are available in addition to Bas
 - `search_conversations(keyword, chat_id=None, since=None, n=10)` — full-text recall over past turns (trigram index), newest-first; `since` is an absolute date. Use to recall what was previously discussed.
 - `get_conversation_thread(message_id)` — reconstruct the reply chain (root-first) a turn belongs to.
 - `conversations_about_entity(entity, n=10)` — past turns that mentioned a knowledge-graph entity (by canonical name); bridges chat history and the news graph.
+- `project_conversation(chat_id, n=2)` — put the last `n` stored turns into the knowledge graph. YouTube summaries are stored but never projected, so use this only when the user explicitly asks for one to be reflected in the graph.
 - `get_interest_weights(category=None, days=14)` / `clear_interest_events()` — actual vs. estimated interest-profile weights, and resetting the estimation baseline.
 - `read_interests(category=None)` / `write_interests(category, content)` — per-category interest profile (`workspace/me/interests_{category}.md`).
 - `read_manifesto()` / `write_manifesto(content)` — user's manifesto (`workspace/me/manifesto.md`).
