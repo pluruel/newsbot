@@ -73,28 +73,23 @@ def test_run_tracker_injects_category_hint():
     assert "tech" in captured["prompt"]
 
 
-def test_run_tracker_prompt_routes_run_orders_to_start_job():
+def test_start_job_docstring_routes_run_orders_away_from_slash_commands():
     """"사이클 돌려줘" must reach start_job, not the /cycle slash command.
 
     The tracker runs with bypassPermissions, so the project's .claude/commands/
     cycle.md is visible to it — and cycle.md's first job is parsing $ARGUMENTS
     into slot+category. Without an explicit ban the model picks that over
     start_job and asks the user for a slot, which start_job doesn't even take.
+
+    The ban lives in the tool's own docstring, which reaches the model with the
+    tool schema — repeating it in the per-turn prompt paid for it twice.
     """
-    captured: dict = {}
+    from newsparser.mcp_server import start_job
 
-    def fake_run_claude(prompt, **kw):
-        captured["prompt"] = prompt
-        return "answer"
-
-    with patch("newsparser.bot.tracker.classify_query", return_value="tech"), \
-         patch("newsparser.bot.tracker.run_claude", side_effect=fake_run_claude):
-        run_tracker(chat_id="t1", query="사이클 돌려줘")
-
-    prompt = captured["prompt"]
-    assert "slot·category를 되묻지 마라" in prompt
-    assert "슬래시 커맨드를 직접 실행하는 것도 금지" in prompt
-    assert "실행 지시에는 언제나 start_job만 쓴다" in prompt
+    doc = start_job.__doc__ or start_job.fn.__doc__
+    assert "slot·category를 사용자에게 되묻지 마라" in doc
+    assert "슬래시 커맨드를 직접 실행하는 것도 금지" in doc
+    assert "실행 지시에는 언제나 start_job만 쓴다" in doc
 
 
 def test_run_tracker_prompt_supplies_kst_clock():
@@ -122,27 +117,29 @@ def test_run_tracker_prompt_supplies_kst_clock():
     assert m.group(1) == datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y-%m-%d")
 
 
-def test_run_tracker_prompt_flags_non_kst_tool_timestamps():
+def test_each_tool_declares_its_own_timestamp_timezone():
     """Per-source timezones, not a blanket "everything is KST".
 
     market_query's 1h `ts` is UTC (market/fetcher.py), its 1d `date` is the
     market's session date, and the conversation tools render UTC timestamps
-    verbatim — only cycle slots and job_status are KST.
+    verbatim — only cycle slots and job_status are KST. Each rule sits on the
+    tool that returns the timestamp, so it cannot drift from its source.
     """
-    captured: dict = {}
+    import newsparser.mcp_server as mcp
 
-    def fake_run_claude(prompt, **kw):
-        captured["prompt"] = prompt
-        return "answer"
+    def doc(tool):
+        return tool.__doc__ or tool.fn.__doc__
 
-    with patch("newsparser.bot.tracker.classify_query", return_value="markets"), \
-         patch("newsparser.bot.tracker.run_claude", side_effect=fake_run_claude):
-        run_tracker(chat_id="t1", query="어제 SPX 몇 시에 빠졌어?")
+    market = doc(mcp.market_query)
+    assert 'freq="1h" `ts` is UTC' in market
+    assert "not a KST calendar date" in market
 
-    prompt = captured["prompt"]
-    assert "`ts`(freq=\"1h\") — UTC다" in prompt
-    assert "KST 날짜가 아니다" in prompt
-    assert "`[타임스탬프]` — UTC다" in prompt
+    assert "already KST" in doc(mcp.read_cycle_reports)
+    assert "이미 KST다" in doc(mcp.job_status)
+    for tool in (mcp.read_conversation_history, mcp.get_conversation_thread,
+                 mcp.conversations_about_entity):
+        assert "`[timestamp]` on each line is UTC" in doc(tool), tool
+    assert "off by 9 hours" in doc(mcp.search_conversations)
 
 
 def test_run_tracker_continues_if_classify_query_fails():
@@ -194,19 +191,48 @@ def test_run_youtube_does_not_invoke_claude():
     mock_claude.assert_not_called()
 
 
-def test_tracker_prompt_uses_the_shared_style_constant():
+def test_standing_instructions_go_to_the_system_prompt_not_the_user_turn():
+    """They are identical every call, so they belong in the system-prompt slot.
+
+    --append-system-prompt (not --system-prompt): replacing Claude Code's own
+    system prompt would drop the scaffolding the tool calls depend on.
+    """
+    from newsparser.bot.tracker import SYSTEM_PROMPT
     from newsparser.gemini import PLAIN_KOREAN_STYLE
     captured: dict = {}
 
     def fake_run_claude(prompt, **kw):
         captured["prompt"] = prompt
+        captured["kw"] = kw
         return "answer"
 
     with patch("newsparser.bot.tracker.classify_query", return_value="both"), \
          patch("newsparser.bot.tracker.run_claude", side_effect=fake_run_claude):
         run_tracker(chat_id="t1", query="질문")
 
-    assert PLAIN_KOREAN_STYLE in captured["prompt"]
+    assert captured["kw"]["append_system_prompt"] == SYSTEM_PROMPT
+    assert captured["kw"].get("system_prompt") is None
+    assert PLAIN_KOREAN_STYLE in SYSTEM_PROMPT
+    assert "근거 규칙" in SYSTEM_PROMPT
+    assert PLAIN_KOREAN_STYLE not in captured["prompt"]
+
+
+def test_per_turn_prompt_carries_only_what_changes():
+    """The whole point of the split — anything static here is paid for twice."""
+    captured: dict = {}
+
+    def fake_run_claude(prompt, **kw):
+        captured["prompt"] = prompt
+        return "answer"
+
+    with patch("newsparser.bot.tracker.classify_query", return_value="tech"), \
+         patch("newsparser.bot.tracker.run_claude", side_effect=fake_run_claude):
+        run_tracker(chat_id="t1", query="질문")
+
+    prompt = captured["prompt"]
+    assert len(prompt) < 1500, f"per-turn prompt regrew to {len(prompt)} chars"
+    for dynamic in ("KST다", "chat_id는 t1", "카테고리 힌트: tech", "사용자 질문: 질문"):
+        assert dynamic in prompt
 
 
 def test_run_youtube_saves_the_summary_to_history():
@@ -254,9 +280,13 @@ def test_tracker_answers_are_still_projected():
     assert mock_thread.call_args.kwargs["target"] is mock_project
 
 
-def test_tracker_prompt_explains_the_youtube_graph_opt_in():
+def test_youtube_graph_opt_in_is_explained_to_the_model():
     """Without this the model has no way to know YouTube turns were held back,
-    and would answer "이미 반영돼 있습니다" to a request to project one."""
+    and would answer "이미 반영돼 있습니다" to a request to project one.
+
+    The policy is standing (system prompt); only chat_id is per-turn.
+    """
+    from newsparser.bot.tracker import SYSTEM_PROMPT
     captured: dict = {}
 
     def fake_run_claude(prompt, **kw):
@@ -267,7 +297,6 @@ def test_tracker_prompt_explains_the_youtube_graph_opt_in():
          patch("newsparser.bot.tracker.run_claude", side_effect=fake_run_claude):
         run_tracker(chat_id="chat-777", query="방금 그 영상 그래프에 넣어줘")
 
-    prompt = captured["prompt"]
-    assert "지식그래프에는 넣지 않는다" in prompt
-    assert "project_conversation(chat_id, n)" in prompt
-    assert "chat-777" in prompt
+    assert "지식그래프에는 들어가지 않는다" in SYSTEM_PROMPT
+    assert "project_conversation(chat_id, n)" in SYSTEM_PROMPT
+    assert "chat-777" in captured["prompt"]

@@ -180,6 +180,7 @@ def _build_cmd(
     mcp_config: str | None,
     model: str,
     system_prompt: str | None,
+    append_system_prompt: str | None,
     allowed_tools: list[str] | None,
     permission_mode: str,
 ) -> list[str]:
@@ -191,6 +192,10 @@ def _build_cmd(
         cmd += ["--mcp-config", mcp_config]
     if system_prompt is not None:
         cmd += ["--system-prompt", system_prompt]
+    # Appends to Claude Code's own system prompt rather than replacing it —
+    # --system-prompt would drop the agentic scaffolding the tool calls rely on.
+    if append_system_prompt is not None:
+        cmd += ["--append-system-prompt", append_system_prompt]
     if allowed_tools:
         cmd += ["--allowedTools", ",".join(allowed_tools)]
     # Always passed explicitly — never fall through to the settings.json
@@ -286,13 +291,19 @@ def run_claude(
     mcp_config: str | None = None,
     model: str = "claude-sonnet-5",
     system_prompt: str | None = None,
+    append_system_prompt: str | None = None,
     allowed_tools: list[str] | None = None,
     permission_mode: str = "default",
 ) -> str:
     """Invoke claude CLI headless and return the result text. Raises ClaudeError on failure (including timeout).
 
     permission_mode defaults to "default" (auto-deny outside allowed_tools) —
-    trusted-input call sites must opt UP to bypassPermissions explicitly."""
-    cmd = _build_cmd(prompt, mcp_config, model, system_prompt, allowed_tools, permission_mode)
+    trusted-input call sites must opt UP to bypassPermissions explicitly.
+
+    Standing instructions belong in `append_system_prompt`, not `prompt`: it is
+    the system-prompt slot, so it is not re-read as fresh user content every
+    call. Use `system_prompt` only to replace Claude Code's default wholesale."""
+    cmd = _build_cmd(prompt, mcp_config, model, system_prompt, append_system_prompt,
+                     allowed_tools, permission_mode)
     event = _run_stream(cmd, timeout, prompt)
     return event.get("result", "")

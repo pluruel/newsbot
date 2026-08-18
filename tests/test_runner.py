@@ -201,3 +201,31 @@ def test_describe_event_reports_tool_use():
     ]}}
     assert runner._describe_event(event) == "tool: WebSearch, Read"
     assert runner._describe_event({"type": "user"}) is None
+
+
+def test_append_system_prompt_uses_the_append_flag(tmp_path, monkeypatch):
+    """--append-system-prompt, never --system-prompt.
+
+    --system-prompt REPLACES Claude Code's own system prompt, which would drop
+    the agentic scaffolding the MCP tool calls depend on. Standing instructions
+    must be added to it, not swapped for it.
+    """
+    _fake_claude(tmp_path, monkeypatch, _ARGV_BODY)
+    argv = _argv_of(run_claude("query", append_system_prompt="standing rules"))
+    assert argv[argv.index("--append-system-prompt") + 1] == "standing rules"
+    assert "--system-prompt" not in argv
+
+
+def test_system_prompt_and_append_are_independent(tmp_path, monkeypatch):
+    _fake_claude(tmp_path, monkeypatch, _ARGV_BODY)
+    argv = _argv_of(run_claude("query", system_prompt="replace me",
+                               append_system_prompt="and add this"))
+    assert argv[argv.index("--system-prompt") + 1] == "replace me"
+    assert argv[argv.index("--append-system-prompt") + 1] == "and add this"
+
+
+def test_neither_system_prompt_flag_by_default(tmp_path, monkeypatch):
+    _fake_claude(tmp_path, monkeypatch, _ARGV_BODY)
+    argv = _argv_of(run_claude("query"))
+    assert "--system-prompt" not in argv
+    assert "--append-system-prompt" not in argv
