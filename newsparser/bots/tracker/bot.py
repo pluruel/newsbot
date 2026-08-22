@@ -1,7 +1,11 @@
+import logging
 import subprocess
 
 from newsparser.bots import Bot, TelegramMatch, Context
-from newsparser.bot.tracker import run_tracker
+from newsparser.bot.tracker import run_tracker, run_youtube
+from newsparser.gemini import GeminiError, find_youtube_url
+
+logger = logging.getLogger(__name__)
 
 
 async def run(ctx: Context) -> None:
@@ -16,7 +20,21 @@ async def run(ctx: Context) -> None:
         _docker_rebuild()
         return
 
-    answer = await ctx.run_in_thread(run_tracker, chat_id=chat_id, query=text)
+    link = find_youtube_url(text)
+    if link is not None:
+        url, instruction = link
+        try:
+            answer = await ctx.run_in_thread(
+                run_youtube, chat_id=chat_id, query=text,
+                url=url, instruction=instruction,
+            )
+        except GeminiError as exc:
+            # No fallback to the tracker: Claude cannot watch the video, so a
+            # Claude answer here would be about the link, not its contents.
+            logger.warning("youtube summary failed (%s): %s", url, exc)
+            answer = f"유튜브 분석에 실패했습니다.\n\n{exc}"
+    else:
+        answer = await ctx.run_in_thread(run_tracker, chat_id=chat_id, query=text)
     await ctx.telegram.send(answer)
 
 

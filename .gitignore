@@ -3,8 +3,11 @@ __pycache__/
 *.egg-info/
 .env
 .venv/
+
+
 workspace/newsparser.db
 workspace/conversations.db
+workspace/market.db
 .worktrees/
 worktrees/
 .pytest_cache/
@@ -12,6 +15,7 @@ dist/
 
 # Runtime workspace data
 workspace/cron-state.json
+workspace/jobs.json
 workspace/cycles/
 workspace/input/
 workspace/logs/

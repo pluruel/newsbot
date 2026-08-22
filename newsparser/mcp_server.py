@@ -58,9 +58,12 @@ def graph_query(entity: str, category: str | None = None, days: int = 7) -> str:
 
 @mcp.tool()
 def read_cycle_reports(category: str | None = None, n: int = 4) -> str:
-    """Read the N most recent cycle reports.
+    """Read the N most recent cycle reports. Call this first, before answering —
+    it is the standing context every other lookup builds on.
     category='tech' or 'markets' reads only that category;
-    'both' or None reads across both categories (merged by recency)."""
+    'both' or None reads across both categories (merged by recency).
+    Cite a report by its date. Slot and report timestamps are already KST — use
+    them as printed, do not shift them."""
     cats = _resolve_categories(category)
     base = _workspace() / "cycles"
     found: list[tuple[str, Path]] = []
@@ -81,7 +84,8 @@ def read_cycle_reports(category: str | None = None, n: int = 4) -> str:
 
 @mcp.tool()
 def read_conversation_history(chat_id: str, n: int = 10) -> str:
-    """Read recent conversation turns for a given chat."""
+    """Read recent conversation turns for a given chat.
+    The `[timestamp]` on each line is UTC — add 9 hours when quoting it as KST."""
     history = _conv.get_recent_messages(chat_id, n)
     if not history:
         return "No conversation history."
@@ -95,7 +99,10 @@ def search_conversations(
     """Full-text search past conversation turns by keyword (trigram index over all
     stored messages), newest-first. `since` is an absolute lower-bound date/datetime
     (YYYY-MM-DD). Restrict to one chat with `chat_id`. Use this to recall what was
-    previously discussed with the user."""
+    previously discussed with the user.
+    Timestamps are UTC, and `since` is compared against them — passing a KST date
+    boundary verbatim is off by 9 hours. Pass the day before and filter the
+    returned timestamps yourself."""
     rows = _conv.search_messages(keyword, chat_id=chat_id, since=since, limit=n)
     if not rows:
         return f"No conversation turns matching '{keyword}'."
@@ -107,7 +114,8 @@ def search_conversations(
 def get_conversation_thread(message_id: str) -> str:
     """Reconstruct the reply chain (root-first) a message belongs to, following the
     reply_to_id edges. Use this to see the exact question/answer lineage that led to
-    a given turn, even when turns did not arrive strictly in order."""
+    a given turn, even when turns did not arrive strictly in order.
+    The `[timestamp]` on each line is UTC — add 9 hours when quoting it as KST."""
     rows = _conv.get_thread(message_id)
     if not rows:
         return f"No message found with id {message_id}."
@@ -115,10 +123,29 @@ def get_conversation_thread(message_id: str) -> str:
 
 
 @mcp.tool()
+def project_conversation(chat_id: str, n: int = 2) -> str:
+    """Put the last `n` stored turns of a chat into the knowledge graph (entity-linked).
+
+    For turns that were deliberately held out of the graph — YouTube summaries are
+    stored in conversation history but never projected, so a video's claims cannot
+    be mistaken for a vetted article-derived fact. Call this only when the user
+    explicitly asks for one of those in the graph ("방금 그 영상도 그래프에 반영해").
+    `n=2` covers one exchange (their message plus the summary)."""
+    rows = _conv.get_recent_messages(chat_id, n)
+    if not rows:
+        return f"No stored turns for chat {chat_id}."
+    from newsparser.graph.conversation_projector import project_message
+    for row in rows:
+        project_message(row)
+    return f"Projected {len(rows)} turn(s) from chat {chat_id} into the graph."
+
+
+@mcp.tool()
 def conversations_about_entity(entity: str, n: int = 10) -> str:
     """Find past conversation turns that mentioned a news-graph entity (by canonical
     name), newest-first — bridges the chat history and the knowledge graph. Answers
-    "what have we discussed about <entity> before?"."""
+    "what have we discussed about <entity> before?".
+    The `[timestamp]` on each line is UTC — add 9 hours when quoting it as KST."""
     from newsparser.graph.conversation_projector import messages_about_entity
     rows = messages_about_entity(entity, n)
     if not rows:
@@ -258,6 +285,12 @@ def market_query(
     Valid instruments: SPX, NDX, KOSPI, USDKRW, USDJPY, DXY, VIX, TNX.
     Dates must be absolute (YYYY-MM-DD). The caller is expected to resolve
     relative expressions ("최근 30일") against the current date before invoking.
+
+    Row timestamps are not KST:
+    - freq="1h" `ts` is UTC — add 9 hours when quoting it as KST.
+    - freq="1d" `date` is that market's session date, not a KST calendar date
+      (SPX/NDX/VIX/TNX run on the US session). Quote the session date as-is;
+      do not shift it.
     """
     _market_store.init_market_db()
     start_d = _date.fromisoformat(start)
@@ -299,7 +332,8 @@ def search_articles(keyword: str, category: str | None = None, n: int = 5) -> st
     Returns up to n matches, newest first, with title/url/published/category and a
     truncated body preview. category='tech' or 'markets' restricts; None or 'both'
     searches all categories.
-    Use this when the user references a specific story and wants the source article."""
+    Use this when the user references a specific story and wants the source article,
+    or asks for a detail the cycle report summary does not carry."""
     cat = None if category in (None, "both") else category
     rows = _sqlite_store.search_articles(keyword, category=cat, limit=n)
     if not rows:
@@ -382,7 +416,9 @@ def _age_s(iso: str | None) -> int | None:
 def job_status() -> str:
     """현재 실행 중인 백그라운드 작업(cycle/weekly/reflect 등)과 최근 완료 이력.
     사용자가 "지금 뭐 돌아가?", "cycle 잘 되고 있어?" 같이 작업 진행 상황을 물으면 호출한다.
-    running 항목의 "마지막 활동 … 전"이 수 분을 넘으면 작업이 멈춰 있을 가능성이 있다."""
+    running 항목의 "마지막 활동 … 전"이 수 분을 넘으면 작업이 멈춰 있을 가능성이 있다.
+    여기 찍히는 시각은 이미 KST다 (bots/core/jobs.py가 KST로 직렬화한다) — 그대로 인용하고
+    시간대를 옮기지 마라."""
     path = _workspace() / STATE_FILE
     if not path.exists():
         return f"작업 상태 파일({STATE_FILE})이 없다 — 아직 실행된 작업이 없거나 디스패처가 구버전이다."
@@ -436,7 +472,13 @@ def start_job(bot: str, chat_id: str | None = None) -> str:
     """백그라운드 작업을 시작한다 (허용: cycle, weekly, reflect, market_daily).
     사용자가 "사이클 돌려줘", "위클리 실행해" 같이 작업 실행을 지시하면 호출한다.
     chat_id를 넘기면 완료 메시지가 그 채팅으로 간다 (프롬프트에 있는 현재 chat_id를 넘겨라).
-    요청은 파일 큐로 전달되어 디스패처가 수 초 내에 집어간다."""
+    요청은 파일 큐로 전달되어 디스패처가 수 초 내에 집어간다.
+
+    slot·category를 사용자에게 되묻지 마라 — start_job에는 그런 인자가 없고,
+    cycle은 현재 시각(KST) 슬롯으로 tech·markets 양쪽을 자동으로 돈다.
+    `/cycle`·`/weekly`·`/reflect` 슬래시 커맨드를 직접 실행하는 것도 금지다: 그건
+    run_cycle.py 등이 슬롯을 채워서 부르는 내부용이라 직접 부르면 입력파일이 없어
+    실패한다. 실행 지시에는 언제나 start_job만 쓴다."""
     if bot not in _STARTABLE_BOTS:
         return f"'{bot}'은 시작할 수 없는 작업이다. 허용: {sorted(_STARTABLE_BOTS)}."
     ws = _workspace()
@@ -521,7 +563,11 @@ def _run_ops(args: list[str], timeout: int = 30) -> tuple[str | None, str | None
 def service_status() -> str:
     """List the project's services (poller/dispatcher systemd units + neo4j container)
     and their state. Use this before restarting anything or when the user asks about
-    system health."""
+    system health.
+    These ops tools shell out to the root-owned newsbot-ops script, which is the
+    single command the service user may sudo (deploy/install.sh writes exactly one
+    NOPASSWD sudoers entry for it). Use them rather than running docker/systemctl
+    in Bash: those need a password there and fail non-interactively."""
     out, err = _run_ops(["status"])
     if err:
         return err

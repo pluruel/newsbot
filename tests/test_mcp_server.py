@@ -256,3 +256,31 @@ def test_haiku_usage_reports_daily_rows_and_totals():
 def test_haiku_usage_empty():
     from newsparser.mcp_server import haiku_usage
     assert "No Haiku usage" in haiku_usage(days=1)
+
+
+# --- project_conversation -----------------------------------------------------
+
+def test_project_conversation_projects_the_last_n_turns():
+    from newsparser.mcp_server import project_conversation
+
+    conv.add_message("chat-yt", "user", "옛날 얘기")
+    conv.add_message("chat-yt", "assistant", "옛날 답")
+    conv.add_message("chat-yt", "user", "https://youtu.be/dQw4w9WgXcQ")
+    conv.add_message("chat-yt", "assistant", "영상 요약")
+
+    with patch("newsparser.graph.conversation_projector.project_message") as mock_project:
+        result = project_conversation("chat-yt", n=2)
+
+    projected = [call.args[0]["content"] for call in mock_project.call_args_list]
+    assert projected == ["https://youtu.be/dQw4w9WgXcQ", "영상 요약"]
+    assert "2 turn(s)" in result
+
+
+def test_project_conversation_on_empty_chat_projects_nothing():
+    from newsparser.mcp_server import project_conversation
+
+    with patch("newsparser.graph.conversation_projector.project_message") as mock_project:
+        result = project_conversation("no-such-chat")
+
+    mock_project.assert_not_called()
+    assert "No stored turns" in result
