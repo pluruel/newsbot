@@ -1,173 +1,143 @@
-"""Gemini/Vertex YouTube path — credential handling and the chat-path wiring.
+"""Gemini YouTube path — MCP-client wiring and how failures surface.
 
-No test reaches the network: the SDK client is stubbed, so what is asserted is
-the request this project builds and how failures surface to the user.
+The Vertex call lives on a separate MCP server (mcp.md); here the transport is
+stubbed at `_call_gemini_interact`, so what is asserted is the tool request this
+project builds and the error handling around it. No test reaches the network.
 """
-import json
 from types import SimpleNamespace
-from unittest.mock import patch
 
 import pytest
 
 import newsparser.gemini as gemini
 from newsparser.gemini import GeminiError
 
+_URL = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+
 
 @pytest.fixture(autouse=True)
-def fresh_client(monkeypatch, tmp_path):
-    gemini.reset_client()
-    monkeypatch.delenv("GOOGLE_CLOUD_PROJECT", raising=False)
-    monkeypatch.delenv("GOOGLE_CLOUD_LOCATION", raising=False)
+def mcp_env(monkeypatch):
+    monkeypatch.setenv("GEMINI_MCP_URL", "https://vertex.example.internal/mcp")
+    monkeypatch.setenv("GEMINI_MCP_TOKEN", "test-token")
     monkeypatch.delenv("GEMINI_MODEL", raising=False)
-    monkeypatch.setenv("GCP_KEY_FILE", str(tmp_path / "gcp-key.json"))
-    yield
-    gemini.reset_client()
 
 
-def _write_key(monkeypatch, tmp_path, project_id="proj-123"):
-    path = tmp_path / "gcp-key.json"
-    path.write_text(json.dumps({"type": "service_account", "project_id": project_id}))
-    monkeypatch.setenv("GCP_KEY_FILE", str(path))
-    return path
+class _FakeTransport:
+    """Stands in for `_call_gemini_interact`; records (url, token, arguments)."""
 
-
-class _FakeInteractions:
-    def __init__(self, output_text="요약입니다", errors=None, status="COMPLETED"):
+    def __init__(self, text="요약입니다", error=None):
         self.calls = []
-        self._result = SimpleNamespace(
-            output_text=output_text, errors=errors, status=status
-        )
+        self._text = text
+        self._error = error
 
-    def create(self, **kwargs):
-        self.calls.append(kwargs)
-        return self._result
-
-
-def _install_fake_client(monkeypatch, interactions):
-    monkeypatch.setattr(
-        gemini, "_build_client", lambda: SimpleNamespace(interactions=interactions)
-    )
+    async def __call__(self, url, token, arguments, timeout):
+        self.calls.append(SimpleNamespace(
+            url=url, token=token, arguments=arguments, timeout=timeout
+        ))
+        if self._error is not None:
+            raise self._error
+        return self._text
 
 
-def test_credentials_available_tracks_the_key_file(monkeypatch, tmp_path):
-    assert gemini.credentials_available() is False
-    _write_key(monkeypatch, tmp_path)
-    assert gemini.credentials_available() is True
+def _install(monkeypatch, transport):
+    monkeypatch.setattr(gemini, "_call_gemini_interact", transport)
+    return transport
 
 
-def test_missing_key_file_raises_rather_than_calling_out(monkeypatch, tmp_path):
-    monkeypatch.setenv("GCP_KEY_FILE", str(tmp_path / "absent.json"))
-    with pytest.raises(GeminiError, match="GCP 키 파일이 없습니다"):
-        gemini.summarize_youtube("https://www.youtube.com/watch?v=dQw4w9WgXcQ")
+@pytest.mark.parametrize("missing", ["GEMINI_MCP_URL", "GEMINI_MCP_TOKEN"])
+def test_unconfigured_server_raises_rather_than_calling_out(monkeypatch, missing):
+    monkeypatch.delenv(missing)
+    transport = _install(monkeypatch, _FakeTransport())
+    with pytest.raises(GeminiError, match="Gemini MCP 서버가 설정되지 않았습니다"):
+        gemini.summarize_youtube(_URL)
+    assert transport.calls == []
 
 
-def test_key_without_project_id_raises(monkeypatch, tmp_path):
-    path = tmp_path / "gcp-key.json"
-    path.write_text(json.dumps({"type": "service_account"}))
-    monkeypatch.setenv("GCP_KEY_FILE", str(path))
-    with pytest.raises(GeminiError, match="project_id"):
-        gemini.summarize_youtube("https://www.youtube.com/watch?v=dQw4w9WgXcQ")
+def test_request_targets_the_configured_server_with_bearer_token(monkeypatch):
+    transport = _install(monkeypatch, _FakeTransport())
+    gemini.summarize_youtube(_URL, timeout=120)
+    call = transport.calls[0]
+    assert call.url == "https://vertex.example.internal/mcp"
+    assert call.token == "test-token"
+    assert call.timeout == 120
+    assert call.arguments["timeout_s"] == 120
 
 
-def test_client_is_built_from_the_key_file(monkeypatch, tmp_path):
-    _write_key(monkeypatch, tmp_path, project_id="newsbot-proj")
-    captured = {}
-
-    class _FakeCreds:
-        @staticmethod
-        def from_service_account_file(path, scopes):
-            captured["scopes"] = scopes
-            return "creds"
-
-    def fake_client(**kwargs):
-        captured.update(kwargs)
-        return SimpleNamespace(interactions=_FakeInteractions())
-
-    with patch.dict("sys.modules", {}):
-        monkeypatch.setattr(
-            "google.oauth2.service_account.Credentials", _FakeCreds, raising=False
-        )
-        monkeypatch.setattr("google.genai.Client", fake_client)
-        gemini.summarize_youtube("https://www.youtube.com/watch?v=dQw4w9WgXcQ")
-
-    assert captured["vertexai"] is True
-    assert captured["project"] == "newsbot-proj"
-    assert captured["location"] == "global"
-    assert captured["credentials"] == "creds"
+def test_youtube_url_is_sent_as_a_video_part(monkeypatch):
+    transport = _install(monkeypatch, _FakeTransport())
+    gemini.summarize_youtube(_URL)
+    args = transport.calls[0].arguments
+    assert args["model"] == gemini.DEFAULT_MODEL
+    assert {"type": "video", "uri": _URL} in args["input"]
+    assert args["input"][0]["type"] == "text"
 
 
-def test_youtube_url_is_sent_as_a_video_part(monkeypatch, tmp_path):
-    _write_key(monkeypatch, tmp_path)
-    fake = _FakeInteractions()
-    _install_fake_client(monkeypatch, fake)
-
-    gemini.summarize_youtube("https://www.youtube.com/watch?v=dQw4w9WgXcQ")
-
-    body = fake.calls[0]
-    assert body["model"] == gemini.DEFAULT_MODEL
-    serialized = [part.model_dump() for part in body["input"]]
-    assert {
-        "type": "video",
-        "uri": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
-    } in serialized
-
-
-def test_system_prompt_carries_the_shared_plain_text_style(monkeypatch, tmp_path):
+def test_system_prompt_carries_the_shared_plain_text_style(monkeypatch):
     """The reply goes straight to Telegram, which renders no markdown."""
-    from newsparser.gemini import PLAIN_KOREAN_STYLE
-
-    _write_key(monkeypatch, tmp_path)
-    fake = _FakeInteractions()
-    _install_fake_client(monkeypatch, fake)
-
-    gemini.summarize_youtube("https://www.youtube.com/watch?v=dQw4w9WgXcQ")
-
-    assert PLAIN_KOREAN_STYLE in fake.calls[0]["system_instruction"]
+    transport = _install(monkeypatch, _FakeTransport())
+    gemini.summarize_youtube(_URL)
+    assert gemini.PLAIN_KOREAN_STYLE in transport.calls[0].arguments["system_instruction"]
 
 
-def test_user_instruction_is_forwarded(monkeypatch, tmp_path):
-    _write_key(monkeypatch, tmp_path)
-    fake = _FakeInteractions()
-    _install_fake_client(monkeypatch, fake)
-
-    gemini.summarize_youtube(
-        "https://www.youtube.com/watch?v=dQw4w9WgXcQ", "3분대 발언 위주로"
-    )
-
-    texts = [p.model_dump().get("text", "") for p in fake.calls[0]["input"]]
+def test_user_instruction_is_forwarded(monkeypatch):
+    transport = _install(monkeypatch, _FakeTransport())
+    gemini.summarize_youtube(_URL, "3분대 발언 위주로")
+    texts = [p.get("text", "") for p in transport.calls[0].arguments["input"]]
     assert any("3분대 발언 위주로" in t for t in texts)
 
 
-def test_model_is_overridable_by_env(monkeypatch, tmp_path):
-    _write_key(monkeypatch, tmp_path)
+def test_model_is_overridable_by_env(monkeypatch):
     monkeypatch.setenv("GEMINI_MODEL", "gemini-2.5-flash")
-    fake = _FakeInteractions()
-    _install_fake_client(monkeypatch, fake)
-
-    gemini.summarize_youtube("https://www.youtube.com/watch?v=dQw4w9WgXcQ")
-
-    assert fake.calls[0]["model"] == "gemini-2.5-flash"
+    transport = _install(monkeypatch, _FakeTransport())
+    gemini.summarize_youtube(_URL)
+    assert transport.calls[0].arguments["model"] == "gemini-2.5-flash"
 
 
-def test_empty_output_raises_instead_of_returning_a_blank_reply(monkeypatch, tmp_path):
-    """A blocked or unreachable video must not be delivered as an empty message."""
-    _write_key(monkeypatch, tmp_path)
-    _install_fake_client(monkeypatch, _FakeInteractions(output_text="", errors="BLOCKED"))
+def test_tool_error_from_server_is_reported_as_is(monkeypatch):
+    """Blocked / unreachable video: the server raises, the reason reaches the user."""
+    _install(monkeypatch, _FakeTransport(
+        error=GeminiError("유튜브 분석에 실패했습니다: status=BLOCKED")
+    ))
+    with pytest.raises(GeminiError, match="BLOCKED"):
+        gemini.summarize_youtube(_URL)
 
+
+def test_blank_text_raises_instead_of_returning_a_blank_reply(monkeypatch):
+    _install(monkeypatch, _FakeTransport(text="   "))
     with pytest.raises(GeminiError, match="빈 응답"):
-        gemini.summarize_youtube("https://www.youtube.com/watch?v=dQw4w9WgXcQ")
+        gemini.summarize_youtube(_URL)
 
 
-def test_api_exception_is_wrapped(monkeypatch, tmp_path):
-    _write_key(monkeypatch, tmp_path)
+def test_transport_exception_is_wrapped(monkeypatch):
+    _install(monkeypatch, _FakeTransport(error=ConnectionError("refused")))
+    with pytest.raises(GeminiError, match="Gemini MCP 호출 실패: ConnectionError"):
+        gemini.summarize_youtube(_URL)
 
-    class _Boom:
-        def create(self, **kwargs):
-            raise RuntimeError("503 unavailable")
 
-    _install_fake_client(monkeypatch, _Boom())
-    with pytest.raises(GeminiError, match="Gemini 호출 실패"):
-        gemini.summarize_youtube("https://www.youtube.com/watch?v=dQw4w9WgXcQ")
+def test_tool_result_error_flag_becomes_gemini_error(monkeypatch):
+    """`_call_gemini_interact` itself: isError results must not pass through as text."""
+    import asyncio
+    from contextlib import asynccontextmanager
+
+    class _Session:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): pass
+        async def initialize(self): pass
+        async def call_tool(self, name, arguments, read_timeout_seconds=None):
+            assert name == "gemini_interact"
+            return SimpleNamespace(
+                isError=True,
+                content=[SimpleNamespace(type="text", text="ValueError: video host not allowed")],
+            )
+
+    @asynccontextmanager
+    async def _client(url, headers, timeout, sse_read_timeout):
+        assert headers == {"Authorization": "Bearer tok"}
+        yield (None, None, None)
+
+    monkeypatch.setattr("mcp.client.streamable_http.streamablehttp_client", _client)
+    monkeypatch.setattr("mcp.client.session.ClientSession", lambda r, w: _Session())
+    with pytest.raises(GeminiError, match="video host not allowed"):
+        asyncio.run(gemini._call_gemini_interact("http://x", "tok", {}, 10))
 
 
 # --- link detection / routing decision ---------------------------------------

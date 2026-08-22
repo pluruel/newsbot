@@ -4,32 +4,30 @@ Claude cannot watch a video; Gemini takes a YouTube URL directly as a content
 part, so that one case routes here instead of through the tracker. Everything
 else in the system stays on the Claude paths.
 
-Auth is a GCP service-account key at ``gcp-key.json`` in the project root
-(``GCP_KEY_FILE`` overrides). No key, no YouTube analysis — the caller reports
-the error rather than silently answering without having seen the video.
+The actual Vertex call is made by an internal MCP server (``mcp.md``) that
+holds the GCP service-account key — this host never has Google credentials.
+The tracker runs with Bash on scraped article text in context, so a key on
+this disk is one injected line away from leaking. Over here only the prompt
+is built and the reply relayed; the server exposes one tool,
+``gemini_interact(model, input, system_instruction, timeout_s) -> str``.
+
+Config: ``GEMINI_MCP_URL`` and ``GEMINI_MCP_TOKEN`` (bearer). Missing either
+means no YouTube analysis — the caller reports the error rather than silently
+answering without having seen the video.
 """
-import json
+import asyncio
 import logging
 import os
 import re
-import threading
-from pathlib import Path
+from datetime import timedelta
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
-_PROJECT_ROOT = Path(__file__).parent.parent
-
 DEFAULT_MODEL = "gemini-3.7-flash"
-_SCOPES = ["https://www.googleapis.com/auth/cloud-platform"]
-# Vertex serves the Gemini 3 family from the multi-region "global" endpoint.
-_DEFAULT_LOCATION = "global"
 # TelegramSender truncates at 4096 chars, so an over-long summary loses its tail
 # with no error. Ask for less than that rather than relying on the model.
 _MAX_CHARS = 3000
-
-_client: Any | None = None
-_client_lock = threading.Lock()
 
 # Both answer paths (this one and the tracker's Claude prompt) send their text
 # straight to Telegram, which renders no markdown. One constant so the two
@@ -71,70 +69,6 @@ class GeminiError(RuntimeError):
     pass
 
 
-def key_path() -> Path:
-    """Service-account key location — ``$GCP_KEY_FILE`` or ``gcp-key.json``."""
-    override = os.environ.get("GCP_KEY_FILE")
-    return Path(override) if override else _PROJECT_ROOT / "gcp-key.json"
-
-
-def credentials_available() -> bool:
-    return key_path().is_file()
-
-
-def _build_client() -> Any:
-    # Imported lazily: without this, a host that never uses the YouTube path
-    # would still need google-genai installed just to import the tracker bot.
-    try:
-        from google.genai import Client
-        from google.oauth2 import service_account
-    except ImportError as exc:
-        raise GeminiError(f"google-genai가 설치되어 있지 않습니다 ({exc})") from exc
-
-    path = key_path()
-    if not path.is_file():
-        raise GeminiError(f"GCP 키 파일이 없습니다: {path}")
-
-    try:
-        project_id = json.loads(path.read_text()).get("project_id")
-    except (OSError, json.JSONDecodeError) as exc:
-        raise GeminiError(f"GCP 키 파일을 읽을 수 없습니다: {exc}") from exc
-
-    project = os.environ.get("GOOGLE_CLOUD_PROJECT") or project_id
-    if not project:
-        raise GeminiError(f"GCP 키에 project_id가 없습니다: {path}")
-
-    try:
-        credentials = service_account.Credentials.from_service_account_file(
-            str(path), scopes=_SCOPES
-        )
-    except Exception as exc:
-        raise GeminiError(f"GCP 자격증명 로드 실패: {exc}") from exc
-
-    return Client(
-        vertexai=True,
-        credentials=credentials,
-        project=project,
-        location=os.environ.get("GOOGLE_CLOUD_LOCATION", _DEFAULT_LOCATION),
-    )
-
-
-def _get_client() -> Any:
-    """Built once and shared across PTB worker threads, as in claude/haiku.py."""
-    global _client
-    if _client is None:
-        with _client_lock:
-            if _client is None:
-                _client = _build_client()
-    return _client
-
-
-def reset_client() -> None:
-    """Drop the cached client so the next call re-reads key file and environment."""
-    global _client
-    with _client_lock:
-        _client = None
-
-
 _SYSTEM_PROMPT = (
     "너는 시장·기술 뉴스를 다루는 개인 인텔리전스 어시스턴트다. "
     "사용자가 보낸 유튜브 영상을 직접 보고 내용을 정리해 전달한다.\n\n"
@@ -149,21 +83,63 @@ _SYSTEM_PROMPT = (
 )
 
 
+def mcp_config() -> tuple[str, str]:
+    """(url, bearer token) of the Gemini MCP server, or GeminiError if unset."""
+    url = os.environ.get("GEMINI_MCP_URL", "").strip()
+    token = os.environ.get("GEMINI_MCP_TOKEN", "").strip()
+    if not url or not token:
+        raise GeminiError(
+            "Gemini MCP 서버가 설정되지 않았습니다 (GEMINI_MCP_URL / GEMINI_MCP_TOKEN)"
+        )
+    return url, token
+
+
+async def _call_gemini_interact(
+    url: str, token: str, arguments: dict[str, Any], timeout: float
+) -> str:
+    from mcp.client.session import ClientSession
+    from mcp.client.streamable_http import streamablehttp_client
+
+    headers = {"Authorization": f"Bearer {token}"}
+    # The video analysis itself is the slow part; the per-request HTTP timeout
+    # and the SSE read timeout both have to cover it, not just the handshake.
+    async with streamablehttp_client(
+        url, headers=headers, timeout=timeout, sse_read_timeout=timeout
+    ) as (read, write, _):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+            result = await session.call_tool(
+                "gemini_interact",
+                arguments,
+                read_timeout_seconds=timedelta(seconds=timeout),
+            )
+    text = "\n".join(
+        c.text for c in result.content if getattr(c, "type", None) == "text"
+    )
+    if result.isError:
+        # The server raises a tool error for API failures and for blank
+        # output (blocked / unreachable video); the message carries the reason.
+        raise GeminiError(f"유튜브 분석에 실패했습니다: {text or 'unknown error'}")
+    return text
+
+
 def summarize_youtube(url: str, instruction: str = "", timeout: float = 300.0) -> str:
     """Watch `url` and return a plain-text Korean summary.
 
     `instruction` is whatever the user typed around the link — it steers the
     summary ("3분대 발언 위주로"). Empty means a general summary.
 
-    Uses the SDK's interactions API, whose VideoContent takes a YouTube watch
-    URL directly (no mime type, no upload). Public videos only — the model
-    cannot open private or unlisted ones.
+    Sends the prompt and the watch URL to the Gemini MCP server's
+    `gemini_interact` tool, which forwards them to Vertex's interactions API
+    (VideoContent takes a YouTube URL directly). Public videos only.
 
-    Raises GeminiError on missing credentials or any API failure.
+    Runs on a PTB worker thread (`ctx.run_in_thread`), so the async MCP client
+    is driven with `asyncio.run()` here.
+
+    Raises GeminiError when the server is unconfigured, unreachable, or returns
+    a tool error.
     """
-    from google.genai.interactions import TextContent, VideoContent
-
-    client = _get_client()
+    mcp_url, token = mcp_config()
     ask = (
         "이 영상의 내용을 정리해줘. 무엇에 대한 영상인지, 화자가 내세우는 핵심 주장과 "
         "결론이 무엇인지, 그 근거로 제시한 수치·사례가 무엇인지 짚어줘."
@@ -171,23 +147,20 @@ def summarize_youtube(url: str, instruction: str = "", timeout: float = 300.0) -
     if instruction:
         ask += f"\n\n사용자 요청: {instruction}"
 
+    arguments = {
+        "model": os.environ.get("GEMINI_MODEL", DEFAULT_MODEL),
+        "input": [{"type": "text", "text": ask}, {"type": "video", "uri": url}],
+        "system_instruction": _SYSTEM_PROMPT,
+        "timeout_s": int(timeout),
+    }
     try:
-        interaction = client.interactions.create(
-            model=os.environ.get("GEMINI_MODEL", DEFAULT_MODEL),
-            input=[TextContent(text=ask), VideoContent(uri=url)],
-            system_instruction=_SYSTEM_PROMPT,
-            timeout=timeout,
-        )
+        text = asyncio.run(_call_gemini_interact(mcp_url, token, arguments, timeout))
+    except GeminiError:
+        raise
     except Exception as exc:
-        raise GeminiError(f"Gemini 호출 실패: {type(exc).__name__}: {exc}") from exc
+        raise GeminiError(f"Gemini MCP 호출 실패: {type(exc).__name__}: {exc}") from exc
 
-    text = (interaction.output_text or "").strip()
+    text = text.strip()
     if not text:
-        # Blocked, or the video was unreachable — either way there is no summary,
-        # and returning "" would be delivered to the user as an empty reply.
-        detail = interaction.errors or interaction.status
-        raise GeminiError(
-            f"Gemini가 빈 응답을 반환했습니다 (영상이 비공개·연령제한이거나 응답이 차단됨). "
-            f"url={url} detail={detail}"
-        )
+        raise GeminiError(f"Gemini MCP 서버가 빈 응답을 반환했습니다. url={url}")
     return text

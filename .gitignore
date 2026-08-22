@@ -4,8 +4,6 @@ __pycache__/
 .env
 .venv/
 
-# GCP service-account key for the Vertex AI (Gemini) YouTube path
-gcp-key.json
 
 workspace/newsparser.db
 workspace/conversations.db
