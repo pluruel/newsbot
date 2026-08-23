@@ -158,7 +158,14 @@ def summarize_youtube(url: str, instruction: str = "", timeout: float = 300.0) -
     except GeminiError:
         raise
     except Exception as exc:
-        raise GeminiError(f"Gemini MCP 호출 실패: {type(exc).__name__}: {exc}") from exc
+        # The MCP client runs inside an anyio TaskGroup, so a transport error
+        # surfaces as "ExceptionGroup: unhandled errors in a TaskGroup" — useless
+        # in a Telegram reply. Report the leaf exception (e.g. ConnectError)
+        # instead.
+        leaf = exc
+        while isinstance(leaf, BaseExceptionGroup) and leaf.exceptions:
+            leaf = leaf.exceptions[0]
+        raise GeminiError(f"Gemini MCP 호출 실패: {type(leaf).__name__}: {leaf}") from exc
 
     text = text.strip()
     if not text:
