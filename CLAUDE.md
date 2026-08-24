@@ -31,6 +31,7 @@ When answering as the chat/tracker agent, these are available in addition to Bas
 - `get_interest_weights(category=None, days=14)` / `clear_interest_events()` — actual vs. estimated interest-profile weights, and resetting the estimation baseline.
 - `read_interests(category=None)` / `write_interests(category, content)` — per-category interest profile (`workspace/me/interests_{category}.md`).
 - `read_manifesto()` / `write_manifesto(content)` — user's manifesto (`workspace/me/manifesto.md`).
+- `read_ignore()` / `add_ignore(kind, target, note="")` / `remove_ignore(target)` — the ignore list (`workspace/me/ignore.md`): entities and storylines excluded from graph indexing and the digest. Use these rather than editing the table directly — `kind` (`entity`/`storyline`) is validated and the date stamped in KST by the tool.
 - `clear_conversation_history(chat_id=None)` — delete stored conversation turns; omit `chat_id` to clear every chat.
 - `classify_query(query)` — classifies a query as `tech`/`markets`/`both`.
 - `market_query(instruments, start, end, freq="1d")` — OHLCV tables for SPX/NDX/KOSPI/USDKRW/USDJPY/DXY/VIX/TNX; dates must be absolute, resolve relative expressions first.

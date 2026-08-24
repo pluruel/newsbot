@@ -284,3 +284,68 @@ def test_project_conversation_on_empty_chat_projects_nothing():
 
     mock_project.assert_not_called()
     assert "No stored turns" in result
+
+
+# --- ignore list tools -----------------------------------------------------
+# The confirmation phrase these return is load-bearing: tracker._ADMIN_MARKERS
+# matches on it to file the turn as `kind='admin'` and keep it out of the
+# conversational history load_history returns. Failures must NOT carry it.
+
+_IGNORE_MARKER = "ignore.md updated"
+
+
+def test_add_ignore_writes_entry_and_returns_admin_marker():
+    from newsparser.mcp_server import add_ignore, read_ignore
+    result = add_ignore("entity", "TSMC", "반복 노이즈")
+    assert _IGNORE_MARKER in result
+    assert "TSMC" in read_ignore()
+
+
+def test_add_ignore_rejects_bad_kind_without_admin_marker():
+    """An unknown 종류 makes load_ignore skip the row silently — the tool must
+    refuse, and must not look like a successful edit to _ADMIN_MARKERS."""
+    from newsparser.mcp_server import add_ignore, read_ignore
+    result = add_ignore("bogus", "TSMC")
+    assert _IGNORE_MARKER not in result
+    assert "TSMC" not in read_ignore()
+
+
+def test_add_ignore_rejects_duplicate_without_admin_marker():
+    from newsparser.mcp_server import add_ignore
+    add_ignore("entity", "TSMC")
+    result = add_ignore("entity", "tsmc")
+    assert _IGNORE_MARKER not in result
+
+
+def test_remove_ignore_drops_entry_and_returns_admin_marker():
+    from newsparser.mcp_server import add_ignore, remove_ignore, read_ignore
+    add_ignore("entity", "TSMC")
+    result = remove_ignore("TSMC")
+    assert _IGNORE_MARKER in result
+    assert "TSMC" not in read_ignore()
+
+
+def test_remove_ignore_no_match_reports_without_admin_marker():
+    from newsparser.mcp_server import remove_ignore
+    result = remove_ignore("없는것")
+    assert _IGNORE_MARKER not in result
+
+
+def test_read_ignore_never_carries_the_admin_marker():
+    """Reading is not an edit — if it matched, every 차단 리스트 lookup would be
+    dropped from conversation history."""
+    from newsparser.mcp_server import add_ignore, read_ignore
+    assert _IGNORE_MARKER not in read_ignore()          # empty list
+    add_ignore("entity", "TSMC")
+    assert _IGNORE_MARKER not in read_ignore()          # populated
+
+
+def test_ignore_tool_markers_are_all_recognised_by_tracker():
+    """Pin the two copies together: tracker filters on _ADMIN_MARKERS, the tools
+    produce the phrase. Move one, move the other."""
+    from newsparser.bot.tracker import _ADMIN_MARKERS
+    from newsparser.mcp_server import add_ignore, remove_ignore
+    added = add_ignore("entity", "TSMC")
+    removed = remove_ignore("TSMC")
+    for answer in (added, removed):
+        assert any(m in answer for m in _ADMIN_MARKERS)
