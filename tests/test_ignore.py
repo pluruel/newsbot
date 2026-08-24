@@ -11,6 +11,7 @@ from newsparser.ignore import (
     load_ignore,
     format_list,
     remove_entry,
+    today_kst,
 )
 
 
@@ -247,3 +248,13 @@ def test_remove_entry_no_match_returns_zero_and_leaves_file_untouched(tmp_path):
 
 def test_remove_entry_missing_file_returns_zero(tmp_path):
     assert remove_entry("TSMC", workspace=tmp_path / "workspace") == 0
+
+
+@freeze_time("2026-08-24 20:00:00")   # 2026-08-25 05:00 KST — inside the 00:00-09:00 gap
+def test_today_kst_matches_the_stamp_add_entry_writes(tmp_path):
+    """Writers stamp KST, so readers must render the age against KST too.
+    With date.today() on a UTC host this window produced "-1일 경과"."""
+    ws = _write_ignore(tmp_path, "| 종류 | 대상 | 추가일 | 메모 |\n|--|--|--|--|\n")
+    entry = add_entry("entity", "TSMC", workspace=ws)
+    assert today_kst() == entry.added
+    assert "0일 경과" in format_list(load_ignore(ws), today_kst())

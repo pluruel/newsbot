@@ -129,6 +129,19 @@ def format_list(ignore: IgnoreList, today: date) -> str:
 
 _KST = ZoneInfo("Asia/Seoul")
 
+
+def today_kst() -> date:
+    """Today in KST — the single clock for this list.
+
+    Entries are stamped in KST by ``add_entry``, so every reader that renders an
+    age must use the same clock. ``date.today()`` is the host's, and nothing in
+    ``deploy/`` pins the host to Asia/Seoul (the box this was written on is
+    Etc/UTC): between 00:00 and 09:00 KST it lands on the previous day and
+    ``format_list`` renders a *negative* age. Same hazard `tests/test_tracker.py`
+    pins for the tracker's interpolated wall clock.
+    """
+    return datetime.now(_KST).date()
+
 _HEADER_LINE = "| 종류 | 대상 | 추가일 | 메모 |"
 _SEPARATOR_LINE = "|------|------|--------|------|"
 _TARGET_KEYS = ("대상", "target")
@@ -176,7 +189,7 @@ def add_entry(kind: str, target: str, note: str = "",
            for e in load_ignore(workspace).entries):
         raise ValueError(f"이미 무시 목록에 있다: {target}")
 
-    stamp = today or datetime.now(_KST).date()
+    stamp = today or today_kst()
     entry = IgnoreEntry(kind=kind, target=target, added=stamp, note=note)
     row = f"| {kind} | {target} | {stamp.isoformat()} | {note} |"
 
@@ -239,7 +252,7 @@ def remove_entry(target: str, workspace: Path | str | None = None) -> int:
 
 
 def main() -> None:
-    print(format_list(load_ignore(), date.today()))
+    print(format_list(load_ignore(), today_kst()))
 
 
 if __name__ == "__main__":

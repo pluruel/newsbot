@@ -1,4 +1,5 @@
 import pytest
+from freezegun import freeze_time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -349,3 +350,12 @@ def test_ignore_tool_markers_are_all_recognised_by_tracker():
     removed = remove_ignore("TSMC")
     for answer in (added, removed):
         assert any(m in answer for m in _ADMIN_MARKERS)
+
+
+@freeze_time("2026-08-24 20:00:00")   # 2026-08-25 05:00 KST
+def test_read_ignore_renders_age_in_kst_not_host_local():
+    """add_ignore stamps KST; a host-local clock here would show "-1일 경과"
+    for an entry added moments ago. The host this runs on is Etc/UTC."""
+    from newsparser.mcp_server import add_ignore, read_ignore
+    add_ignore("entity", "TSMC")
+    assert "0일 경과" in read_ignore()

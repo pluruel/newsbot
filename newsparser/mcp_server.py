@@ -6,8 +6,6 @@ from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
-from zoneinfo import ZoneInfo as _ZoneInfo
-
 from newsparser.graph.traversal import get_context, get_influence_chain, format_context_for_claude
 from newsparser.bots.core.jobs import KILL_FILE, REQUEST_DIR, STATE_FILE
 from newsparser.classifier import classify_query as _classify_query_impl
@@ -16,8 +14,6 @@ from newsparser.market.fetcher import TICKERS as _MARKET_TICKERS
 from newsparser.paths import workspace_dir as _workspace
 from newsparser.store import sqlite as _sqlite_store
 from newsparser.store import conversations as _conv
-
-_KST_TZ = _ZoneInfo("Asia/Seoul")
 
 mcp = FastMCP("newsparser")
 
@@ -259,8 +255,9 @@ def read_ignore() -> str:
     각 항목의 종류·대상과 추가된 지 며칠 됐는지를 돌려주니 그대로 사용자에게 전달하면 된다.
     경과일은 KST 기준이다."""
     from newsparser import ignore as _ignore
-    today = _datetime.now(_KST_TZ).date()
-    return _ignore.format_list(_ignore.load_ignore(), today)
+    # ignore.today_kst(), not a local clock: add_entry stamps KST, so a host-local
+    # "today" renders a negative age between 00:00 and 09:00 KST on a UTC host.
+    return _ignore.format_list(_ignore.load_ignore(), _ignore.today_kst())
 
 
 @mcp.tool()
