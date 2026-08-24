@@ -89,6 +89,29 @@ Gotchas that bite, none obvious from the file tree:
   `runner.py` and surface in `workspace/jobs.json` under `activity.denials`. The classifier,
   resolver, and headline picker are no longer on this list — they moved to `ask_haiku`, which has
   no tool surface to police at all, so their taint is handled by construction rather than policy.
+- **The allowlist is not the whole boundary — measured, not assumed.** Probing `claude -p` on a dev
+  box with `--allowedTools "Read,Grep,Glob"` and `--permission-mode default` (i.e. no Bash): `ls`,
+  `cat`, and `git log` **ran**, and did not even register as denials; `curl` (including a `; echo`
+  chain), an arbitrary `.venv/bin/python -m …`, a `Read(*.tar.gz)`-denied file, and unlisted MCP
+  tools were all refused. `dontAsk` behaves identically. Three consequences:
+  - A read-only shell exists in **every** run whatever the allowlist says, so reflect/weekly are
+    not shell-free. (The "`/reflect` can't run the module" note above still holds — a
+    `.venv/bin/python -m` call is arbitrary execution and *is* refused — but the reason is the
+    read-only classifier, not the absence of Bash from the policy.)
+  - `permissions.deny` **is** enforced on that auto-approved path, so the crown jewels hold there.
+    Under `default` this no longer rests on the version-dependent bypassPermissions caveat in
+    `plan-tool-policy.md`.
+  - With Bash *in* the list, nothing else in the list constrains anything: a run denied an MCP tool
+    spontaneously tried to shell out to the same data. Narrow `Bash(...)` allowlists are not the
+    fix either — `run_cycle.py:376`'s safety net exists precisely because CYCLE_TOOLS' exact-match
+    whitelist gets phrased around and the graph write is silently lost.
+- **Planned, not done — the tracker drops to `default` + `Read/Grep/Glob` + `mcp__newsparser__*`.**
+  MCP server wildcards work, so there is no per-tool list to drift. Diagnosis survives on the
+  read-only path; what goes is arbitrary write and arbitrary execution. The ignore list was the one
+  feature that depended on `Edit`/`Bash`, which is why it moved to MCP tools first. Deliberately
+  **not** doing self-modification of code: it needs human review either way, so the verify/rollback
+  machinery it would require costs more than it returns. Data-tier self-edit (`/reflect` rewriting
+  interests + triage weights) stays as-is.
 - Auth is the env token (`CLAUDE_CODE_OAUTH_TOKEN` from `claude setup-token`) loaded via
   `EnvironmentFile=.env`. Persistent state is exactly `neo4j_data` + `workspace/`
   (see State & Backups below).
@@ -104,6 +127,14 @@ Gotchas that bite, none obvious from the file tree:
   (`.env`, `~/.claude`, backups), but registering them would add a second layer for Bash-based leaks.
 - **`.gitignore` omits `workspace/market.db` and `workspace/state/`** (only `newsparser.db` is
   ignored) — risk of committing binary state.
+- **The dispatcher restart guard mutates live state.** `deploy/newsbot-ops` runs
+  `import newsparser.dispatcher` as the service user from the repo root; `dispatcher.py:27` builds
+  `JobManager(_WORKSPACE)` at module scope, and `jobs.py:54-69` unlinks `workspace/jobs.kill` and
+  rewrites `workspace/jobs.json` empty. So every ops restart clears the *running* dispatcher's job
+  state and can drop a just-issued kill marker (mostly self-healing, but the kill race is real).
+  Fix: run the guard with `WORKSPACE_DIR=$(mktemp -d)`. Mandatory, not optional, if the guard is
+  ever widened past `dispatcher` — a full `pkgutil.walk_packages` sweep imports all 70 modules
+  (verified green) and so would widen the side effect too.
 - Minor: dispatcher/poller call `init_db()` but not `ensure_workspace()`, so `me/` interest /
   manifesto / ignore templates aren't seeded until the first `/cycle` (non-crash — writers self-mkdir).
 

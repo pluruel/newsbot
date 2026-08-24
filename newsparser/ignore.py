@@ -7,10 +7,11 @@ bot-editable, same tier as manifesto/interests), parsed tolerantly like
 """
 import re
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
-from newsparser._mdtable import parse_rows
+from newsparser._mdtable import is_separator, parse_rows, split_row
 from newsparser.paths import workspace_dir
 
 VALID_KINDS = ("entity", "storyline")
@@ -118,8 +119,140 @@ def format_list(ignore: IgnoreList, today: date) -> str:
     return "\n".join(lines)
 
 
+# --- writers -------------------------------------------------------------
+# The bot edits this list on the user's behalf ("무시: X"), and it used to do so
+# with the Edit tool on the raw markdown table. That put three things in the
+# model's hands that belong in code: the `종류` value (an out-of-vocabulary one
+# makes load_ignore skip the row *silently*, so the user is told it was ignored
+# while nothing filters), the KST date stamp, and the table syntax itself.
+# These writers are what the read_ignore/add_ignore/remove_ignore MCP tools call.
+
+_KST = ZoneInfo("Asia/Seoul")
+
+
+def today_kst() -> date:
+    """Today in KST — the single clock for this list.
+
+    Entries are stamped in KST by ``add_entry``, so every reader that renders an
+    age must use the same clock. ``date.today()`` is the host's, and nothing in
+    ``deploy/`` pins the host to Asia/Seoul (the box this was written on is
+    Etc/UTC): between 00:00 and 09:00 KST it lands on the previous day and
+    ``format_list`` renders a *negative* age. Same hazard `tests/test_tracker.py`
+    pins for the tracker's interpolated wall clock.
+    """
+    return datetime.now(_KST).date()
+
+_HEADER_LINE = "| 종류 | 대상 | 추가일 | 메모 |"
+_SEPARATOR_LINE = "|------|------|--------|------|"
+_TARGET_KEYS = ("대상", "target")
+
+
+def ignore_path(workspace: Path | str | None = None) -> Path:
+    """Location of the ignore table."""
+    return _workspace(workspace) / "me" / "ignore.md"
+
+
+def _clean_cell(value: str) -> str:
+    """Collapse whitespace and reject the pipe, which would split the cell."""
+    cleaned = " ".join((value or "").split())
+    if "|" in cleaned:
+        raise ValueError("'|' 문자는 표를 깨뜨려서 쓸 수 없다")
+    return cleaned
+
+
+def _target_column(header_cells: list[str]) -> int:
+    """Index of the target column, so a reordered/renamed header still works."""
+    lowered = [h.strip().lower() for h in header_cells]
+    for key in _TARGET_KEYS:
+        if key in lowered:
+            return lowered.index(key)
+    return 1  # 종류 | 대상 | ... — the documented order
+
+
+def add_entry(kind: str, target: str, note: str = "",
+              workspace: Path | str | None = None,
+              today: date | None = None) -> IgnoreEntry:
+    """Append one row to the ignore table. Returns the entry that was written.
+
+    Raises ValueError on an unknown kind, a blank target, or a duplicate —
+    callers surface the message to the user rather than reporting success.
+    """
+    kind = (kind or "").strip().lower()
+    if kind not in VALID_KINDS:
+        raise ValueError(f"종류는 {' 또는 '.join(VALID_KINDS)} 여야 한다 (받은 값: {kind or '빈 값'})")
+    target = _clean_cell(target)
+    if not target:
+        raise ValueError("대상이 비어 있다")
+    note = _clean_cell(note)
+
+    if any(e.target.casefold() == target.casefold()
+           for e in load_ignore(workspace).entries):
+        raise ValueError(f"이미 무시 목록에 있다: {target}")
+
+    stamp = today or today_kst()
+    entry = IgnoreEntry(kind=kind, target=target, added=stamp, note=note)
+    row = f"| {kind} | {target} | {stamp.isoformat()} | {note} |"
+
+    path = ignore_path(workspace)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    text = path.read_text(encoding="utf-8") if path.exists() else ""
+    lines = text.splitlines()
+    last_table_line = max(
+        (i for i, line in enumerate(lines) if line.strip().startswith("|")),
+        default=None,
+    )
+    if last_table_line is None:
+        # No table yet (or no file) — create one, keeping any prose above it.
+        if lines and lines[-1].strip():
+            lines.append("")
+        lines += [_HEADER_LINE, _SEPARATOR_LINE, row]
+    else:
+        lines.insert(last_table_line + 1, row)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return entry
+
+
+def remove_entry(target: str, workspace: Path | str | None = None) -> int:
+    """Drop every row whose target equals ``target`` (casefolded). Returns the
+    number of rows removed; 0 means nothing matched."""
+    wanted = _clean_cell(target).casefold()
+    if not wanted:
+        raise ValueError("대상이 비어 있다")
+
+    path = ignore_path(workspace)
+    if not path.exists():
+        return 0
+
+    kept: list[str] = []
+    removed = 0
+    header: list[str] | None = None
+    col = 1
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip().startswith("|"):
+            kept.append(line)
+            continue
+        cells = split_row(line)
+        if header is None:
+            header = cells
+            col = _target_column(cells)
+            kept.append(line)
+            continue
+        if is_separator(cells):
+            kept.append(line)
+            continue
+        cell = cells[col].strip() if col < len(cells) else ""
+        if cell.casefold() == wanted:
+            removed += 1
+            continue
+        kept.append(line)
+
+    if removed:
+        path.write_text("\n".join(kept) + "\n", encoding="utf-8")
+    return removed
+
+
 def main() -> None:
-    print(format_list(load_ignore(), date.today()))
+    print(format_list(load_ignore(), today_kst()))
 
 
 if __name__ == "__main__":

@@ -1,13 +1,17 @@
 import textwrap
 from datetime import date
 
+import pytest
 from freezegun import freeze_time
 
 from newsparser.ignore import (
     IgnoreEntry,
     IgnoreList,
+    add_entry,
     load_ignore,
     format_list,
+    remove_entry,
+    today_kst,
 )
 
 
@@ -150,3 +154,107 @@ def test_format_list_shows_days_since_added(tmp_path):
 def test_format_list_empty(tmp_path):
     ig = IgnoreList([])
     assert format_list(ig, date(2026, 6, 28)) == "무시 목록이 비어 있음"
+
+
+# --- writers ---------------------------------------------------------------
+
+def test_add_entry_appends_row_and_keeps_prose(tmp_path):
+    ws = _write_ignore(tmp_path, textwrap.dedent("""\
+        # 무시 목록
+
+        봇이 이 목록의 대상을 제외한다.
+
+        | 종류 | 대상 | 추가일 | 메모 |
+        |------|------|--------|------|
+    """))
+    add_entry("entity", "TSMC", "반복 노이즈", workspace=ws, today=date(2026, 8, 25))
+
+    text = (ws / "me" / "ignore.md").read_text()
+    assert "봇이 이 목록의 대상을 제외한다." in text      # prose survives
+    assert "| entity | TSMC | 2026-08-25 | 반복 노이즈 |" in text
+    assert [e.target for e in load_ignore(ws).entries] == ["TSMC"]
+
+
+def test_add_entry_creates_table_when_file_has_none(tmp_path):
+    ws = _write_ignore(tmp_path, "# 무시 목록\n")
+    add_entry("storyline", "Opus 4.8 API 미등장", workspace=ws, today=date(2026, 8, 25))
+    ig = load_ignore(ws)
+    assert [(e.kind, e.target) for e in ig.entries] == [("storyline", "Opus 4.8 API 미등장")]
+
+
+def test_add_entry_creates_file_when_missing(tmp_path):
+    ws = tmp_path / "workspace"
+    add_entry("entity", "TSMC", workspace=ws, today=date(2026, 8, 25))
+    assert [e.target for e in load_ignore(ws).entries] == ["TSMC"]
+
+
+@freeze_time("2026-08-24 20:00:00")   # 2026-08-25 05:00 KST
+def test_add_entry_stamps_kst_date_not_utc(tmp_path):
+    """The bot's user-facing dates are KST; a UTC stamp would render the entry
+    a day early and make format_list show a negative age."""
+    ws = _write_ignore(tmp_path, "| 종류 | 대상 | 추가일 | 메모 |\n|--|--|--|--|\n")
+    entry = add_entry("entity", "TSMC", workspace=ws)
+    assert entry.added == date(2026, 8, 25)
+
+
+def test_add_entry_rejects_values_that_load_ignore_would_silently_skip(tmp_path):
+    """An out-of-vocabulary 종류 makes load_ignore drop the row without a word,
+    so the user hears "차단했다" while nothing filters. Reject it at write time."""
+    ws = _write_ignore(tmp_path, "| 종류 | 대상 | 추가일 | 메모 |\n|--|--|--|--|\n")
+    for kind, target in [("bogus", "X"), ("", "X"), ("entity", "  ")]:
+        with pytest.raises(ValueError):
+            add_entry(kind, target, workspace=ws)
+    assert load_ignore(ws).entries == []
+
+
+def test_add_entry_rejects_pipe_that_would_split_the_cell(tmp_path):
+    ws = _write_ignore(tmp_path, "| 종류 | 대상 | 추가일 | 메모 |\n|--|--|--|--|\n")
+    with pytest.raises(ValueError):
+        add_entry("entity", "A | B", workspace=ws)
+
+
+def test_add_entry_rejects_duplicate_casefolded(tmp_path):
+    ws = _write_ignore(tmp_path, "| 종류 | 대상 | 추가일 | 메모 |\n|--|--|--|--|\n")
+    add_entry("entity", "TSMC", workspace=ws, today=date(2026, 8, 25))
+    with pytest.raises(ValueError):
+        add_entry("entity", "tsmc", workspace=ws, today=date(2026, 8, 25))
+    assert len(load_ignore(ws).entries) == 1
+
+
+def test_remove_entry_drops_row_and_keeps_table_and_prose(tmp_path):
+    ws = _write_ignore(tmp_path, textwrap.dedent("""\
+        # 무시 목록
+
+        설명 문단.
+
+        | 종류 | 대상 | 추가일 | 메모 |
+        |------|------|--------|------|
+        | entity | TSMC | 2026-08-25 |  |
+        | storyline | Opus 4.8 API 미등장 | 2026-08-25 |  |
+    """))
+    assert remove_entry("tsmc", workspace=ws) == 1          # casefold
+    text = (ws / "me" / "ignore.md").read_text()
+    assert "설명 문단." in text
+    assert "| 종류 | 대상 | 추가일 | 메모 |" in text
+    assert [e.target for e in load_ignore(ws).entries] == ["Opus 4.8 API 미등장"]
+
+
+def test_remove_entry_no_match_returns_zero_and_leaves_file_untouched(tmp_path):
+    body = "| 종류 | 대상 | 추가일 | 메모 |\n|--|--|--|--|\n| entity | TSMC | 2026-08-25 |  |\n"
+    ws = _write_ignore(tmp_path, body)
+    assert remove_entry("없는것", workspace=ws) == 0
+    assert (ws / "me" / "ignore.md").read_text() == body
+
+
+def test_remove_entry_missing_file_returns_zero(tmp_path):
+    assert remove_entry("TSMC", workspace=tmp_path / "workspace") == 0
+
+
+@freeze_time("2026-08-24 20:00:00")   # 2026-08-25 05:00 KST — inside the 00:00-09:00 gap
+def test_today_kst_matches_the_stamp_add_entry_writes(tmp_path):
+    """Writers stamp KST, so readers must render the age against KST too.
+    With date.today() on a UTC host this window produced "-1일 경과"."""
+    ws = _write_ignore(tmp_path, "| 종류 | 대상 | 추가일 | 메모 |\n|--|--|--|--|\n")
+    entry = add_entry("entity", "TSMC", workspace=ws)
+    assert today_kst() == entry.added
+    assert "0일 경과" in format_list(load_ignore(ws), today_kst())

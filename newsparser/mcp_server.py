@@ -250,6 +250,61 @@ def write_interests(category: str, content: str) -> str:
 
 
 @mcp.tool()
+def read_ignore() -> str:
+    """무시 목록 조회 — "차단 리스트", "무시 목록 보여줘" 같은 요청에 쓴다.
+    각 항목의 종류·대상과 추가된 지 며칠 됐는지를 돌려주니 그대로 사용자에게 전달하면 된다.
+    경과일은 KST 기준이다."""
+    from newsparser import ignore as _ignore
+    # ignore.today_kst(), not a local clock: add_entry stamps KST, so a host-local
+    # "today" renders a negative age between 00:00 and 09:00 KST on a UTC host.
+    return _ignore.format_list(_ignore.load_ignore(), _ignore.today_kst())
+
+
+@mcp.tool()
+def add_ignore(kind: str, target: str, note: str = "") -> str:
+    """무시 목록에 항목을 추가한다 — 사용자가 "무시: X", "X 무시해"처럼 특정 화제를
+    더는 다루지 말라고 할 때 쓴다. ignore.md를 Edit으로 직접 고치지 마라.
+
+    kind: 회사·인물·제품 같은 단일 엔티티명이면 'entity', 서사나 주장 문구면 'storyline'.
+    target: 무시할 대상. **부분일치**로 걸리므로 짧을수록 넓게 잡힌다 — 사용자가 말한
+        범위보다 넓어질 것 같으면 먼저 확인해라. (ASCII 대상은 단어 경계를 지켜서
+        'ai'가 'openai'에 걸리지는 않지만, 한글 대상은 순수 부분일치다.)
+    note: 왜 무시하는지(선택).
+
+    추가일은 서버가 KST 오늘로 기록하니 넘기지 마라. 알 수 없는 kind, 빈 대상,
+    이미 있는 대상은 에러 문구를 돌려준다 — 그 경우 성공했다고 답하지 말고 문구를 전달해라.
+
+    적용 시점: 다음 사이클부터다. 이미 만들어진 리포트에서 소급 삭제되지는 않는다.
+    걸리는 지점은 두 곳 — 지식그래프 색인(엔티티/관계가 저장 전에 제외됨)과
+    텔레그램 다이제스트 출력이다."""
+    from newsparser import ignore as _ignore
+    try:
+        entry = _ignore.add_entry(kind, target, note)
+    except ValueError as exc:
+        return f"무시 목록에 추가하지 못했다: {exc}"
+    total = len(_ignore.load_ignore().entries)
+    return (f"ignore.md updated — [{entry.kind}] {entry.target} 추가 "
+            f"(추가일 {entry.added.isoformat()}, 총 {total}건)")
+
+
+@mcp.tool()
+def remove_ignore(target: str) -> str:
+    """무시 목록에서 항목을 제거한다 — "무시 해제: X"에 쓴다.
+    대상 이름이 정확히 일치해야 지워지므로, 사용자가 부정확하게 말했으면
+    먼저 read_ignore()로 실제 등록된 문자열을 확인해라.
+    일치하는 항목이 없으면 그 사실을 돌려준다 — 지웠다고 답하지 마라."""
+    from newsparser import ignore as _ignore
+    try:
+        removed = _ignore.remove_entry(target)
+    except ValueError as exc:
+        return f"무시 해제하지 못했다: {exc}"
+    if not removed:
+        return f"무시 목록에 '{target}' 항목이 없다 — 지운 것 없음."
+    total = len(_ignore.load_ignore().entries)
+    return f"ignore.md updated — '{target}' {removed}건 제거 (남은 {total}건)"
+
+
+@mcp.tool()
 def read_manifesto() -> str:
     """Read the user's manifesto (perspective/goals)."""
     path = _workspace() / "me" / "manifesto.md"
