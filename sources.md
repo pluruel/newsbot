@@ -14,7 +14,6 @@
 | Claude Code Releases | https://github.com/anthropics/claude-code/releases.atom | international | tech | no |
 | Google DeepMind Blog | https://deepmind.google/blog/rss.xml | international | tech | no |
 | TechCrunch AI | https://techcrunch.com/category/artificial-intelligence/feed/ | international | tech | no |
-| VentureBeat AI | https://venturebeat.com/category/ai/feed | tech | tech | no |
 | Hacker News | https://news.ycombinator.com/rss | tech |  | no |
 | Ars Technica | https://feeds.arstechnica.com/arstechnica/index | tech |  | no |
 | MIT Technology Review | https://www.technologyreview.com/feed/ | tech |  | no |
