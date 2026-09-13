@@ -646,19 +646,26 @@ def test_run_cycle_records_category_failure_in_daily_log(tmp_path):
     assert "claude timed out after 1500s" in log_text
 
 
+def _sources(*names):
+    from newsparser.collector.sources import Source
+    return [Source(name=n, rss_url="https://example.com/rss", tier="tech") for n in names]
+
+
 def test_report_feed_health_sends_only_when_persistent():
     from newsparser.store.sqlite import record_feed_failure
 
     # 임계 미만(11회) — 발송 없음
     for _ in range(script.FEED_HEALTH_MIN_FAILURES - 1):
         record_feed_failure("중앙일보", "HTTP 404")
-    with patch.object(script, "send_long_message") as mock_send:
+    with patch.object(script, "send_long_message") as mock_send, \
+         patch.object(script, "load_sources", return_value=_sources("중앙일보")):
         script._report_feed_health()
     mock_send.assert_not_called()
 
     # 임계 도달 — 소스명·횟수·에러가 담긴 메시지 발송
     record_feed_failure("중앙일보", "HTTP 404")
-    with patch.object(script, "send_long_message") as mock_send:
+    with patch.object(script, "send_long_message") as mock_send, \
+         patch.object(script, "load_sources", return_value=_sources("중앙일보")):
         script._report_feed_health()
     mock_send.assert_called_once()
     msg = mock_send.call_args[0][0]
@@ -666,3 +673,14 @@ def test_report_feed_health_sends_only_when_persistent():
     assert "중앙일보" in msg
     assert f"{script.FEED_HEALTH_MIN_FAILURES}회 연속 실패" in msg
     assert "HTTP 404" in msg
+
+
+def test_report_feed_health_skips_sources_removed_from_sources_md():
+    from newsparser.store.sqlite import record_feed_failure
+
+    for _ in range(script.FEED_HEALTH_MIN_FAILURES):
+        record_feed_failure("VentureBeat AI", "429 Client Error")
+    with patch.object(script, "send_long_message") as mock_send, \
+         patch.object(script, "load_sources", return_value=_sources("Hacker News")):
+        script._report_feed_health()
+    mock_send.assert_not_called()

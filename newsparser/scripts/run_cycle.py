@@ -15,6 +15,7 @@ from newsparser.claude.input_builder import build_input_file
 from newsparser.claude.policy import CYCLE_TOOLS
 from newsparser.claude.runner import ClaudeError, ClaudeKilled, run_claude
 from newsparser.classifier import CATEGORIES
+from newsparser.collector.sources import load_sources
 from newsparser.dedup import dedupe_pending
 from newsparser.market import snapshot as market_snapshot
 from newsparser.market import store as market_store
@@ -442,6 +443,10 @@ def _report_feed_health() -> None:
     last_error can carry verbatim HTML fragments from a broken endpoint.
     """
     failing = get_failing_feeds(FEED_HEALTH_MIN_FAILURES)
+    # feed_health rows outlive their source — once a feed is dropped from
+    # sources.md, stop nagging about it.
+    active = {s.name for s in load_sources()}
+    failing = [row for row in failing if row["source"] in active]
     if not failing:
         return
     lines = ["⚠️ 피드 이상 — sources.md 점검 필요"]
