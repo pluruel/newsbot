@@ -65,3 +65,48 @@ def test_poll_interval_default_is_300s(monkeypatch):
     finally:
         monkeypatch.undo()
         importlib.reload(run_poller)
+
+
+class _StopLoop(Exception):
+    pass
+
+
+class _FakeTime:
+    def __init__(self):
+        self.now = 0.0
+        self.ticks = 0
+
+    def monotonic(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.now += seconds
+        self.ticks += 1
+        if self.ticks >= 7:
+            raise _StopLoop
+
+
+def test_feeds_are_fetched_on_their_own_interval_not_every_tick(monkeypatch):
+    """매일경제가 300s 페치를 차단했으므로 피드만 늦춘다. 루프 틱은 그대로여야
+    15m 바 판정과 스파이크 baseline 반감기가 지금 튜닝된 값을 유지한다."""
+    clock = _FakeTime()
+    monkeypatch.setattr(run_poller, "time", clock)
+    monkeypatch.setattr(run_poller, "POLL_INTERVAL", 300)
+    monkeypatch.setattr(run_poller, "FEED_INTERVAL", 900)
+    monkeypatch.setattr(run_poller, "init_db", lambda: None)
+    monkeypatch.setattr(run_poller, "init_market_db", lambda: None)
+    monkeypatch.setattr(run_poller, "_seed_baseline", lambda: None)
+    monkeypatch.setattr(run_poller, "load_sources", lambda: [])
+    monkeypatch.setattr(run_poller, "get_recent", lambda minutes: [])
+    monkeypatch.setattr(run_poller, "detect_convergence", lambda a: [])
+    monkeypatch.setattr(run_poller, "detect_spike", lambda a, b: [])
+    monkeypatch.setattr(run_poller, "_triage_pass", lambda: None)
+    monkeypatch.setattr(run_poller, "_market_pulse", lambda: None)
+
+    with patch.object(run_poller, "poll_all", return_value=[]) as poll_all:
+        with pytest.raises(_StopLoop):
+            run_poller.run()
+
+    # Ticks at 0,300,...,1800 — feeds only at 0s, 900s, 1800s.
+    assert clock.ticks == 7
+    assert poll_all.call_count == 3

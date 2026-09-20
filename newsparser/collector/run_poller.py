@@ -32,6 +32,10 @@ logger = logging.getLogger(__name__)
 # and halving the interval does not change the body-scraping total — only the
 # RSS fetches double.
 POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL_SECONDS", "300"))
+# RSS 페치만 별도 주기로 떼어낸 이유: 매일경제가 300s 간격에 연결 자체를 거부하기
+# 시작했다 (2026-09-20, 36회 연속 실패). 루프 틱은 300s 그대로여야 15m 바를
+# 놓치지 않으므로, 틱은 두고 피드만 이 간격으로 늦춘다.
+FEED_INTERVAL = int(os.environ.get("FEED_INTERVAL_SECONDS", "900"))
 SPIKE_COOLDOWN_HOURS = 1
 # The spike baseline decays per *tick*, so its wall-clock memory depends on the
 # poll interval — derive the per-tick α from a fixed half-life instead of
@@ -138,13 +142,17 @@ def run() -> None:
     if MARKET_PULSE_ENABLED:
         init_market_db()
     sources = load_sources()
-    logger.info("Loaded %d sources. Poll interval: %ds. Market pulse: %s",
-                len(sources), POLL_INTERVAL, "on" if MARKET_PULSE_ENABLED else "off")
+    logger.info("Loaded %d sources. Poll interval: %ds. Feed interval: %ds. Market pulse: %s",
+                len(sources), POLL_INTERVAL, FEED_INTERVAL,
+                "on" if MARKET_PULSE_ENABLED else "off")
 
+    next_feed_poll = 0.0
     while True:
-        new_articles = poll_all(sources)
-        if new_articles:
-            logger.info("Fetched %d new articles", len(new_articles))
+        if time.monotonic() >= next_feed_poll:
+            new_articles = poll_all(sources)
+            next_feed_poll = time.monotonic() + FEED_INTERVAL
+            if new_articles:
+                logger.info("Fetched %d new articles", len(new_articles))
 
         recent = get_recent(minutes=60)
 
