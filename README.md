@@ -51,11 +51,19 @@ All jobs run inside the `dispatcher` service (APScheduler via the python-telegra
 
 | Schedule | Job |
 |----------|-----|
-| Continuous (300s; `POLL_INTERVAL_SECONDS`) | `poller` — collect news + fire breaking/spike alerts + market volatility alerts (`MARKET_PULSE=0` to disable) |
+| Continuous (300s tick; `POLL_INTERVAL_SECONDS`) | `poller` — fire breaking/spike alerts + market volatility alerts (`MARKET_PULSE=0` to disable) + triage. RSS collection is gated separately at 900s (`FEED_INTERVAL_SECONDS`) |
 | 00 / 06 / 12 / 18 daily | `cycle`, per category (tech + markets): classify pending → cycle report → update graph → post to Telegram |
 | 07:30 daily | `market_daily` — market / FX snapshot |
 | Mon 09:00 | `weekly` rollup |
 | Sun 21:00 | `reflect` |
+
+The two poller intervals are not the same dial. `POLL_INTERVAL_SECONDS` is the
+loop tick — alerts, the spike baseline's per-tick decay, and the 15m-bar
+verdict all ride on it, so it has to stay shorter than a pulse bar.
+`FEED_INTERVAL_SECONDS` gates only the RSS fetch, which is what publishers see;
+it was raised to 900 after 매일경제 began refusing connections at the 300s rate.
+Fetches land on tick boundaries, so the feed interval rounds *up* to the next
+tick: a 600s tick turns a 900s feed interval into an effective 1200s.
 
 ---
 
@@ -239,7 +247,7 @@ Optional overrides (safe defaults, leave unset for a standard deploy): `CLAUDE_B
 (the units set it via `deploy/install.sh`), `NEO4J_URI` (`bolt://localhost:7687`;
 a compose-era `bolt://neo4j:7687` leftover makes `install.sh` fail — `EnvironmentFile`
 beats the unit's fallback), `NEO4J_USER` (`neo4j`), `DB_PATH`, `MARKET_DB_PATH`,
-`WORKSPACE_DIR`, `POLL_INTERVAL_SECONDS` (`300`), `FEED_INTERVAL_SECONDS` (`900`; RSS fetch only — the loop tick stays at `POLL_INTERVAL_SECONDS`), `MARKET_PULSE` (`1`; set to `0`
+`WORKSPACE_DIR`, `POLL_INTERVAL_SECONDS` (`300`), `FEED_INTERVAL_SECONDS` (`900`; RSS fetch only, rounded up to a tick boundary — see the schedule table), `MARKET_PULSE` (`1`; set to `0`
 to turn off intraday volatility alerts). `IS_SANDBOX` is no longer needed —
 claude runs as the service user, not root.
 
