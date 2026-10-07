@@ -176,3 +176,44 @@ def test_poll_source_records_feed_health():
          patch("newsparser.collector.poller.insert_article"):
         poll_source(src)
     assert get_failing_feeds(min_consecutive=1) == []
+
+
+def test_fetch_feed_uses_per_host_ua_override():
+    from unittest.mock import patch, MagicMock
+    from newsparser.collector.poller import USER_AGENT, _fetch_feed
+
+    resp = MagicMock()
+    resp.content = b"<rss/>"
+    with patch("newsparser.collector.poller.requests.get", return_value=resp) as mock_get:
+        _fetch_feed("https://news.ycombinator.com/rss")
+        _fetch_feed("https://www.hankyung.com/feed/all-news")
+
+    hn_ua = mock_get.call_args_list[0].kwargs["headers"]["User-Agent"]
+    hk_ua = mock_get.call_args_list[1].kwargs["headers"]["User-Agent"]
+    # HN 419s on browser-like agents; hankyung's WAF needs exactly the stub.
+    assert "Mozilla" not in hn_ua
+    assert hk_ua == USER_AGENT
+
+
+def test_load_sources_preserves_query_string_url(tmp_path):
+    """Yahoo's working endpoint carries ?s=^GSPC,^IXIC,^DJI&region=... — the
+    table parser must not truncate at the '?', ',' or '&'."""
+    url = ("https://feeds.finance.yahoo.com/rss/2.0/headline"
+           "?s=^GSPC,^IXIC,^DJI&region=US&lang=en-US")
+    md = textwrap.dedent(f"""\
+        | Name | RSS URL | Tier | Category | Paywall |
+        |------|---------|------|----------|---------|
+        | Yahoo Finance | {url} | international | markets | no |
+    """)
+    p = tmp_path / "sources.md"
+    p.write_text(md)
+    sources = load_sources(str(p))
+    assert len(sources) == 1
+    assert sources[0].rss_url == url
+
+
+def test_repo_sources_yahoo_endpoint_is_not_the_dead_index_feed():
+    """The news/rssindex path 404s; guard against it creeping back in."""
+    yahoo = [s for s in load_sources("sources.md") if s.name == "Yahoo Finance"]
+    assert len(yahoo) == 1
+    assert "news/rssindex" not in yahoo[0].rss_url

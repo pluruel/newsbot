@@ -1,5 +1,6 @@
 import logging
 from datetime import datetime, timedelta, timezone
+from urllib.parse import urlparse
 
 import feedparser
 import requests
@@ -21,6 +22,13 @@ logger = logging.getLogger(__name__)
 # hankyung's WAF also rejects full Chrome UA strings but accepts this stub.
 USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"
 
+# news.ycombinator.com wants the opposite of hankyung: any browser-like UA gets
+# a 6-byte "Sorry\n" body with HTTP 419, while a plain descriptive agent is
+# served the feed. Per-host override keyed on the URL netloc.
+UA_OVERRIDES = {
+    "news.ycombinator.com": "newsbot/1.0 (personal RSS reader)",
+}
+
 # A newly added feed can carry a deep archive (openai.com/news/rss.xml ships
 # 1,100+ entries) — entries older than this are marked seen without being
 # inserted, so they never reach a /cycle or get body-scraped.
@@ -36,7 +44,8 @@ def _is_stale(entry) -> bool:
 
 
 def _fetch_feed(url: str) -> bytes:
-    resp = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=30)
+    agent = UA_OVERRIDES.get(urlparse(url).netloc, USER_AGENT)
+    resp = requests.get(url, headers={"User-Agent": agent}, timeout=30)
     resp.raise_for_status()
     return resp.content
 
