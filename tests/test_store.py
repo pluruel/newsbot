@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 
 from newsparser.store.sqlite import (
     init_db, is_seen, mark_seen, insert_article, get_unprocessed,
-    mark_processed, mark_alerted, get_unclassified, update_category,
+    mark_processed, record_alert, get_alerted_guids, get_unclassified, update_category,
     get_between, _connection,
 )
 
@@ -38,13 +38,61 @@ def test_mark_processed():
     assert len(rows) == 1
     assert rows[0]["guid"] == "guid-2"
 
-def test_mark_alerted():
-    insert_article("guid-1", "Reuters", "Title", "https://example.com", None, "body")
-    mark_alerted("guid-1")
+def test_record_alert_logs_alert_and_articles():
+    insert_article("guid-1", "Reuters", "T1", "https://e.com/1", None, "b", category="markets")
+    insert_article("guid-2", "FT", "T2", "https://e.com/2", None, "b", category="tech")
+    arts = [{"guid": "guid-1", "category": "markets"}, {"guid": "guid-2", "category": "tech"}]
+    alert_id = record_alert("breaking", arts, "⚡ Breaking")
+    with _connection() as conn:
+        row = conn.execute("SELECT kind, category, message, backfilled FROM alerts WHERE id = ?",
+                           (alert_id,)).fetchone()
+        guids = {r[0] for r in conn.execute(
+            "SELECT guid FROM alert_articles WHERE alert_id = ?", (alert_id,))}
+    assert tuple(row) == ("breaking", "both", "⚡ Breaking", 0)
+    assert guids == {"guid-1", "guid-2"}
+
+
+def test_get_alerted_guids_filters_by_kind():
+    record_alert("breaking", [{"guid": "g1", "category": "tech"}], "b")
+    record_alert("spike", [{"guid": "g2", "category": None}], "s")
+    assert get_alerted_guids(["g1", "g2", "g3"], "breaking") == {"g1"}
+    assert get_alerted_guids(["g1", "g2", "g3"], "spike") == {"g2"}
+    assert get_alerted_guids([], "breaking") == set()
+
+
+def test_record_alert_category_rules():
+    from newsparser.store.sqlite import alert_category
+    assert alert_category([{"category": "tech"}, {"category": "tech"}]) == "tech"
+    assert alert_category([{"category": "markets"}, {"category": None}]) == "markets"
+    assert alert_category([{"category": None}]) is None
+
+
+def test_init_db_migrates_legacy_alerted_column():
+    """Pre-alerts DBs carry pending_articles.alerted. init_db moves alerted=1
+    rows into alerts (grouped by fetch-time gap, backfilled=1) and drops the
+    column — the flag's history must survive the drop."""
     import sqlite3, os
     with sqlite3.connect(os.environ["DB_PATH"]) as conn:
-        row = conn.execute("SELECT alerted FROM pending_articles WHERE guid = ?", ("guid-1",)).fetchone()
-    assert row[0] == 1
+        conn.execute("ALTER TABLE pending_articles ADD COLUMN alerted INTEGER DEFAULT 0")
+        rows = [("a1", "S1", "2026-05-18T17:43:00", "tech", 1),
+                ("a2", "S2", "2026-05-18T17:53:00", "markets", 1),
+                ("b1", "S1", "2026-05-19T22:01:00", "tech", 1),
+                ("n1", "S1", "2026-05-19T22:02:00", "tech", 0)]
+        conn.executemany(
+            "INSERT INTO pending_articles (guid, source, title, url, fetched_at, category, alerted) "
+            "VALUES (?, ?, 't', 'u', ?, ?, ?)", rows)
+    init_db()
+    init_db()  # second run is a no-op
+    with sqlite3.connect(os.environ["DB_PATH"]) as conn:
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(pending_articles)")]
+        alerts = conn.execute(
+            "SELECT id, kind, category, sent_at, backfilled FROM alerts ORDER BY id").fetchall()
+        members = conn.execute(
+            "SELECT alert_id, guid FROM alert_articles ORDER BY alert_id, guid").fetchall()
+    assert "alerted" not in cols
+    assert [(k, c, b) for _, k, c, _, b in alerts] == [("breaking", "both", 1), ("breaking", "tech", 1)]
+    assert alerts[0][3] == "2026-05-18T17:53:00+00:00"
+    assert members == [(alerts[0][0], "a1"), (alerts[0][0], "a2"), (alerts[1][0], "b1")]
 
 
 def test_init_db_adds_category_column_idempotent():

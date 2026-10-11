@@ -10,7 +10,8 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from newsparser.store.sqlite import (
-    init_db, get_recent, get_untriaged, hourly_counts, mark_alerted, update_triage,
+    init_db, get_alerted_guids, get_recent, get_untriaged, hourly_counts, record_alert,
+    update_triage,
 )
 from newsparser.triage import triage_article
 from newsparser.collector.sources import load_sources
@@ -157,16 +158,16 @@ def run() -> None:
         recent = get_recent(minutes=60)
 
         # 크로스소스 수렴 감지 (이미 알림 발송한 기사 제외)
-        unalerted = [a for a in recent if not a["alerted"]]
-        clusters = detect_convergence(unalerted)
+        alerted = get_alerted_guids([a["guid"] for a in recent], "breaking")
+        clusters = detect_convergence([a for a in recent if a["guid"] not in alerted])
         for cluster in clusters:
             titles = " / ".join(a["title"][:40] for a in cluster[:3])
             sources_str = ", ".join(sorted({a["source"] for a in cluster}))
             msg = f"⚡ Breaking ({sources_str})\n{titles}"
             logger.warning("Breaking detected: %s", titles)
+            # 기록 먼저 — 발송이 실패해도 같은 묶음을 다음 틱에 다시 보내지 않게
+            record_alert("breaking", cluster, msg)
             _send(msg)
-            for a in cluster:
-                mark_alerted(a["guid"])
 
         # 볼륨 스파이크 감지
         spiking = detect_spike(recent, BASELINE)
@@ -179,6 +180,7 @@ def run() -> None:
             titles = "\n".join(f"· {a['title'][:60]}" for a in source_articles[:3])
             msg = f"📈 Volume spike: {source}\n{titles}"
             logger.warning("Spike: %s", source)
+            record_alert("spike", source_articles, msg)
             _send(msg)
             _spike_alerted_at[source] = now
 

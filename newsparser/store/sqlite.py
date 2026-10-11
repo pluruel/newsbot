@@ -45,7 +45,6 @@ def init_db() -> None:
                 published   TEXT,
                 body        TEXT,
                 fetched_at  TEXT NOT NULL,
-                alerted     INTEGER DEFAULT 0,
                 processed   INTEGER DEFAULT 0
             );
             CREATE TABLE IF NOT EXISTS seen_articles (
@@ -66,6 +65,25 @@ def init_db() -> None:
                 output_tokens INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY (day, tag)
             );
+            -- One row per Telegram alert the poller sent (breaking/spike), with
+            -- its articles in alert_articles. Market pulse keeps its own record
+            -- in market.db (market_pulse). Also the breaking dedup source: an
+            -- article already in a breaking alert is not clustered again.
+            CREATE TABLE IF NOT EXISTS alerts (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                kind       TEXT NOT NULL CHECK (kind IN ('breaking', 'spike')),
+                category   TEXT CHECK (category IN ('tech', 'markets', 'both')),
+                sent_at    TEXT NOT NULL,
+                message    TEXT,
+                backfilled INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE INDEX IF NOT EXISTS idx_alerts_sent_at ON alerts(sent_at);
+            CREATE TABLE IF NOT EXISTS alert_articles (
+                alert_id INTEGER NOT NULL REFERENCES alerts(id),
+                guid     TEXT NOT NULL,
+                PRIMARY KEY (alert_id, guid)
+            );
+            CREATE INDEX IF NOT EXISTS idx_alert_articles_guid ON alert_articles(guid);
         """)
         # Idempotent column additions. SQLite raises OperationalError if column exists.
         for ddl in ("ALTER TABLE pending_articles ADD COLUMN category TEXT",
@@ -77,8 +95,78 @@ def init_db() -> None:
                 conn.commit()
             except sqlite3.OperationalError:
                 pass
+        _migrate_alerted_column(conn)
     finally:
         conn.close()
+
+
+# Gap that splits legacy alerted=1 rows into separate alerts. The flag kept no
+# alert boundary or send time, so backfilled alerts are approximate: rows
+# fetched within this gap of each other are taken as one cluster, sent at the
+# last row's fetched_at. 15 = the convergence window (alert.WINDOW_MINUTES).
+_BACKFILL_GAP_MIN = 15
+
+
+def _migrate_alerted_column(conn: sqlite3.Connection) -> None:
+    """Move legacy pending_articles.alerted=1 rows into alerts (backfilled=1)
+    and drop the column. Runs once; the column check happens under the write
+    lock so concurrent init_db callers can't both backfill."""
+    if "alerted" not in {r[1] for r in conn.execute("PRAGMA table_info(pending_articles)")}:
+        return  # common case: skip taking the write lock
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(pending_articles)")}
+        if "alerted" not in cols:
+            conn.rollback()
+            return
+        rows = conn.execute(
+            "SELECT guid, fetched_at, category FROM pending_articles "
+            "WHERE alerted = 1 ORDER BY fetched_at"
+        ).fetchall()
+        groups: list[list[sqlite3.Row]] = []
+        prev: datetime | None = None
+        for r in rows:
+            ts = _as_utc(r["fetched_at"])
+            if prev is None or ts - prev > timedelta(minutes=_BACKFILL_GAP_MIN):
+                groups.append([])
+            groups[-1].append(r)
+            prev = ts
+        for g in groups:
+            _insert_alert(conn, "breaking", alert_category(g), _as_utc(g[-1]["fetched_at"]).isoformat(),
+                          None, [r["guid"] for r in g], backfilled=True)
+        conn.execute("ALTER TABLE pending_articles DROP COLUMN alerted")
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+
+
+def _as_utc(ts: str) -> datetime:
+    dt = datetime.fromisoformat(ts)
+    return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+
+
+def alert_category(articles) -> str | None:
+    """tech/markets when every categorized article agrees, 'both' when they
+    split, None when none is categorized yet (triage hasn't reached them)."""
+    cats = {a["category"] for a in articles if a["category"] in ("tech", "markets")}
+    if len(cats) == 2:
+        return "both"
+    return cats.pop() if cats else None
+
+
+def _insert_alert(conn: sqlite3.Connection, kind: str, category: str | None, sent_at: str,
+                  message: str | None, guids: list[str], backfilled: bool = False) -> int:
+    cur = conn.execute(
+        "INSERT INTO alerts (kind, category, sent_at, message, backfilled) VALUES (?, ?, ?, ?, ?)",
+        (kind, category, sent_at, message, int(backfilled)),
+    )
+    alert_id = cur.lastrowid
+    conn.executemany(
+        "INSERT OR IGNORE INTO alert_articles (alert_id, guid) VALUES (?, ?)",
+        [(alert_id, g) for g in guids],
+    )
+    return alert_id
 
 
 def is_seen(guid: str) -> bool:
@@ -268,11 +356,27 @@ def get_processed_since(category: str, since_iso: str) -> list[dict]:
         return [dict(r) for r in rows]
 
 
-def mark_alerted(guid: str) -> None:
+def record_alert(kind: str, articles: list[dict], message: str) -> int:
+    """Log one sent alert and the articles it carried; returns the alert id."""
     with _connection() as conn:
-        conn.execute(
-            "UPDATE pending_articles SET alerted = 1 WHERE guid = ?", (guid,)
-        )
+        return _insert_alert(conn, kind, alert_category(articles),
+                             datetime.now(timezone.utc).isoformat(), message,
+                             [a["guid"] for a in articles])
+
+
+def get_alerted_guids(guids: list[str], kind: str) -> set[str]:
+    """Subset of guids already carried by an alert of this kind."""
+    if not guids:
+        return set()
+    with _connection() as conn:
+        marks = ",".join("?" * len(guids))
+        rows = conn.execute(
+            f"""SELECT DISTINCT aa.guid FROM alert_articles aa
+                JOIN alerts a ON a.id = aa.alert_id
+                WHERE a.kind = ? AND aa.guid IN ({marks})""",
+            (kind, *guids),
+        ).fetchall()
+        return {r[0] for r in rows}
 
 
 def get_unclassified() -> list[dict]:
