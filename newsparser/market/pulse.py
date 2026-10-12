@@ -61,6 +61,12 @@ BAR_CLOSE_GRACE_S = 30
 # days old; alerting on it then reads as a live move (the message shows HH:MM
 # with no date) and attaches headlines from the entire gap.
 MAX_ALERT_AGE_MIN = 60
+# A bar is only judged against a neighbour it actually follows. The first bar
+# after a session break (overnight, weekend, VIX's daily 20:00→07:15 UTC halt)
+# is compared with the previous session's close, so its "15m" return is really
+# the whole gap's move — VIX fired +3.77% this way on a bar that itself moved
+# 0.01pt. Past this spacing the pair is not a 15m move and is not alerted.
+MAX_BAR_GAP_MIN = 60
 # Cold start: with fewer bars than this the rolling statistics are meaningless.
 MIN_BARS = BASELINE_BARS + 1
 
@@ -199,8 +205,9 @@ def detect(alias: str, now: datetime | None = None) -> dict | None:
     """Return the alert payload for `alias`'s newest closed bar, or None.
 
     None covers every non-event: not enough history, a flat bar, a market that
-    has not printed since the last check, a bar that already alerted, and a
-    newest bar too old to be news (MAX_ALERT_AGE_MIN).
+    has not printed since the last check, a bar that already alerted, a newest
+    bar too old to be news (MAX_ALERT_AGE_MIN), and the first bar after a
+    session break (MAX_BAR_GAP_MIN).
     """
     now = now or datetime.now(timezone.utc)
     bars = _closed_bars(alias, now)
@@ -212,6 +219,9 @@ def detect(alias: str, now: datetime | None = None) -> dict | None:
     if now - bar_end > timedelta(minutes=MAX_ALERT_AGE_MIN):
         return None
     if store.pulse_exists(alias, INTERVAL, latest["ts"]):
+        return None
+    gap = datetime.fromisoformat(latest["ts"]) - datetime.fromisoformat(bars[-2]["ts"])
+    if gap > timedelta(minutes=MAX_BAR_GAP_MIN):
         return None
 
     # _closed_bars guarantees positive closes, so every adjacent pair yields a

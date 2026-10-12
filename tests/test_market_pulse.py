@@ -78,6 +78,23 @@ def test_detect_skips_stale_bar():
     assert pulse.detect("KOSPI", now=NOW) is None
 
 
+def test_detect_skips_first_bar_after_session_gap():
+    """The first bar after a break is compared with the prior session's close,
+    so its return is the whole gap's move, not a 15m one."""
+    closes = _calm_then(5.0)
+    _store("VIX", closes[:-1], end=CLOSED - timedelta(hours=11))
+    _store("VIX", closes[-1:])
+    assert pulse.detect("VIX", now=NOW) is None
+
+
+def test_detect_tolerates_one_missing_bar():
+    """A single dropped bar (30m spacing) is still a live intraday move."""
+    closes = _calm_then(5.0)
+    _store("KOSPI", closes[:-1], end=CLOSED - timedelta(minutes=2 * pulse.INTERVAL_MINUTES))
+    _store("KOSPI", closes[-1:])
+    assert pulse.detect("KOSPI", now=NOW) is not None
+
+
 def test_detect_ignores_zero_close_glitch_as_latest_bar():
     """A zero-price provider glitch must not fire a ~-100% alert."""
     _store("KOSPI", _calm_then(0.1) + [0.0])
