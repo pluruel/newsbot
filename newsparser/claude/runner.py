@@ -47,15 +47,18 @@ def _claude_bin() -> str:
 
 
 class _Run:
+    # `cancel` is a callable rather than a Popen so API calls (no process) can
+    # register too — kill_job() just invokes it, whatever it tears down.
     __slots__ = ("run_id", "job_id", "pid", "prompt_head", "started_at",
-                 "last_event_at", "activity", "turns", "proc", "killed",
+                 "last_event_at", "activity", "turns", "cancel", "killed",
                  "denials", "_last_notify")
 
-    def __init__(self, run_id: int, job_id: int | None, proc: subprocess.Popen, prompt: str):
+    def __init__(self, run_id: int, job_id: int | None, prompt: str,
+                 cancel: Callable[[], None], pid: int | None = None):
         self.run_id = run_id
         self.job_id = job_id
-        self.pid = proc.pid
-        self.proc = proc
+        self.pid = pid
+        self.cancel = cancel
         self.prompt_head = prompt[:80]
         self.started_at = time.time()
         self.last_event_at = self.started_at
@@ -76,6 +79,38 @@ _JOB_DENIALS: dict[int, list[str]] = {}
 _MAX_JOB_DENIALS = 50
 
 
+def register_run(prompt: str, cancel: Callable[[], None], pid: int | None = None) -> _Run:
+    """Track an in-flight model call (subprocess or API) under the current job so
+    job_status can list it and kill_job can cancel it. Pair with unregister_run."""
+    run = _Run(next(_RUN_IDS), CURRENT_JOB.get(), prompt, cancel, pid)
+    with _ACTIVE_LOCK:
+        _ACTIVE[run.run_id] = run
+    return run
+
+
+def unregister_run(run: _Run) -> None:
+    with _ACTIVE_LOCK:
+        _ACTIVE.pop(run.run_id, None)
+        if run.denials and run.job_id is not None:
+            bucket = _JOB_DENIALS.setdefault(run.job_id, [])
+            bucket.extend(run.denials)
+            del bucket[_MAX_JOB_DENIALS:]
+
+
+def note_activity(run: _Run, desc: str, *, turn: bool = False) -> None:
+    run.last_event_at = time.time()
+    if turn:
+        run.turns += 1
+    run.activity = desc
+    hook = on_activity
+    if hook and run.last_event_at - run._last_notify >= _NOTIFY_INTERVAL:
+        run._last_notify = run.last_event_at
+        try:
+            hook()
+        except Exception:
+            pass
+
+
 def job_denials(job_id: int) -> list[str]:
     """Denials accumulated so far by `job_id`'s finished runs (non-destructive)."""
     with _ACTIVE_LOCK:
@@ -90,7 +125,8 @@ def consume_job_denials(job_id: int) -> list[str]:
 
 
 def active_runs() -> list[dict]:
-    """Snapshot of in-flight claude subprocesses (for job status reporting)."""
+    """Snapshot of in-flight model calls — subprocess or API (for job status
+    reporting). `pid` is None for API calls."""
     with _ACTIVE_LOCK:
         runs = list(_ACTIVE.values())
     return [
@@ -110,16 +146,17 @@ def active_runs() -> list[dict]:
 
 
 def kill_job(job_id: int) -> int:
-    """Kill every active claude subprocess tagged with `job_id`. Returns count killed.
+    """Cancel every active run tagged with `job_id`. Returns count killed.
     The killed runs raise ClaudeKilled (not a generic ClaudeError) so callers can
-    distinguish an intentional kill from a crash."""
+    distinguish an intentional kill from a crash — `killed` is set before
+    `cancel()` so the run sees it by the time its call unwinds."""
     with _ACTIVE_LOCK:
         runs = [r for r in _ACTIVE.values() if r.job_id == job_id]
     for run in runs:
         run.killed = True
         try:
-            run.proc.kill()
-        except OSError:
+            run.cancel()
+        except Exception:
             pass
     return len(runs)
 
@@ -156,23 +193,14 @@ def _describe_event(event: dict) -> str | None:
 
 
 def _note_event(run: _Run, event: dict) -> None:
-    run.last_event_at = time.time()
-    if event.get("type") == "assistant":
-        run.turns += 1
     for text in _extract_denials(event):
         run.denials.append(text)
         logger.warning("Tool call denied (run %d, job %s, prompt %r): %s",
                        run.run_id, run.job_id, run.prompt_head, text)
-    desc = _describe_event(event)
-    if desc:
-        run.activity = desc
-    hook = on_activity
-    if hook and run.last_event_at - run._last_notify >= _NOTIFY_INTERVAL:
-        run._last_notify = run.last_event_at
-        try:
-            hook()
-        except Exception:
-            pass
+    # Events without a description (system/user/result) still count as progress,
+    # so they refresh last_event_at while keeping the current activity text.
+    note_activity(run, _describe_event(event) or run.activity,
+                  turn=event.get("type") == "assistant")
 
 
 def _build_cmd(
@@ -216,9 +244,7 @@ def _run_stream(cmd: list[str], timeout: int, prompt: str) -> dict:
     except OSError as exc:
         raise ClaudeError(f"failed to start claude: {exc}") from exc
 
-    run = _Run(next(_RUN_IDS), CURRENT_JOB.get(), proc, prompt)
-    with _ACTIVE_LOCK:
-        _ACTIVE[run.run_id] = run
+    run = register_run(prompt, cancel=proc.kill, pid=proc.pid)
 
     stderr_chunks: list[str] = []
     drain = threading.Thread(target=lambda: stderr_chunks.append(proc.stderr.read()), daemon=True)
@@ -258,12 +284,7 @@ def _run_stream(cmd: list[str], timeout: int, prompt: str) -> dict:
         drain.join(timeout=5)
     finally:
         timer.cancel()
-        with _ACTIVE_LOCK:
-            _ACTIVE.pop(run.run_id, None)
-            if run.denials and run.job_id is not None:
-                bucket = _JOB_DENIALS.setdefault(run.job_id, [])
-                bucket.extend(run.denials)
-                del bucket[_MAX_JOB_DENIALS:]
+        unregister_run(run)
 
     if timed_out.is_set():
         raise ClaudeError(f"claude timed out after {timeout}s")

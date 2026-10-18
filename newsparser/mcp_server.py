@@ -501,7 +501,7 @@ def job_status() -> str:
                 if idle is None:
                     idle = act.get("idle_s", 0)
                 line += (f"\n  마지막 활동: {act['desc']} — {_fmt_elapsed(idle)} 전"
-                         f" (턴 {act.get('turns', '?')}, pid {act.get('pid', '?')})")
+                         f" (턴 {act.get('turns', '?')}, pid {act.get('pid') or 'api'})")
             else:
                 line += "\n  (활성 claude 서브프로세스 없음 — python 단계 실행 중일 수 있음)"
             lines.append(line)

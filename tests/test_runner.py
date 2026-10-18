@@ -229,3 +229,26 @@ def test_neither_system_prompt_flag_by_default(tmp_path, monkeypatch):
     argv = _argv_of(run_claude("query"))
     assert "--system-prompt" not in argv
     assert "--append-system-prompt" not in argv
+
+
+def test_register_run_visible_in_active_runs_and_killable():
+    cancelled = []
+    token = runner.CURRENT_JOB.set(42)
+    try:
+        run = runner.register_run("weekly prompt", cancel=lambda: cancelled.append(True))
+    finally:
+        runner.CURRENT_JOB.reset(token)
+    snap = [r for r in runner.active_runs() if r["run_id"] == run.run_id]
+    assert snap and snap[0]["job_id"] == 42 and snap[0]["pid"] is None
+    assert runner.kill_job(42) == 1
+    assert cancelled == [True] and run.killed
+    runner.unregister_run(run)
+    assert all(r["run_id"] != run.run_id for r in runner.active_runs())
+
+
+def test_note_activity_updates_desc_and_turns():
+    run = runner.register_run("p", cancel=lambda: None)
+    runner.note_activity(run, "응답 작성", turn=True)
+    snap = next(r for r in runner.active_runs() if r["run_id"] == run.run_id)
+    assert snap["activity"] == "응답 작성" and snap["turns"] == 1
+    runner.unregister_run(run)
