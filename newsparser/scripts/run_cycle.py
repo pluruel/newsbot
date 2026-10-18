@@ -365,11 +365,14 @@ def _run_for_category(slot: str, category: str, workspace: Path) -> None:
     guids_path.write_text("\n".join(a["guid"] for a in articles), encoding="utf-8")
 
     # Same list the guids file was written from — see build_input_file's docstring.
-    build_input_file(slot, category, articles=articles)
+    input_path = build_input_file(slot, category, articles=articles)
     logger.info("[%s] Built input file (%d articles)", category, len(articles))
+    # Without the file the call would carry no articles, yet its report would
+    # still mark the whole batch processed — fail before that, articles stay pending.
+    if not input_path.exists():
+        raise ClaudeError(f"input file missing after build ({input_path})")
 
     # Prepend a market snapshot block to the input file so Claude sees it first.
-    input_path = workspace / "input" / category / f"{slot}-input.md"
     try:
         market_store.init_market_db()
         slot_date = date.fromisoformat(slot[:10])
@@ -377,24 +380,20 @@ def _run_for_category(slot: str, category: str, workspace: Path) -> None:
     except Exception as exc:
         logger.warning("[%s] market snapshot failed: %s", category, exc)
         snapshot_block = ""
-    if snapshot_block and input_path.exists():
+    if snapshot_block:
         existing = input_path.read_text(encoding="utf-8")
         input_path.write_text(snapshot_block + "\n\n" + existing, encoding="utf-8")
 
     report_path = workspace / "cycles" / category / f"{slot}.md"
 
-    if input_path.exists():
-        input_text = input_path.read_text(encoding="utf-8")
-    else:
-        logger.warning("[%s] input file %s missing — calling with empty <input>",
-                       category, input_path)
-        input_text = ""
-    prompt = _build_cycle_prompt(slot, category, workspace, input_text)
+    prompt = _build_cycle_prompt(slot, category, workspace,
+                                 input_path.read_text(encoding="utf-8"))
     system = system_prompt("cycle")
 
     # The model has no tools: the whole response is the report, and Python
     # writes it. Scraped article text can't reach anything beyond that.
     report_text = None
+    last_error: ClaudeError | None = None
     for attempt in range(1, CYCLE_CLAUDE_ATTEMPTS + 1):
         try:
             result = ask_claude(prompt, system, timeout=3600)
@@ -403,9 +402,9 @@ def _run_for_category(slot: str, category: str, workspace: Path) -> None:
         except ClaudeError as exc:
             logger.error("[%s] claude attempt %d/%d failed: %s",
                          category, attempt, CYCLE_CLAUDE_ATTEMPTS, exc)
-            if attempt == CYCLE_CLAUDE_ATTEMPTS:
-                raise
+            last_error = exc
             continue
+        last_error = None
         if result and result.strip():
             report_text = result
             break
@@ -416,8 +415,11 @@ def _run_for_category(slot: str, category: str, workspace: Path) -> None:
                      "result text: %s", category, attempt, CYCLE_CLAUDE_ATTEMPTS,
                      (result or "<empty>")[:500])
     else:
-        raise ClaudeError(
-            f"no report after {CYCLE_CLAUDE_ATTEMPTS} claude attempts ({report_path})")
+        msg = f"no report after {CYCLE_CLAUDE_ATTEMPTS} claude attempts ({report_path})"
+        if last_error is not None:
+            # Keep the real cause (e.g. max_tokens) in the FAIL daily-log line.
+            raise ClaudeError(f"{msg}: {last_error}") from last_error
+        raise ClaudeError(msg)
     logger.info("[%s] Claude cycle complete", category)
 
     report_path.parent.mkdir(parents=True, exist_ok=True)
@@ -450,31 +452,26 @@ def _run_for_category(slot: str, category: str, workspace: Path) -> None:
     # Telegram gets a terse, importance-sorted list rendered deterministically
     # from the saved report file (NOT the LLM stdout), with ignored
     # entities/storylines dropped. The full digest stays in the report file.
-    if report_path.exists():
-        report_text = report_path.read_text(encoding="utf-8")
-        ignore = load_ignore(workspace)
-        # _render_telegram logs precisely which scored items (if any) were lost to
-        # format drift — it can detect malformed/orphaned items that a coarse
-        # "0 lines rendered" check misses now that score-less sections also populate
-        # the message.
-        lines = _render_telegram(report_text, ignore, label=f"{category}/{slot}")
-        body = "\n".join(lines) if lines else "새 소식 없음"
-        try:
-            send_long_message(f"[{category.upper()}]\n{body}\n\n{triage_stats}")
-        except Exception as e:
-            logger.error("Telegram send failed for %s/%s: %s", category, slot, e)
-        # Persist the coverage stats in the report too (after rendering, so the
-        # renderer never sees the line) — reflect reads these files and can use
-        # threshold-pass counts when it re-derives the bucket weights.
-        try:
-            with report_path.open("a", encoding="utf-8") as f:
-                f.write(f"\n\n{triage_stats}\n")
-        except OSError as exc:
-            logger.warning("[%s] could not append triage stats to report: %s",
-                           category, exc)
-    else:
-        logger.warning("[%s] no report file at %s — skipping telegram",
-                       category, report_path)
+    ignore = load_ignore(workspace)
+    # _render_telegram logs precisely which scored items (if any) were lost to
+    # format drift — it can detect malformed/orphaned items that a coarse
+    # "0 lines rendered" check misses now that score-less sections also populate
+    # the message.
+    lines = _render_telegram(report_text, ignore, label=f"{category}/{slot}")
+    body = "\n".join(lines) if lines else "새 소식 없음"
+    try:
+        send_long_message(f"[{category.upper()}]\n{body}\n\n{triage_stats}")
+    except Exception as e:
+        logger.error("Telegram send failed for %s/%s: %s", category, slot, e)
+    # Persist the coverage stats in the report too (after rendering, so the
+    # renderer never sees the line) — reflect reads these files and can use
+    # threshold-pass counts when it re-derives the bucket weights.
+    try:
+        with report_path.open("a", encoding="utf-8") as f:
+            f.write(f"\n\n{triage_stats}\n")
+    except OSError as exc:
+        logger.warning("[%s] could not append triage stats to report: %s",
+                       category, exc)
 
     _append_daily_log(workspace, slot,
                       f"cycle {category}-{slot} OK articles={len(articles)} | {triage_stats}")
