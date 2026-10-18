@@ -215,8 +215,11 @@ present — fix `.env` and re-run. The dispatcher unit waits for the neo4j bolt 
 (`ExecStartPre`, up to 120s) before starting, so `systemctl start` right after
 `docker compose up -d` is safe even on a cold boot.
 
-Code deploys are `git pull && uv sync` + `sudo -n newsbot-ops restart dispatcher`
-(detached restart with an import guard — safe to trigger from inside a claude run).
+Code deploys are `git pull && ./apply.sh`: it checks `.env` first (renames a
+legacy `NEWSBOT_HAIKU_API_KEY` to `NEWSBOT_API_KEY`, refuses to continue if
+`NEWSBOT_API_KEY` is empty or `ANTHROPIC_API_KEY` is set), then runs `uv sync` and
+restarts both units. From inside a claude run, use `sudo -n newsbot-ops restart
+dispatcher` instead (detached restart with an import guard).
 `.venv` must be built on the deploy host: a copied one has a dangling interpreter
 symlink and the units won't start.
 
