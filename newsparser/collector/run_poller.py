@@ -13,6 +13,7 @@ from newsparser.store.sqlite import (
     init_db, get_alerted_guids, get_recent, get_untriaged, hourly_counts, record_alert,
     update_triage,
 )
+from newsparser.claude.api import check_credentials
 from newsparser.triage import triage_article
 from newsparser.collector.sources import load_sources
 from newsparser.collector.poller import poll_all
@@ -139,6 +140,7 @@ def _triage_pass() -> None:
 
 def run() -> None:
     init_db()
+    check_credentials()
     _seed_baseline()
     if MARKET_PULSE_ENABLED:
         init_market_db()

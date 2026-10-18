@@ -2,7 +2,7 @@
 weekly weights.
 
 The bucket axis is fixed here in code. Per-bucket weights are runtime state
-the weekly /reflect job writes to ``workspace/me/triage_weights_{category}.json``
+the weekly reflect job writes to ``workspace/me/triage_weights_{category}.json``
 — they are never committed. Missing or unreadable weights fall back to 1.0
 per bucket, so ranking degrades to pure salience order and the pipeline never
 depends on reflect having run.
@@ -14,8 +14,8 @@ prompt therefore never changes when weights do, weight updates apply
 retroactively to everything already triaged, and a cut can always be
 decomposed into "which bucket" vs "how salient" vs "what weight".
 
-Run ``python3 -m newsparser.triage`` to print the bucket axis as JSON — the
-/reflect spec reads it from there so the axis has a single source of truth.
+Run ``python3 -m newsparser.triage`` to print the bucket axis as JSON; reflect
+embeds the same ``axis_dict()`` in its prompt so the axis has a single source of truth.
 """
 import json
 import logging
@@ -255,23 +255,50 @@ def select(
     return selected, cut, len(passed)
 
 
+# reflect derives the weights with an LLM; these floors/ceilings are enforced
+# here rather than trusted to the prompt. The catch-all buckets are the entry
+# path for topics the theme table doesn't track yet (starving them builds a
+# filter bubble), and noise must never regain meaningful weight.
+WEIGHT_FLOORS = {"기타경제": 0.4, "기타기술": 0.4}
+WEIGHT_CEILINGS = {NOISE_BUCKET: 0.1}
+
+
 def axis_dict() -> dict:
-    """The bucket axis in the shape the /reflect spec consumes (run_reflect
-    snapshots it to workspace/me/triage-buckets.json — the reflect run has no
-    Bash, so it can't ask this module directly)."""
+    """The bucket axis in the shape the reflect prompt consumes (run_reflect
+    embeds it as ``<bucket_axis>`` — the call has no tools to ask this module)."""
     return {
         "buckets": {cat: [name for name, _ in defs] for cat, defs in BUCKETS.items()},
         "noise_bucket": NOISE_BUCKET,
-        "weights_files": {cat: str(weights_path(cat)) for cat in BUCKETS},
     }
 
 
-def write_axis_snapshot(workspace: Path) -> Path:
-    path = workspace / "me" / "triage-buckets.json"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(axis_dict(), ensure_ascii=False, indent=2),
-                    encoding="utf-8")
-    return path
+def bucket_names(category: str) -> list[str]:
+    """The buckets a category's weights file must cover: its own + the shared noise bucket."""
+    return [name for name, _ in BUCKETS[category]] + [NOISE_BUCKET]
+
+
+def sanitize_weights(category: str, raw: dict) -> dict[str, float]:
+    """Validate model-derived bucket weights: keep only this category's buckets,
+    clamp to [0, 1], then apply WEIGHT_FLOORS / WEIGHT_CEILINGS.
+
+    Raises ValueError on a missing bucket or a non-numeric value — the caller
+    keeps the previous weights file rather than writing a partial one."""
+    if not isinstance(raw, dict):
+        raise ValueError(f"weights for {category} must be an object")
+    out: dict[str, float] = {}
+    for name in bucket_names(category):
+        if name not in raw:
+            raise ValueError(f"missing bucket {name!r} in {category} weights")
+        value = raw[name]
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+            raise ValueError(f"bucket {name!r} weight is not a finite number: {value!r}")
+        weight = min(1.0, max(0.0, float(value)))
+        if name in WEIGHT_FLOORS:
+            weight = max(weight, WEIGHT_FLOORS[name])
+        if name in WEIGHT_CEILINGS:
+            weight = min(weight, WEIGHT_CEILINGS[name])
+        out[name] = weight
+    return out
 
 
 if __name__ == "__main__":

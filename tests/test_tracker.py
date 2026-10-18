@@ -73,22 +73,19 @@ def test_run_tracker_injects_category_hint():
     assert "tech" in captured["prompt"]
 
 
-def test_start_job_docstring_routes_run_orders_away_from_slash_commands():
-    """"사이클 돌려줘" must reach start_job, not the /cycle slash command.
+def test_start_job_docstring_routes_run_orders_to_start_job():
+    """"사이클 돌려줘" must reach start_job, and the model must not ask for a slot.
 
-    The tracker runs with bypassPermissions, so the project's .claude/commands/
-    cycle.md is visible to it — and cycle.md's first job is parsing $ARGUMENTS
-    into slot+category. Without an explicit ban the model picks that over
-    start_job and asks the user for a slot, which start_job doesn't even take.
+    start_job has no slot/category argument (cycle derives the KST slot itself),
+    so a model that asks the user for one has nowhere to put the answer.
 
-    The ban lives in the tool's own docstring, which reaches the model with the
+    The rule lives in the tool's own docstring, which reaches the model with the
     tool schema — repeating it in the per-turn prompt paid for it twice.
     """
     from newsparser.mcp_server import start_job
 
     doc = start_job.__doc__ or start_job.fn.__doc__
     assert "slot·category를 사용자에게 되묻지 마라" in doc
-    assert "슬래시 커맨드를 직접 실행하는 것도 금지" in doc
     assert "실행 지시에는 언제나 start_job만 쓴다" in doc
 
 

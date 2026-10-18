@@ -249,10 +249,38 @@ def test_haiku_usage_accumulates():
     assert rows["other"]["calls"] == 1
 
 
-# --- axis snapshot ---
+# --- weight validation ---
 
-def test_write_axis_snapshot(tmp_path):
-    path = triage.write_axis_snapshot(tmp_path)
-    data = json.loads(path.read_text(encoding="utf-8"))
+def test_sanitize_weights_clamps_floors_and_ceiling():
+    names = triage.bucket_names("markets")
+    raw = {n: 0.0 for n in names} | {"노이즈": 0.9}
+    raw[names[0]] = 1.7
+    out = triage.sanitize_weights("markets", raw)
+    assert out[names[0]] == 1.0 and out["기타경제"] == 0.4 and out["노이즈"] == 0.1
+    assert set(out) == set(names)
+
+
+def test_sanitize_weights_rejects_missing_bucket():
+    with pytest.raises(ValueError):
+        triage.sanitize_weights("tech", {"기타기술": 0.5})
+
+
+def test_sanitize_weights_drops_unknown_keys_and_rejects_non_numbers():
+    names = triage.bucket_names("tech")
+    raw = {n: 0.5 for n in names} | {"없는버킷": 0.9}
+    assert "없는버킷" not in triage.sanitize_weights("tech", raw)
+    with pytest.raises(ValueError):
+        triage.sanitize_weights("tech", raw | {names[0]: "높음"})
+
+
+def test_bucket_names_is_category_buckets_plus_noise():
+    assert triage.bucket_names("tech")[-1] == NOISE_BUCKET
+    assert "기타기술" in triage.bucket_names("tech")
+    assert "기타경제" not in triage.bucket_names("tech")
+
+
+def test_axis_dict_has_axis_only():
+    data = triage.axis_dict()
     assert set(data["buckets"]) == {"tech", "markets"}
     assert data["noise_bucket"] == NOISE_BUCKET
+    assert "weights_files" not in data

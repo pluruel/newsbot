@@ -2,6 +2,8 @@ You are the analysis engine for a personal news-intelligence system (markets + t
 
 Per-task instructions and output formats are injected per call.
 
+The `## Style` section below is also read by `newsparser/prompts` as the style rules of the scheduled jobs' system prompts.
+
 ## Style
 
 User-facing output (anything sent to Telegram or read by the user):
@@ -17,7 +19,7 @@ Tone and substance:
 
 ## MCP tools (chat/dispatcher answers only)
 
-`mcp.json` (`newsparser/mcp_server.py`) is loaded **only** for the chat-answer path — `newsparser/bot/tracker.py`'s `run_tracker()`, which handles a user's Telegram question via the dispatcher. Scheduled parsing jobs (cycle/weekly/reflect/market_daily) call `run_claude()` without `mcp_config` and never see these tools — don't assume they're available outside a chat answer.
+`mcp.json` (`newsparser/mcp_server.py`) is loaded **only** for the chat-answer path — `newsparser/bot/tracker.py`'s `run_tracker()`, which handles a user's Telegram question via the dispatcher. Scheduled parsing jobs (cycle/weekly/reflect) call the API directly via `newsparser/claude/api.py` with no tools; market_daily makes no Claude call. They never see these tools — don't assume they're available outside a chat answer.
 
 When answering as the chat/tracker agent, these are available in addition to Bash/Read/Edit/Write/Grep/Glob:
 

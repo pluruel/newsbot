@@ -1,55 +1,16 @@
 """Direct-API path for the short, tool-less Haiku calls. See CLAUDE_DEV.md
-"Architecture" for why these bypass the CLI and how auth works."""
+"Architecture" for why these bypass the CLI. The client and its single
+NEWSBOT_API_KEY credential live in api.py."""
 import logging
-import os
-import threading
 
 import anthropic
 
+from newsparser.claude.api import get_client, reset_client  # noqa: F401  (reset_client re-exported for callers)
 from newsparser.claude.runner import ClaudeError
 
 logger = logging.getLogger(__name__)
 
 HAIKU_MODEL = "claude-haiku-5-5"
-_OAUTH_BETA = "oauth-2025-04-20"
-# Not ANTHROPIC_API_KEY: the `claude -p` subprocesses inherit this process's
-# environment, and the CLI prefers ANTHROPIC_API_KEY over the OAuth token —
-# that name would move every Sonnet job onto API billing too.
-_API_KEY_ENV = "NEWSBOT_HAIKU_API_KEY"
-
-_client: anthropic.Anthropic | None = None
-_client_lock = threading.Lock()
-
-
-def _build_client() -> anthropic.Anthropic:
-    api_key = os.environ.get(_API_KEY_ENV)
-    if api_key:
-        return anthropic.Anthropic(api_key=api_key)
-    token = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN")
-    if not token:
-        raise ClaudeError(
-            f"no API credential: set {_API_KEY_ENV} or CLAUDE_CODE_OAUTH_TOKEN"
-        )
-    return anthropic.Anthropic(
-        auth_token=token, default_headers={"anthropic-beta": _OAUTH_BETA}
-    )
-
-
-def _get_client() -> anthropic.Anthropic:
-    """Built once and shared across PTB worker threads and the poller loop."""
-    global _client
-    if _client is None:
-        with _client_lock:
-            if _client is None:
-                _client = _build_client()
-    return _client
-
-
-def reset_client() -> None:
-    """Drop the cached client so the next call re-reads the environment."""
-    global _client
-    with _client_lock:
-        _client = None
 
 
 def ask_haiku(
@@ -87,7 +48,7 @@ def ask_haiku(
 
     Raises ClaudeError on any API or transport failure.
     """
-    client = _get_client()
+    client = get_client()
     output_config: dict = {"effort": "low"}
     if output_schema is not None:
         output_config["format"] = {"type": "json_schema", "schema": output_schema}

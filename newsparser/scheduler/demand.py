@@ -1,20 +1,18 @@
 """Build a conversation *demand* digest for the reflect/weekly jobs.
 
-reflect/weekly run news-tainted (they read cycle reports) under
-``TAINTED_FILE_TOOLS`` with no MCP access, so they cannot query the conversation
-DB directly. Instead this module — plain Python, no claude — reads the store and
-writes a small markdown file the job's spec then Reads (Read is allowlisted).
+reflect/weekly are tool-less API calls with no MCP access, so they cannot query
+the conversation DB directly. Instead this module — plain Python, no claude —
+reads the store and returns a small markdown digest that those jobs embed in
+their API prompt.
 
 The digest is the *demand* signal: what the user actually asked about, to
 complement the *supply* signal (what the news cycles covered).
 """
 
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 
 from newsparser.store import conversations as conv
 
-DIGEST_FILE = "interest-demand.md"
 _MAX_QUERIES = 40
 _MAX_THEMES = 20
 
@@ -62,10 +60,3 @@ def build_demand_digest(date: str, days: int, max_queries: int = _MAX_QUERIES) -
         lines.append("수집된 대화 수요 신호 없음.")
     return "\n".join(lines)
 
-
-def write_demand_digest(workspace: Path, date: str, days: int) -> Path:
-    """Write the digest to ``<workspace>/me/interest-demand.md`` and return the path."""
-    path = Path(workspace) / "me" / DIGEST_FILE
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(build_demand_digest(date, days), encoding="utf-8")
-    return path

@@ -204,7 +204,9 @@ def start() -> None:
             "Set it in .env and restart.")
     from newsparser.store.sqlite import init_db
     from newsparser.store.conversations import init_conv_db
+    from newsparser.claude.api import check_credentials
     init_db()
+    check_credentials()
     init_conv_db()
     registry.load()
     logger.info("Loaded bots: %s", registry.names())

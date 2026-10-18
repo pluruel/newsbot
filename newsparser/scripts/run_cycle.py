@@ -11,14 +11,16 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from newsparser.bot.sender import send_long_message
+from newsparser.claude.api import ask_claude
 from newsparser.claude.input_builder import build_input_file
-from newsparser.claude.policy import CYCLE_TOOLS
-from newsparser.claude.runner import ClaudeError, ClaudeKilled, run_claude
+from newsparser.claude.runner import ClaudeError, ClaudeKilled
 from newsparser.classifier import CATEGORIES
 from newsparser.collector.sources import load_sources
 from newsparser.dedup import dedupe_pending
 from newsparser.market import snapshot as market_snapshot
 from newsparser.market import store as market_store
+from newsparser.prompts import system_prompt
+from newsparser.scheduler.reports import previous_report
 from newsparser.scripts import apply_graph
 from newsparser.store.sqlite import (
     article_ts,
@@ -39,14 +41,16 @@ _KST = ZoneInfo("Asia/Seoul")
 _CYCLE_ITEM_RE = re.compile(r"^\s*[•\-\*]\s*\(중요도\s*([0-9]*\.?[0-9]+)\)\s*(.+)$")
 
 # Max articles fed to one category run. A failed run never reaches the
-# mark_processed safety net below, so its articles stay pending and the next
+# mark_processed step below, so its articles stay pending and the next
 # slot's input file is strictly larger — without a cap a single failure
 # compounds into a permanent outage (tech stalled 5 days behind a growing
 # backlog while markets, which never failed, kept running). Capping bounds the
 # input so a backlog drains over successive cycles instead of guaranteeing the
 # next run fails too. Oldest-first (get_unprocessed orders by published), so
-# nothing is dropped — only deferred. ~10x normal per-slot volume.
-CYCLE_MAX_ARTICLES = 60
+# nothing is dropped — only deferred. ~20x normal per-slot volume. Raised from 60
+# when the headless `claude -p` run became a single API call that takes the
+# whole input in one message.
+CYCLE_MAX_ARTICLES = 120
 
 # Articles older than this at cycle time are retired unanalyzed: a week-old
 # story is no longer "새 소식", and a backlog of them starves fresh news out of
@@ -55,12 +59,13 @@ CYCLE_MAX_ARTICLES = 60
 # stay in the DB for search/get_between; they just never reach a report.
 CYCLE_MAX_AGE_DAYS = 7
 
-# "Success" for a cycle run is the report file existing, not run_claude returning —
-# a run can exit 0 in seconds with no output (observed 2026-08-05: 16s, no report),
-# and treating that as success let the mark_processed net below eat 18 articles
-# that then appeared in no report and were never retried. Retry the claude run
-# (fresh timeout each attempt) and, if it still ends report-less, raise so the
-# articles stay pending for the next slot instead of being marked processed.
+# "Success" for a cycle run is a non-blank response, not ask_claude returning —
+# a run can come back in seconds with no output (observed 2026-08-05: 16s, no
+# report), and treating that as success let mark_processed eat 18 articles
+# that then appeared in no report and were never retried. A truncated response
+# (max_tokens) raises ClaudeError instead. Retry the call (fresh timeout each
+# attempt) and, if it still yields no report, raise so the articles stay
+# pending for the next slot instead of being marked processed.
 CYCLE_CLAUDE_ATTEMPTS = 3
 
 # Digest section headers in the report (cycle.md "Report file format").
@@ -266,8 +271,40 @@ def _triage_pending() -> None:
 def _append_daily_log(workspace: Path, slot: str, message: str) -> None:
     log_path = workspace / "logs" / f"{slot[:10]}.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    with log_path.open("a") as f:
+    with log_path.open("a", encoding="utf-8") as f:
         f.write(f"{datetime.now(_KST).isoformat()} {message}\n")
+
+
+def _read_or_none(path: Path) -> str:
+    """File text for a prompt block, "없음" when the file is missing or blank."""
+    try:
+        text = path.read_text(encoding="utf-8").strip()
+    except FileNotFoundError:
+        return "없음"
+    return text or "없음"
+
+
+def _build_cycle_prompt(slot: str, category: str, workspace: Path, input_text: str) -> str:
+    """User message for one cycle call. The block names are the contract with
+    prompts/cycle.md — the model has no tools, so everything it may use is here."""
+    me = workspace / "me"
+    prev = previous_report(workspace, category, slot)
+    if prev is None:
+        prev_block = "<previous_report>없음</previous_report>"
+    else:
+        prev_text = prev.read_text(encoding="utf-8")
+        prev_block = f'<previous_report slot="{prev.stem}">\n{prev_text}\n</previous_report>'
+    return (
+        f"이번 사이클: {slot} KST, 카테고리 {category}\n"
+        f"\n"
+        f"<interests>\n{_read_or_none(me / f'interests_{category}.md')}\n</interests>\n"
+        f"\n"
+        f"<ignore>\n{_read_or_none(me / 'ignore.md')}\n</ignore>\n"
+        f"\n"
+        f"{prev_block}\n"
+        f"\n"
+        f"<input>\n{input_text}\n</input>"
+    )
 
 
 def _run_for_category(slot: str, category: str, workspace: Path) -> None:
@@ -325,14 +362,17 @@ def _run_for_category(slot: str, category: str, workspace: Path) -> None:
 
     guids_path = workspace / "input" / category / f"{slot}-guids.txt"
     guids_path.parent.mkdir(parents=True, exist_ok=True)
-    guids_path.write_text("\n".join(a["guid"] for a in articles))
+    guids_path.write_text("\n".join(a["guid"] for a in articles), encoding="utf-8")
 
     # Same list the guids file was written from — see build_input_file's docstring.
-    build_input_file(slot, category, articles=articles)
+    input_path = build_input_file(slot, category, articles=articles)
     logger.info("[%s] Built input file (%d articles)", category, len(articles))
+    # Without the file the call would carry no articles, yet its report would
+    # still mark the whole batch processed — fail before that, articles stay pending.
+    if not input_path.exists():
+        raise ClaudeError(f"input file missing after build ({input_path})")
 
     # Prepend a market snapshot block to the input file so Claude sees it first.
-    input_path = workspace / "input" / category / f"{slot}-input.md"
     try:
         market_store.init_market_db()
         slot_date = date.fromisoformat(slot[:10])
@@ -340,92 +380,102 @@ def _run_for_category(slot: str, category: str, workspace: Path) -> None:
     except Exception as exc:
         logger.warning("[%s] market snapshot failed: %s", category, exc)
         snapshot_block = ""
-    if snapshot_block and input_path.exists():
+    if snapshot_block:
         existing = input_path.read_text(encoding="utf-8")
         input_path.write_text(snapshot_block + "\n\n" + existing, encoding="utf-8")
 
     report_path = workspace / "cycles" / category / f"{slot}.md"
 
-    # Input file is scraped article text — run with the cycle allowlist so a
-    # prompt-injected instruction can't reach arbitrary Bash/network tools.
+    prompt = _build_cycle_prompt(slot, category, workspace,
+                                 input_path.read_text(encoding="utf-8"))
+    system = system_prompt("cycle")
+
+    # The model has no tools: the whole response is the report, and Python
+    # writes it. Scraped article text can't reach anything beyond that.
+    report_text = None
+    last_error: ClaudeError | None = None
     for attempt in range(1, CYCLE_CLAUDE_ATTEMPTS + 1):
         try:
-            result = run_claude(f"/cycle {slot} {category}",
-                                allowed_tools=CYCLE_TOOLS, permission_mode="default",
-                                timeout=3600)
+            result = ask_claude(prompt, system, timeout=3600)
         except ClaudeKilled:
             raise
         except ClaudeError as exc:
             logger.error("[%s] claude attempt %d/%d failed: %s",
                          category, attempt, CYCLE_CLAUDE_ATTEMPTS, exc)
-            if attempt == CYCLE_CLAUDE_ATTEMPTS:
-                raise
+            last_error = exc
             continue
-        if report_path.exists():
+        last_error = None
+        if result and result.strip():
+            report_text = result
             break
-        # Exit 0 but no report. The result text is the only trace of why the
+        # Returned cleanly but blank. The text is the only trace of why the
         # model stopped (it isn't persisted anywhere else) — log it before
         # retrying so a repeat of the silent-early-exit case is diagnosable.
-        logger.error("[%s] claude attempt %d/%d exited cleanly without writing %s — "
+        logger.error("[%s] claude attempt %d/%d returned a blank report — "
                      "result text: %s", category, attempt, CYCLE_CLAUDE_ATTEMPTS,
-                     report_path.name, (result or "<empty>")[:500])
+                     (result or "<empty>")[:500])
     else:
-        raise ClaudeError(
-            f"no report after {CYCLE_CLAUDE_ATTEMPTS} claude attempts ({report_path})")
+        msg = f"no report after {CYCLE_CLAUDE_ATTEMPTS} claude attempts ({report_path})"
+        if last_error is not None:
+            # Keep the real cause (e.g. max_tokens) in the FAIL daily-log line.
+            raise ClaudeError(f"{msg}: {last_error}") from last_error
+        raise ClaudeError(msg)
     logger.info("[%s] Claude cycle complete", category)
 
-    # Safety net: the CYCLE_TOOLS whitelist only matches the exact apply_graph
-    # invocation cycle.md dictates — if the model phrased it differently the call
-    # was auto-denied and the slot's graph update would be silently lost. The
-    # success marker tells us whether it ran; if not, apply directly. Must happen
-    # BEFORE the mark_processed net below, which deletes the guids file
-    # apply_graph needs to resolve source indices.
-    if report_path.exists() and not apply_graph.marker_path(workspace, category, slot).exists():
-        logger.warning("[%s] apply_graph did not run during the claude cycle — applying directly", category)
-        try:
-            apply_graph.main(["apply_graph.py", category, slot])
-        except SystemExit as exc:
-            logger.error("[%s] direct apply_graph exited %s", category, exc.code)
-        except Exception as exc:
-            logger.error("[%s] direct apply_graph failed: %s", category, exc)
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    if report_path.exists():
+        logger.warning("[%s] overwriting existing report %s", category, report_path)
+    report_path.write_text(report_text, encoding="utf-8")
 
-    # Safety net: if the slash command's mark_processed.py call was skipped or failed,
-    # the guids file still exists. Mark them here to prevent reprocessing on next cycle.
-    if guids_path.exists():
-        logger.warning("[%s] guids file still present after run_claude — marking processed directly", category)
-        guids = [g for g in guids_path.read_text().splitlines() if g.strip()]
-        if guids:
-            mark_processed(guids)
-        guids_path.unlink()
+    # A graph failure must not discard the cycle: the report is already saved,
+    # so mark the articles processed and deliver the digest anyway, and warn.
+    try:
+        # Without the block apply() parses nothing and "succeeds" — the articles
+        # would be marked processed with nothing in the graph. Report it instead.
+        if not any(ln.strip() == "## Graph updates" for ln in report_text.splitlines()):
+            raise ValueError("리포트에 '## Graph updates' 블록이 없음")
+        n_entities, n_relations = apply_graph.apply(category, slot)
+        logger.info("[%s] graph applied: %d entities, %d relations",
+                    category, n_entities, n_relations)
+    except Exception as exc:
+        logger.error("[%s] graph apply failed: %s", category, exc, exc_info=True)
+        _append_daily_log(workspace, slot,
+                          f"cycle {category}-{slot} GRAPH-FAIL {type(exc).__name__}: {exc}")
+        try:
+            send_long_message(f"⚠️ [{category.upper()}] {slot} 그래프 반영 실패: {exc}")
+        except Exception as send_exc:
+            logger.error("Telegram send failed for graph warning %s/%s: %s",
+                         category, slot, send_exc)
+
+    # After apply(): it resolves src:A001 indices through the guids file.
+    guids = [g for g in guids_path.read_text(encoding="utf-8").splitlines() if g.strip()]
+    if guids:
+        mark_processed(guids)
+    guids_path.unlink()
 
     # Telegram gets a terse, importance-sorted list rendered deterministically
     # from the saved report file (NOT the LLM stdout), with ignored
     # entities/storylines dropped. The full digest stays in the report file.
-    if report_path.exists():
-        report_text = report_path.read_text(encoding="utf-8")
-        ignore = load_ignore(workspace)
-        # _render_telegram logs precisely which scored items (if any) were lost to
-        # format drift — it can detect malformed/orphaned items that a coarse
-        # "0 lines rendered" check misses now that score-less sections also populate
-        # the message.
-        lines = _render_telegram(report_text, ignore, label=f"{category}/{slot}")
-        body = "\n".join(lines) if lines else "새 소식 없음"
-        try:
-            send_long_message(f"[{category.upper()}]\n{body}\n\n{triage_stats}")
-        except Exception as e:
-            logger.error("Telegram send failed for %s/%s: %s", category, slot, e)
-        # Persist the coverage stats in the report too (after rendering, so the
-        # renderer never sees the line) — reflect reads these files and can use
-        # threshold-pass counts when it re-derives the bucket weights.
-        try:
-            with report_path.open("a", encoding="utf-8") as f:
-                f.write(f"\n\n{triage_stats}\n")
-        except OSError as exc:
-            logger.warning("[%s] could not append triage stats to report: %s",
-                           category, exc)
-    else:
-        logger.warning("[%s] no report file at %s — skipping telegram",
-                       category, report_path)
+    ignore = load_ignore(workspace)
+    # _render_telegram logs precisely which scored items (if any) were lost to
+    # format drift — it can detect malformed/orphaned items that a coarse
+    # "0 lines rendered" check misses now that score-less sections also populate
+    # the message.
+    lines = _render_telegram(report_text, ignore, label=f"{category}/{slot}")
+    body = "\n".join(lines) if lines else "새 소식 없음"
+    try:
+        send_long_message(f"[{category.upper()}]\n{body}\n\n{triage_stats}")
+    except Exception as e:
+        logger.error("Telegram send failed for %s/%s: %s", category, slot, e)
+    # Persist the coverage stats in the report too (after rendering, so the
+    # renderer never sees the line) — reflect reads these files and can use
+    # threshold-pass counts when it re-derives the bucket weights.
+    try:
+        with report_path.open("a", encoding="utf-8") as f:
+            f.write(f"\n\n{triage_stats}\n")
+    except OSError as exc:
+        logger.warning("[%s] could not append triage stats to report: %s",
+                       category, exc)
 
     _append_daily_log(workspace, slot,
                       f"cycle {category}-{slot} OK articles={len(articles)} | {triage_stats}")

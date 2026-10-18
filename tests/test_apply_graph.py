@@ -296,3 +296,36 @@ def test_apply_graph_drops_relations_of_alias_matched_entity(tmp_path):
     # OpenAI and its relation survive.
     assert any(e.name == "OpenAI" for e in entities)
     assert any(r.subject == "OpenAI" for r in relations)
+
+
+def test_apply_returns_counts_and_raises_when_report_missing(tmp_path):
+    ws = Path(os.environ["WORKSPACE_DIR"])
+    (ws / "cycles" / "tech" / "2026-05-08-12.md").write_text(SAMPLE_REPORT, encoding="utf-8")
+
+    with patch("newsparser.scripts.apply_graph.apply_graph_updates") as mock_apply:
+        entities, relations = script.apply("tech", "2026-05-08-12")
+    ents_arg, rels_arg = mock_apply.call_args.args[:2]
+    assert (entities, relations) == (len(ents_arg), len(rels_arg))
+    assert (entities, relations) == (1, 1)
+
+    with pytest.raises(FileNotFoundError):
+        script.apply("tech", "9999-99-99-99")
+
+
+def test_apply_does_not_write_marker(tmp_path):
+    ws = Path(os.environ["WORKSPACE_DIR"])
+    (ws / "cycles" / "tech" / "2026-05-08-12.md").write_text(SAMPLE_REPORT, encoding="utf-8")
+
+    with patch("newsparser.scripts.apply_graph.apply_graph_updates"):
+        script.apply("tech", "2026-05-08-12")
+    assert not list((ws / "cycles" / "tech").glob("*.graph-applied"))
+
+
+def test_apply_propagates_graph_write_errors(tmp_path):
+    ws = Path(os.environ["WORKSPACE_DIR"])
+    (ws / "cycles" / "tech" / "2026-05-08-12.md").write_text(SAMPLE_REPORT, encoding="utf-8")
+
+    with patch("newsparser.scripts.apply_graph.apply_graph_updates",
+               side_effect=RuntimeError("neo4j down")):
+        with pytest.raises(RuntimeError):
+            script.apply("tech", "2026-05-08-12")

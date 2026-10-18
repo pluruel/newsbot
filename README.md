@@ -170,7 +170,7 @@ duplicates. To isolate genuinely-same leftovers, run `audit_duplicates.py --out 
 and let Haiku filter the residual for a second round.
 
 Recurring events (visits, summits, negotiations) use `YYYY-MM` canonical names by default
-(`.claude/commands/cycle.md`) to avoid per-day fragmentation.
+(`newsparser/prompts/cycle.md`) to avoid per-day fragmentation.
 
 ---
 
@@ -215,8 +215,11 @@ present — fix `.env` and re-run. The dispatcher unit waits for the neo4j bolt 
 (`ExecStartPre`, up to 120s) before starting, so `systemctl start` right after
 `docker compose up -d` is safe even on a cold boot.
 
-Code deploys are `git pull && uv sync` + `sudo -n newsbot-ops restart dispatcher`
-(detached restart with an import guard — safe to trigger from inside a claude run).
+Code deploys are `git pull && ./apply.sh`: it checks `.env` first (renames a
+legacy `NEWSBOT_HAIKU_API_KEY` to `NEWSBOT_API_KEY`, refuses to continue if
+`NEWSBOT_API_KEY` is empty or `ANTHROPIC_API_KEY` is set), then runs `uv sync` and
+restarts both units. From inside a claude run, use `sudo -n newsbot-ops restart
+dispatcher` instead (detached restart with an import guard).
 `.venv` must be built on the deploy host: a copied one has a dangling interpreter
 symlink and the units won't start.
 
@@ -240,8 +243,8 @@ re-install is the intended security gate.
 | `TELEGRAM_CHAT_ID` | where reports/alerts are **sent** (without it the bot runs but delivers nothing) |
 | `ALLOWED_CHAT_ID` | only this chat may command the bot (inbound auth gate, fail-closed — the dispatcher refuses to start without it) |
 | `TELEGRAM_ALERT_CHAT_ID` | target for poller alerts |
-| `CLAUDE_CODE_OAUTH_TOKEN` | from `claude setup-token` (see Authentication) — auth for every `claude -p` call |
-| `NEWSBOT_HAIKU_API_KEY` | optional Anthropic API key for the direct-API Haiku calls (triage/classifiers); unset → they fall back to the OAuth token. Don't use `ANTHROPIC_API_KEY` — the CLI would pick it up and bill the Sonnet jobs to the API too |
+| `CLAUDE_CODE_OAUTH_TOKEN` | from `claude setup-token` (see Authentication) — auth for the tracker's `claude -p` calls only |
+| `NEWSBOT_API_KEY` | Anthropic API key (API-billed) for the scheduled jobs (cycle/weekly/reflect) and the Haiku calls (triage/classifiers). Don't use `ANTHROPIC_API_KEY` — the tracker's `claude -p` would pick it up and bill the chat answers to the API too |
 | `NEO4J_PASSWORD` | set **before** the first `up`; neo4j bakes it into `neo4j_data`, so changing it later means resetting that volume |
 
 Optional overrides (safe defaults, leave unset for a standard deploy): `CLAUDE_BIN`
@@ -268,19 +271,19 @@ claude runs as the service user, not root.
 - `uv` for building `./.venv`.
 - Outbound HTTPS to: `api.anthropic.com` / `claude.ai`, `api.telegram.org`, the RSS
   + article source domains, and `query*.finance.yahoo.com` (yfinance). Every data
-  source is keyless — the only secrets are the three tokens/password above.
+  source is keyless — the only secrets are the four tokens/keys/password above.
 - Disk for the `neo4j_data` volume, `./workspace`, and `backups/` (no auto-retention).
 
 ---
 
 ## Authentication (headless)
 
-Claude is invoked as a subprocess (`claude -p`) by the scheduled jobs and the Telegram bot.
+The Telegram tracker invokes Claude as a subprocess (`claude -p`); the scheduled jobs and Haiku calls use `NEWSBOT_API_KEY` instead (see the table above).
 The default OAuth flow stores a short-lived access token (~8 hours) in `~/.claude/.credentials.json`.
 In an always-on environment this causes intermittent 401 failures as tokens expire and concurrent calls race to refresh them.
 
 **Fix: issue a long-lived OAuth token once, then inject it as an env var.**
-This keeps your Claude subscription (no API billing switch) and eliminates the refresh cycle entirely.
+This keeps the tracker on your Claude subscription (no API billing switch) and eliminates the refresh cycle entirely.
 
 ### 1. Issue the token (interactive terminal, one-time)
 

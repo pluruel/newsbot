@@ -7,10 +7,10 @@ Context for working on this codebase with Claude Code.
 ## Architecture
 
 - Python handles all I/O, scheduling, DB, Telegram, and Neo4j.
-- Claude is invoked headless via CLI subprocess (`claude -p ...`) — see `newsparser/claude/runner.py`. Do not switch to the Anthropic API directly, **except** for the short tool-less Haiku calls, which go through `newsparser/claude/haiku.py` (`ask_haiku`). Anything that needs a tool, MCP, a session, or a slash command stays on `run_claude`.
-  - Why the exception: a `claude -p` round trip is 5-8s regardless of prompt size — each one prefills ~21k tokens of Claude Code scaffolding and spends 200-1100 output tokens thinking before emitting one word, and no CLI flag disables either (`--effort low` does not move it). The same call over `/v1/messages` is ~0.9s. The tracker paid this twice serially before the user's answer even started.
+- The scheduled jobs (cycle/weekly/reflect) and the Haiku calls go straight to the Anthropic API via `newsparser/claude/api.py` (`ask_claude` for the jobs, `ask_haiku` in `haiku.py` for the short classifier calls), authenticated with `NEWSBOT_API_KEY`. Their prompts live in `newsparser/prompts/`; the calls have no tools, so every input the model may use is embedded in the user message. Only the tracker (Telegram answers) stays on the headless CLI (`claude -p ...`, see `newsparser/claude/runner.py`), because it needs tools, MCP and a session; it runs on the subscription OAuth token.
+  - Why the jobs and Haiku bypass the CLI: a `claude -p` round trip is 5-8s regardless of prompt size — each one prefills ~21k tokens of Claude Code scaffolding and spends 200-1100 output tokens thinking before emitting one word, and no CLI flag disables either (`--effort low` does not move it). The same call over `/v1/messages` is ~0.9s. The tracker paid this twice serially before the user's answer even started.
   - `ask_haiku` raises `ClaudeError` — the same type `runner.py` raises — so call sites keep one `except (ClaudeError, RuntimeError, OSError)` fallback whichever path they use.
-  - Auth: `NEWSBOT_HAIKU_API_KEY` (a real API key, API-billed) when set; otherwise falls back to the CLI's own `CLAUDE_CODE_OAUTH_TOKEN`, which authenticates against `/v1/messages` as `Authorization: Bearer` (the SDK's `auth_token=`) but **401s as `x-api-key`**. **Never name the key `ANTHROPIC_API_KEY`** — `claude -p` subprocesses inherit the env and the CLI prefers that variable over the OAuth token, which would move every Sonnet job onto API billing.
+  - Auth: `NEWSBOT_API_KEY` (a real API key, API-billed), required for both the scheduled jobs and Haiku; `api.py` raises `ClaudeError` when it is unset and the long-running processes check it at startup. There is no OAuth fallback. **Never name the key `ANTHROPIC_API_KEY`** — the tracker's `claude -p` subprocess inherits the env and the CLI prefers that variable over the OAuth token, which would move every chat answer onto API billing.
   - Model is `claude-haiku-5-5` with `thinking: disabled` + `effort: low` — 5.5 thinks by default and thinking counts toward `max_tokens`, which would eat the 8-32-token classifier caps. Sampling params (`temperature` etc.) and assistant prefill 400 on 5.5; don't add them.
   - **Every `ask_haiku` call site passes `usage_tag=`** — usage accumulates in the
     `haiku_usage` table (per UTC day × tag) and is exposed by the `haiku_usage` MCP tool.
@@ -22,22 +22,21 @@ Context for working on this codebase with Claude Code.
     (`triage.triage_article` replaced it in `run_cycle`); it stays as a tested utility.
   - **Article triage is `newsparser/triage.py`**: the bucket axis is fixed in code; weights
     are runtime state at `workspace/me/triage_weights_{category}.json`, written weekly by
-    `/reflect` (absent file → 1.0 per bucket, i.e. pure salience ranking). Haiku returns
+    reflect (absent file → 1.0 per bucket, i.e. pure salience ranking). Haiku returns
     only `(bucket, salience)`; the score `weight × salience` is multiplied in Python at
     cycle selection time. **Keep it that way** — putting weights into the prompt would make
     model behavior shift with every weekly refresh and lose retroactive re-scoring of the
     pending queue. The poller tags per pass (row cap + wall-clock budget, after alert
     handling); every failure is fail-open (untriaged rows score `DEFAULT_SCORE` and stay
-    queued). `/reflect` can't run the module (no Bash in its tool policy), so
-    `run_reflect.py` snapshots the axis to `workspace/me/triage-buckets.json` pre-run.
+    queued). The reflect call has no tools to ask the module, so
+    `run_reflect.py` embeds the axis (`triage.axis_dict()`) in the prompt as the `<bucket_axis>` block.
   - **`ask_haiku` pins `max_retries=0`.** The SDK defaults to 2, which would turn `timeout` into a per-attempt bound instead of the wall-clock ceiling `run_claude`'s `threading.Timer` kill gave every call site — and timeouts are themselves retryable (`APITimeoutError` subclasses `APIConnectionError`). It also compounds: `resolver.py` and `scripts/audit_duplicates.py` already wrap their call in a 3-attempt backoff loop, so the default would make those 9 HTTP requests and stretch the resolver's worst case from ~183s to ~548s. Re-enable SDK retries only per call site, and divide the declared timeout when you do.
-- `CLAUDE.md` is auto-loaded by every `claude -p` call from the project root and acts as the system prompt — keep it minimal (role + style).
-- Slash command specs live in `.claude/commands/` (auto-loaded per `claude -p` call):
-  - `.claude/commands/cycle.md` — `/cycle` analysis spec, invoked by `newsparser/scripts/run_cycle.py`.
+- `CLAUDE.md` is auto-loaded by every tracker `claude -p` call from the project root and acts as the system prompt — keep it minimal (role + style). Its `## Style` section is also read by the scheduled jobs (see Prompt Behavior below).
+- The scheduled jobs' analysis specs are `newsparser/prompts/{cycle,weekly,reflect}.md`, run by `newsparser/scripts/run_{cycle,weekly,reflect}.py`.
 - The `/tracker` flow is different: `newsparser/bot/tracker.py` builds its prompt inline and uses MCP tools via `mcp.json`.
   - **Instructions live in one of three places, and only one is right for each.** Standing policy (role, evidence rules, workspace-file conventions, output style) goes in `tracker.py`'s `SYSTEM_PROMPT`, passed via `run_claude(append_system_prompt=...)`. Rules about how to *use* a tool go in that tool's docstring in `mcp_server.py` — the model gets those with the tool schema, so restating them in the prompt pays for the same text twice and lets the two copies drift. The per-turn prompt carries only what actually changes: the KST clock, `chat_id`, the category hint, prior context, and the question. It was 7,436 chars of mostly-static text before this split; it is now ~790, with 1,654 in the system prompt and ~1,750 chars of genuinely new docstring text (the rest was already duplicated there).
   - **`append_system_prompt`, not `system_prompt`.** `--system-prompt` *replaces* Claude Code's own system prompt and would drop the agentic scaffolding the tool calls depend on; `--append-system-prompt` adds to it. `runner.py` exposes both and `test_runner.py` pins the distinction.
-  - Rules here are defensive, and each has a test: the `/cycle` slash-command ban (the model picked `.claude/commands/cycle.md` over `start_job` and asked for a slot `start_job` has no argument for), the interpolated KST clock (nothing in `deploy/` pins the host to Asia/Seoul), and the per-tool timestamp timezones. Move one, move its test.
+  - Rules here are defensive, and each has a test: the "don't ask for a slot" rule in `start_job`'s docstring (`start_job` has no slot argument), the interpolated KST clock (nothing in `deploy/` pins the host to Asia/Seoul), and the per-tool timestamp timezones. Move one, move its test.
 - **YouTube links leave the Claude stack entirely.** A chat message containing a YouTube URL is routed by `newsparser/bots/tracker/bot.py` to `run_youtube` instead of `run_tracker`: Claude cannot watch a video, so `newsparser/gemini.py` builds the prompt and sends it — with the watch URL as a `{"type": "video", "uri": ...}` part — to an internal MCP server (spec: `mcp.md`), which calls Gemini on Vertex AI (`client.interactions` + `VideoContent(uri=...)`, a YouTube URL directly — no download, no upload). This is the only non-Anthropic model call in the system.
   - **No Google credentials on this host.** The GCP service-account key lives only on the MCP server host (VPN side). The tracker runs `bypassPermissions` with Bash while scraped article text is in its context, so a key on this disk was one injected `cat gcp-k*` away from leaking (the hooks were tested and bypassed). `gemini.py` speaks `mcp.client.streamable_http` to `GEMINI_MCP_URL` with bearer `GEMINI_MCP_TOKEN` (both in `.env`; unset → `GeminiError`). `GEMINI_MODEL` (default `gemini-3.7-flash`) still picks the model; the server allow-lists it.
   - The server raises a tool error for blank output (blocked / private video) and for API exceptions; `gemini.py` wraps every tool error and transport failure as `GeminiError`. `google-genai` is no longer a dependency here — `VideoContent` serialization is the server's test, not ours.
@@ -84,36 +83,39 @@ Gotchas that bite, none obvious from the file tree:
   still deliver its reply.
 - **systemd gives units a minimal PATH** — the dispatcher unit sets `CLAUDE_BIN` (wired by
   install.sh) so `runner.py` finds the CLI.
-- **Headless tool policy lives in `newsparser/claude/policy.py`** (see `plan-tool-policy.md`):
-  news-tainted runs (cycle/reflect/weekly) get `permission_mode="default"` + allowlists; only the
-  tracker (trusted telegram input) runs `bypassPermissions`. Denied tool calls are logged by
-  `runner.py` and surface in `workspace/jobs.json` under `activity.denials`. The classifier,
-  resolver, and headline picker are no longer on this list — they moved to `ask_haiku`, which has
-  no tool surface to police at all, so their taint is handled by construction rather than policy.
-- **The allowlist is not the whole boundary — measured, not assumed.** Probing `claude -p` on a dev
+- **Only the tracker is a tool-bearing headless run.** It is trusted telegram input and runs
+  `bypassPermissions`. Denied tool calls are logged by `runner.py` and surface in
+  `workspace/jobs.json` under `activity.denials`. The news-tainted jobs (cycle/reflect/weekly), the
+  classifier, resolver, and headline picker have no tool surface to police at all — they are direct
+  API calls, so their taint is handled by construction rather than by a tool policy.
+  (`plan-tool-policy.md` is the historical design for the old per-job allowlists.)
+- **A `claude -p` allowlist is not the whole boundary — measured, not assumed.** The probe below was
+  run when cycle/reflect/weekly still used `claude -p` allowlists; it describes the CLI's behavior and
+  therefore the tracker's. Probing `claude -p` on a dev
   box with `--allowedTools "Read,Grep,Glob"` and `--permission-mode default` (i.e. no Bash): `ls`,
   `cat`, and `git log` **ran**, and did not even register as denials; `curl` (including a `; echo`
   chain), an arbitrary `.venv/bin/python -m …`, a `Read(*.tar.gz)`-denied file, and unlisted MCP
   tools were all refused. `dontAsk` behaves identically. Three consequences:
-  - A read-only shell exists in **every** run whatever the allowlist says, so reflect/weekly are
-    not shell-free. (The "`/reflect` can't run the module" note above still holds — a
-    `.venv/bin/python -m` call is arbitrary execution and *is* refused — but the reason is the
-    read-only classifier, not the absence of Bash from the policy.)
+  - A read-only shell exists in **every** `claude -p` run whatever the allowlist says, so a run
+    without Bash in its list is not shell-free. (A `.venv/bin/python -m` call is arbitrary
+    execution and *is* refused, but the reason is the read-only classifier, not the absence of Bash
+    from the list.)
   - `permissions.deny` **is** enforced on that auto-approved path, so the crown jewels hold there.
-    Under `default` this no longer rests on the version-dependent bypassPermissions caveat in
+    Under `default` this does not rest on the version-dependent bypassPermissions caveat in
     `plan-tool-policy.md`.
   - With Bash *in* the list, nothing else in the list constrains anything: a run denied an MCP tool
     spontaneously tried to shell out to the same data. Narrow `Bash(...)` allowlists are not the
-    fix either — `run_cycle.py:376`'s safety net exists precisely because CYCLE_TOOLS' exact-match
-    whitelist gets phrased around and the graph write is silently lost.
+    fix either — an exact-match whitelist gets phrased around and the write is silently lost (the
+    old cycle allowlist needed a safety net for exactly that, one reason cycle left `claude -p`).
 - **Planned, not done — the tracker drops to `default` + `Read/Grep/Glob` + `mcp__newsparser__*`.**
   MCP server wildcards work, so there is no per-tool list to drift. Diagnosis survives on the
   read-only path; what goes is arbitrary write and arbitrary execution. The ignore list was the one
   feature that depended on `Edit`/`Bash`, which is why it moved to MCP tools first. Deliberately
   **not** doing self-modification of code: it needs human review either way, so the verify/rollback
-  machinery it would require costs more than it returns. Data-tier self-edit (`/reflect` rewriting
+  machinery it would require costs more than it returns. Data-tier self-edit (reflect rewriting
   interests + triage weights) stays as-is.
-- Auth is the env token (`CLAUDE_CODE_OAUTH_TOKEN` from `claude setup-token`) loaded via
+- Auth: the env token `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`) serves only the tracker's
+  `claude -p`; the scheduled jobs and Haiku use `NEWSBOT_API_KEY`. Both are loaded via
   `EnvironmentFile=.env`. Persistent state is exactly `neo4j_data` + `workspace/`
   (see State & Backups below).
 
@@ -137,7 +139,7 @@ Gotchas that bite, none obvious from the file tree:
   ever widened past `dispatcher` — a full `pkgutil.walk_packages` sweep imports all 70 modules
   (verified green) and so would widen the side effect too.
 - Minor: dispatcher/poller call `init_db()` but not `ensure_workspace()`, so `me/` interest /
-  manifesto / ignore templates aren't seeded until the first `/cycle` (non-crash — writers self-mkdir).
+  manifesto / ignore templates aren't seeded until the first cycle (non-crash — writers self-mkdir).
 
 ---
 
@@ -191,11 +193,12 @@ durable record of what fired, not the bars themselves.
 
 ---
 
-## Slash Command Behavior (runtime reference)
+## Prompt Behavior (runtime reference)
 
-`/cycle`, `/weekly`, `/reflect` are **not** user-typed Telegram commands — they are prompts the
-scheduled jobs hand to `claude -p` (e.g. `run_cycle.py` runs `run_claude("/cycle {slot} {category}")`),
-resolved from `.claude/commands/*.md`. That `.md` is the source of truth for behavior, not this file.
+There are no slash commands for the scheduled jobs. Their prompts live in `newsparser/prompts/`
+(`cycle.md`, `weekly.md`, `reflect.md`) and are the source of truth for behavior, not this file. The
+style rules come from the `## Style` section of `CLAUDE.md`, read by `prompts.style_rules()` — renaming
+or restructuring that section breaks it.
 
 Inbound Telegram routing lives in `newsparser/dispatcher.py`: `registry.telegram_bots()` regex-matches
 each bot's `TelegramMatch` trigger against the message; the tracker bot's catch-all `.*` (sorted last)
