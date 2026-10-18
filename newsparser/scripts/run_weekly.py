@@ -12,7 +12,7 @@ from newsparser.claude.api import ask_claude
 from newsparser.claude.runner import ClaudeError
 from newsparser.prompts import system_prompt
 from newsparser.scheduler.demand import build_demand_digest
-from newsparser.scheduler.reports import reports_between
+from newsparser.scheduler.reports import format_report_blocks, reports_between
 from newsparser.scheduler.workspace import ensure_workspace
 
 logger = logging.getLogger(__name__)
@@ -35,9 +35,7 @@ WEEKLY_SCHEMA = {
 def _build_weekly_prompt(date: str, reports: list[tuple[str, str]], demand: str) -> str:
     """User message for the weekly call. The block names are the contract with
     prompts/weekly.md — the model has no tools, so everything it may use is here."""
-    report_blocks = "\n\n".join(
-        f'<report name="{name}">\n{text}\n</report>' for name, text in reports
-    )
+    report_blocks = format_report_blocks(reports)
     return (
         f"기준일 {date}\n"
         f"\n"

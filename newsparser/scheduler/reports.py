@@ -73,3 +73,8 @@ def reports_between(
             dropped, max_chars,
         )
     return items
+
+
+def format_report_blocks(reports: Sequence[tuple[str, str]]) -> str:
+    """``<report name="...">`` items for a ``<reports>`` prompt block (weekly, reflect)."""
+    return "\n\n".join(f'<report name="{name}">\n{text}\n</report>' for name, text in reports)

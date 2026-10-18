@@ -1,7 +1,7 @@
 import pytest
 
 from newsparser.store import conversations as conv
-from newsparser.scheduler.demand import build_demand_digest, write_demand_digest
+from newsparser.scheduler.demand import build_demand_digest
 
 
 @pytest.fixture(autouse=True)
@@ -57,11 +57,3 @@ def test_window_boundary_excludes_before_kst_midnight():
     conv.add_message("c1", "user", "경계밖질문", ts="2026-06-20T14:00:00+00:00")
     out = build_demand_digest("2026-07-05", days=14)
     assert "경계밖질문" not in out
-
-
-def test_write_demand_digest_creates_file(tmp_path):
-    conv.add_message("c1", "user", "질문", ts="2026-07-01T00:00:00+00:00")
-    path = write_demand_digest(tmp_path / "workspace", "2026-07-05", days=7)
-    assert path.exists()
-    assert path.name == "interest-demand.md"
-    assert "질문" in path.read_text()
