@@ -21,7 +21,6 @@ import json
 import logging
 import math
 import os
-import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -95,13 +94,14 @@ RECENCY_HALF_LIFE_HOURS = float(os.environ.get("TRIAGE_RECENCY_HALF_LIFE_HOURS",
 RECENCY_FLOOR = float(os.environ.get("TRIAGE_RECENCY_FLOOR", "0.5"))
 RECENCY_STEP_HOURS = float(os.environ.get("TRIAGE_RECENCY_STEP_HOURS", "3"))
 
-_MAX_TOKENS = 16
+# A '{"bucket": "...", "salience": 0.x}' reply runs ~20 tokens; the
+# headroom is so a long bucket name never truncates the JSON.
+_MAX_TOKENS = 64
 _BODY_EXCERPT_CHARS = 500
 
 _SYSTEM_PROMPT = (
-    "You are a news triage classifier. Reply with exactly one line: "
-    "'<bucket> <salience>' where bucket is one of the given names and "
-    "salience is a number between 0 and 1. No explanations."
+    "You are a news triage classifier. Pick the bucket that fits the article "
+    "and rate its salience between 0 and 1."
 )
 
 
@@ -122,12 +122,22 @@ _PROMPT = (
     "- 0.6~0.8: 유의미한 새 전개\n"
     "- 0.3~0.5: 루틴 보도, 점진적 후속 기사\n"
     "- 0.0~0.2: 지엽적·사소한 소식\n\n"
-    "응답은 정확히 '대분류 숫자' 한 줄 (예: 한국증시 0.7).\n\n"
     "제목: {title}\n"
     "본문 (앞 {n}자): {body}"
 )
 
-_RESPONSE_RE = re.compile(r"([A-Za-z가-힣0-9]+)\s+([01]?(?:\.\d+)?)\s*$")
+# Structured-outputs schema: the bucket enum makes an off-axis name
+# impossible. Salience range isn't expressible here, so it's clamped in
+# _parse_response.
+_RESPONSE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "bucket": {"type": "string", "enum": [*_BUCKET_CATEGORY, NOISE_BUCKET]},
+        "salience": {"type": "number"},
+    },
+    "required": ["bucket", "salience"],
+    "additionalProperties": False,
+}
 
 
 @dataclass
@@ -138,13 +148,12 @@ class TriageResult:
 
 
 def _parse_response(raw: str, category_hint: str | None) -> TriageResult | None:
-    m = _RESPONSE_RE.search((raw or "").strip())
-    if not m:
-        return None
-    bucket, salience_s = m.group(1), m.group(2)
     try:
-        salience = min(1.0, max(0.0, float(salience_s)))
-    except ValueError:
+        data = json.loads(raw or "")
+        bucket = str(data["bucket"])
+        salience = min(1.0, max(0.0, float(data["salience"])))
+    except (ValueError, TypeError, KeyError):
+        # Truncated JSON (max_tokens) or a non-object reply.
         return None
     if bucket == NOISE_BUCKET:
         # Noise still needs a category so it flows through the per-category
@@ -171,7 +180,7 @@ def triage_article(
     )
     try:
         raw = ask_haiku(prompt, _SYSTEM_PROMPT, _MAX_TOKENS, timeout=15,
-                        usage_tag="triage")
+                        usage_tag="triage", output_schema=_RESPONSE_SCHEMA)
     except (ClaudeError, RuntimeError, OSError) as exc:
         logger.warning("triage_article failed (%s); leaving untriaged", exc)
         return None

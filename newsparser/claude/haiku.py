@@ -59,6 +59,7 @@ def ask_haiku(
     timeout: float = 30.0,
     model: str = HAIKU_MODEL,
     usage_tag: str | None = None,
+    output_schema: dict | None = None,
 ) -> str:
     """Run one tool-less Haiku turn and return its text.
 
@@ -75,6 +76,11 @@ def ask_haiku(
     token counts are accumulated per (day, tag) in the haiku_usage table.
     Recording is fail-open — an accounting error never fails the call.
 
+    `output_schema` constrains the reply to that JSON schema (structured
+    outputs, `output_config.format`); the returned text is then the JSON
+    document. A reply cut at `max_tokens` can still be incomplete JSON, so
+    callers parse defensively.
+
     Thinking is off: Haiku 5.5 thinks by default and thinking counts toward
     `max_tokens`, so the 8-32-token classifier caps would be spent before any
     text. Disabled thinking is only accepted at effort `high` or below.
@@ -82,12 +88,15 @@ def ask_haiku(
     Raises ClaudeError on any API or transport failure.
     """
     client = _get_client()
+    output_config: dict = {"effort": "low"}
+    if output_schema is not None:
+        output_config["format"] = {"type": "json_schema", "schema": output_schema}
     try:
         message = client.with_options(timeout=timeout, max_retries=0).messages.create(
             model=model,
             max_tokens=max_tokens,
             thinking={"type": "disabled"},
-            output_config={"effort": "low"},
+            output_config=output_config,
             system=system_prompt,
             messages=[{"role": "user", "content": prompt}],
         )

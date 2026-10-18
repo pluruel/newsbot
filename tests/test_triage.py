@@ -42,56 +42,65 @@ def test_fallback_buckets_exist_in_axis():
 
 # --- response parsing ---
 
+def _j(bucket, salience):
+    return json.dumps({"bucket": bucket, "salience": salience}, ensure_ascii=False)
+
+
 def test_parse_valid_markets_bucket():
-    r = _parse_response("한국증시 0.7", None)
+    r = _parse_response(_j("한국증시", 0.7), None)
     assert r == TriageResult("markets", "한국증시", 0.7)
 
 
 def test_parse_valid_tech_bucket_resolves_category():
-    r = _parse_response("AI릴리스 0.9", None)
-    assert r.category == "tech"
+    r = _parse_response(_j("AI릴리스", 0.9), None)
+    assert r == TriageResult("tech", "AI릴리스", 0.9)
 
 
 def test_parse_clamps_salience():
-    assert _parse_response("환율 1.8", None).salience == 1.0
-    assert _parse_response("환율 1", None).salience == 1.0
+    assert _parse_response(_j("환율", 1.8), None).salience == 1.0
+    assert _parse_response(_j("환율", -0.2), None).salience == 0.0
 
 
 def test_parse_noise_uses_hint_category():
-    r = _parse_response("노이즈 0.1", "tech")
+    r = _parse_response(_j("노이즈", 0.1), "tech")
     assert r == TriageResult("tech", NOISE_BUCKET, 0.1)
 
 
 def test_parse_noise_defaults_to_markets_without_hint():
-    assert _parse_response("노이즈 0.1", None).category == "markets"
+    assert _parse_response(_j("노이즈", 0.1), None).category == "markets"
 
 
 def test_parse_unknown_bucket_falls_back_with_hint():
-    r = _parse_response("경제기타뭐시기 0.5", "markets")
-    assert r == TriageResult("markets", "기타경제", 0.5)
+    r = _parse_response(_j("경제기타뭐시기", 0.5), "markets")
+    assert r == TriageResult("markets", FALLBACK_BUCKETS["markets"], 0.5)
 
 
 def test_parse_unknown_bucket_without_hint_returns_none():
-    assert _parse_response("이상한버킷 0.5", None) is None
+    assert _parse_response(_j("이상한버킷", 0.5), None) is None
 
 
 def test_parse_garbage_returns_none():
     assert _parse_response("", None) is None
     assert _parse_response("설명이 길어요", None) is None
+    assert _parse_response('{"bucket": "환율", "sal', None) is None  # truncated
+    assert _parse_response('{"bucket": "환율"}', None) is None
+    assert _parse_response('["환율", 0.5]', None) is None
 
 
-def test_parse_tolerates_surrounding_text():
-    r = _parse_response("답: 통화정책 0.85", None)
-    assert r == TriageResult("markets", "통화정책", 0.85)
+def test_response_schema_enum_covers_axis():
+    enum = triage._RESPONSE_SCHEMA["properties"]["bucket"]["enum"]
+    axis = {name for defs in triage.BUCKETS.values() for name, _ in defs}
+    assert set(enum) == axis | {NOISE_BUCKET}
 
 
 # --- triage_article ---
 
 def test_triage_article_returns_result():
-    with patch("newsparser.triage.ask_haiku", return_value="채권금리 0.6") as mock:
+    with patch("newsparser.triage.ask_haiku", return_value=_j("채권금리", 0.6)) as mock:
         r = triage_article("미 국채 금리 급등", "본문")
     assert r == TriageResult("markets", "채권금리", 0.6)
     assert mock.call_args.kwargs.get("usage_tag") == "triage"
+    assert mock.call_args.kwargs.get("output_schema") is triage._RESPONSE_SCHEMA
 
 
 def test_triage_article_returns_none_on_api_error():
