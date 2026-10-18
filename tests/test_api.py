@@ -174,6 +174,7 @@ def test_ask_claude_passes_per_request_timeout(fake_client):
     fake_client.final = _msg("end_turn", "x")
     api.ask_claude("u", "s", timeout=10)
     t = fake_client.last_kwargs["timeout"]
+    assert isinstance(t, anthropic.Timeout)
     assert t.connect == 5.0 and t.read == 120.0
 
 

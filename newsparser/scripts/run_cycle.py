@@ -430,6 +430,10 @@ def _run_for_category(slot: str, category: str, workspace: Path) -> None:
     # A graph failure must not discard the cycle: the report is already saved,
     # so mark the articles processed and deliver the digest anyway, and warn.
     try:
+        # Without the block apply() parses nothing and "succeeds" — the articles
+        # would be marked processed with nothing in the graph. Report it instead.
+        if not any(ln.strip() == "## Graph updates" for ln in report_text.splitlines()):
+            raise ValueError("리포트에 '## Graph updates' 블록이 없음")
         n_entities, n_relations = apply_graph.apply(category, slot)
         logger.info("[%s] graph applied: %d entities, %d relations",
                     category, n_entities, n_relations)

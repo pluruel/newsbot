@@ -52,6 +52,12 @@ def main(date: str | None = None) -> None:
     end = _date.fromisoformat(date)
     start = end - timedelta(days=_DEMAND_DAYS - 1)
     reports = reports_between(workspace, _CATEGORIES, start, end)
+    # With nothing to summarize the model would invent a briefing from the
+    # demand digest alone — send nothing rather than that.
+    if not reports:
+        logger.warning("weekly %s: no reports between %s and %s — skipping",
+                       date, start, end)
+        return
     # What the user actually asked about this week, for the "관심 주제" section
     # (the call has no MCP/DB access — see scheduler/demand.py).
     demand = build_demand_digest(date, _DEMAND_DAYS)

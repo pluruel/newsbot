@@ -7,7 +7,7 @@ import os
 import threading
 
 import anthropic
-import httpx2
+import httpx2  # HTTPError/StreamError are not re-exported by anthropic
 
 from newsparser.claude.runner import (
     ClaudeError, ClaudeKilled, note_activity, register_run, unregister_run,
@@ -133,7 +133,7 @@ def ask_claude(
             # read=120: on Linux a cross-thread close() does not wake a thread
             # blocked in recv, so this is what makes a stalled-then-closed
             # socket surface.
-            timeout=httpx2.Timeout(timeout, connect=5.0, read=120.0),
+            timeout=anthropic.Timeout(timeout, connect=5.0, read=120.0),
         ) as opened:
             stream = opened
             # Kill/timeout may have fired while the request was in flight.

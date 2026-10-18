@@ -244,6 +244,24 @@ def test_run_cycle_graph_failure_marks_processed_and_warns(tmp_path, apply_mock)
     assert "cycle tech-2026-05-08-12 OK" in log
 
 
+def test_run_cycle_missing_graph_block_warns_and_skips_apply(tmp_path, apply_mock):
+    insert_article("g1", "src", "t1", "u1", None, "body", category="tech")
+
+    no_block = SAMPLE_REPORT.split("## Graph updates")[0]
+    sent: list[str] = []
+
+    with patch("newsparser.scripts.run_cycle.ask_claude", return_value=no_block),          patch("newsparser.scripts.run_cycle.build_input_file", side_effect=_stub_build_input),          patch("newsparser.triage.triage_article", side_effect=_fake_triage),          patch("newsparser.scripts.run_cycle.send_long_message", side_effect=lambda m: sent.append(m)):
+        script.main("2026-05-08-12")
+
+    apply_mock.assert_not_called()
+    assert get_unprocessed(category="tech") == []
+    assert any("그래프 반영 실패" in m and "Graph updates" in m for m in sent)
+    assert any(m.startswith("[TECH]") for m in sent)   # cycle digest is still delivered
+    log = (Path(os.environ["WORKSPACE_DIR"]) / "logs" / "2026-05-08.log").read_text(encoding="utf-8")
+    assert "cycle tech-2026-05-08-12 GRAPH-FAIL" in log
+    assert "cycle tech-2026-05-08-12 OK" in log
+
+
 def test_run_cycle_graph_warning_send_failure_does_not_abort(tmp_path, apply_mock):
     insert_article("g1", "src", "t1", "u1", None, "body", category="tech")
 

@@ -28,6 +28,7 @@ def _weekly_path(date: str) -> Path:
 
 
 def test_run_weekly_writes_briefing_and_sends_headlines(tmp_path):
+    _write_report("tech", "2026-05-08-12", "리포트")
     reply = json.dumps({"briefing": "주간 브리핑 본문", "headlines": ["• 첫째", "둘째"]},
                        ensure_ascii=False)
     sent: list[str] = []
@@ -72,6 +73,7 @@ def test_run_weekly_prompt_has_last_7_days_without_graph_block(tmp_path):
 
 
 def test_run_weekly_skips_telegram_when_no_headlines(tmp_path):
+    _write_report("tech", "2026-05-08-12", "리포트")
     sent: list[str] = []
 
     with patch("newsparser.scripts.run_weekly.ask_claude",
@@ -85,6 +87,7 @@ def test_run_weekly_skips_telegram_when_no_headlines(tmp_path):
 
 
 def test_run_weekly_invalid_json_raises_and_writes_nothing(tmp_path):
+    _write_report("tech", "2026-05-08-12", "리포트")
     sent: list[str] = []
 
     with patch("newsparser.scripts.run_weekly.ask_claude", return_value="not json"), \
@@ -95,3 +98,16 @@ def test_run_weekly_invalid_json_raises_and_writes_nothing(tmp_path):
 
     assert not _weekly_path("2026-05-08").exists()
     assert sent == []
+
+
+def test_run_weekly_skips_model_when_no_reports_in_window(tmp_path, caplog):
+    sent: list[str] = []
+
+    with patch("newsparser.scripts.run_weekly.ask_claude") as ask,          patch("newsparser.scripts.run_weekly.send_long_message",
+               side_effect=lambda m: sent.append(m)),          caplog.at_level("WARNING"):
+        script.main("2026-05-08")
+
+    ask.assert_not_called()
+    assert not _weekly_path("2026-05-08").exists()
+    assert sent == []
+    assert "no reports" in caplog.text
