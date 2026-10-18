@@ -10,20 +10,25 @@ from newsparser.claude.runner import ClaudeError
 
 logger = logging.getLogger(__name__)
 
-HAIKU_MODEL = "claude-haiku-4-5"
+HAIKU_MODEL = "claude-haiku-5-5"
 _OAUTH_BETA = "oauth-2025-04-20"
+# Not ANTHROPIC_API_KEY: the `claude -p` subprocesses inherit this process's
+# environment, and the CLI prefers ANTHROPIC_API_KEY over the OAuth token —
+# that name would move every Sonnet job onto API billing too.
+_API_KEY_ENV = "NEWSBOT_HAIKU_API_KEY"
 
 _client: anthropic.Anthropic | None = None
 _client_lock = threading.Lock()
 
 
 def _build_client() -> anthropic.Anthropic:
-    if os.environ.get("ANTHROPIC_API_KEY"):
-        return anthropic.Anthropic(default_headers={"anthropic-beta": _OAUTH_BETA})
+    api_key = os.environ.get(_API_KEY_ENV)
+    if api_key:
+        return anthropic.Anthropic(api_key=api_key)
     token = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN")
     if not token:
         raise ClaudeError(
-            "no API credential: set ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN"
+            f"no API credential: set {_API_KEY_ENV} or CLAUDE_CODE_OAUTH_TOKEN"
         )
     return anthropic.Anthropic(
         auth_token=token, default_headers={"anthropic-beta": _OAUTH_BETA}
@@ -70,6 +75,10 @@ def ask_haiku(
     token counts are accumulated per (day, tag) in the haiku_usage table.
     Recording is fail-open — an accounting error never fails the call.
 
+    Thinking is off: Haiku 5.5 thinks by default and thinking counts toward
+    `max_tokens`, so the 8-32-token classifier caps would be spent before any
+    text. Disabled thinking is only accepted at effort `high` or below.
+
     Raises ClaudeError on any API or transport failure.
     """
     client = _get_client()
@@ -77,6 +86,8 @@ def ask_haiku(
         message = client.with_options(timeout=timeout, max_retries=0).messages.create(
             model=model,
             max_tokens=max_tokens,
+            thinking={"type": "disabled"},
+            output_config={"effort": "low"},
             system=system_prompt,
             messages=[{"role": "user", "content": prompt}],
         )

@@ -240,7 +240,8 @@ re-install is the intended security gate.
 | `TELEGRAM_CHAT_ID` | where reports/alerts are **sent** (without it the bot runs but delivers nothing) |
 | `ALLOWED_CHAT_ID` | only this chat may command the bot (inbound auth gate, fail-closed — the dispatcher refuses to start without it) |
 | `TELEGRAM_ALERT_CHAT_ID` | target for poller alerts |
-| `CLAUDE_CODE_OAUTH_TOKEN` | from `claude setup-token` (see Authentication) — the only Anthropic auth |
+| `CLAUDE_CODE_OAUTH_TOKEN` | from `claude setup-token` (see Authentication) — auth for every `claude -p` call |
+| `NEWSBOT_HAIKU_API_KEY` | optional Anthropic API key for the direct-API Haiku calls (triage/classifiers); unset → they fall back to the OAuth token. Don't use `ANTHROPIC_API_KEY` — the CLI would pick it up and bill the Sonnet jobs to the API too |
 | `NEO4J_PASSWORD` | set **before** the first `up`; neo4j bakes it into `neo4j_data`, so changing it later means resetting that volume |
 
 Optional overrides (safe defaults, leave unset for a standard deploy): `CLAUDE_BIN`
