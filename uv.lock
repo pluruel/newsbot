@@ -1203,7 +1203,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "anthropic", specifier = ">=0.120.2" },
+    { name = "anthropic", specifier = ">=1.12" },
     { name = "apscheduler", specifier = ">=3.10,<4" },
     { name = "fastmcp", specifier = ">=2.0,<4" },
     { name = "feedparser", specifier = ">=6.0" },
