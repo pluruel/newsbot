@@ -40,7 +40,9 @@ def reports_between(
     categories: Sequence[str],
     start: date,
     end: date,
-    max_chars: int = 1_000_000,
+    # Korean runs ~0.7-1 token/char, so 600k chars keeps reflect's 14-day window
+    # clear of the 1M-token context.
+    max_chars: int = 600_000,
 ) -> list[tuple[str, str]]:
     """``(category/stem, digest)`` pairs dated ``start..end`` inclusive, oldest first.
 

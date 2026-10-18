@@ -531,9 +531,7 @@ def start_job(bot: str, chat_id: str | None = None) -> str:
 
     slot·category를 사용자에게 되묻지 마라 — start_job에는 그런 인자가 없고,
     cycle은 현재 시각(KST) 슬롯으로 tech·markets 양쪽을 자동으로 돈다.
-    `/cycle`·`/weekly`·`/reflect` 슬래시 커맨드를 직접 실행하는 것도 금지다: 그건
-    run_cycle.py 등이 슬롯을 채워서 부르는 내부용이라 직접 부르면 입력파일이 없어
-    실패한다. 실행 지시에는 언제나 start_job만 쓴다."""
+    실행 지시에는 언제나 start_job만 쓴다."""
     if bot not in _STARTABLE_BOTS:
         return f"'{bot}'은 시작할 수 없는 작업이다. 허용: {sorted(_STARTABLE_BOTS)}."
     ws = _workspace()

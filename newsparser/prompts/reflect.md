@@ -13,7 +13,7 @@ You update the user's interest profiles. The user message gives the date string 
    - Decrease weights for themes that were predicted but didn't appear (오픈 스레드 entries that resolved silently) AND the user never asked about.
 5. Return the updated profiles in `interests_tech` and `interests_markets`: the complete profile for each, using the same markdown table format as the input.
 6. Derive triage bucket weights from the updated theme tables:
-   - Use `<bucket_axis>` for the bucket axis (do not invent bucket names — the axis lives in code; this snapshot is written fresh before each run).
+   - Use `<bucket_axis>` for the bucket axis (do not invent bucket names — the axis lives in code).
    - For each category, return `triage_weights_tech` / `triage_weights_markets`: a flat JSON object mapping **every** bucket name of that category to a weight in [0, 1], derived from the themes that map into that bucket (weigh by the themes' interest_weight, recent cycle importance, and user demand). Include the shared noise bucket in **both** objects.
    - Constraints: `기타경제`/`기타기술` never below 0.4 (they are the entry path for topics the theme table doesn't track yet — starving them creates a filter bubble); `노이즈` never above 0.1.
    - Cycle reports carry a `트리아지: 후보 N건 …` stats line — when a bucket's inflow existed but was consistently cut by its weight, treat the absence of that bucket from cycles as gating, not as declining relevance, before lowering the corresponding themes further.
