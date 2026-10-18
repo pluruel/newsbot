@@ -66,12 +66,16 @@ def ask_claude(
 ) -> str:
     """Run one tool-less, streaming turn and return its text blocks joined.
 
-    `timeout` is a wall-clock ceiling enforced by a timer that closes the
-    stream; SDK retries stay at their defaults (they only cover opening the
-    request), so the timer is what bounds the call, not the SDK.
+    `timeout` is a wall-clock ceiling covering the whole call, including the
+    wait for response headers: the run is registered and the timer started
+    before the request is sent. The timer cannot abort a request still in
+    flight (there is no stream to close yet), so the ceiling is enforced the
+    moment the stream opens or, on a stalled connection, once the 120s read
+    timeout below fires — at most ~120s late. SDK retries stay at their
+    defaults.
 
     Streaming because a 64k-token adaptive-thinking answer outlives any
-    non-streaming HTTP request. The open stream is registered with the runner
+    non-streaming HTTP request. The call is registered with the runner
     so kill_job() can cancel it by closing the stream.
 
     `output_schema` constrains the reply to that JSON schema (structured
@@ -86,19 +90,38 @@ def ask_claude(
     if output_schema is not None:
         output_config["format"] = {"type": "json_schema", "schema": output_schema}
 
-    run = None
     timed_out = threading.Event()
-    timer: threading.Timer | None = None
 
     def _raise_if_interrupted() -> None:
         # Closing the stream may end the iteration quietly or raise something
         # incidental, so a kill / timeout is decided here, before any generic
         # failure handling. Kill wins: it is the user's explicit act.
-        if run is not None and run.killed:
+        if run.killed:
             raise ClaudeKilled(f"claude run killed by kill request (job #{run.job_id})")
         if timed_out.is_set():
             raise ClaudeError(f"claude timed out after {timeout}s")
 
+    stream = None
+
+    def _cancel() -> None:
+        # Before the stream is open there is nothing to close: kill_job has
+        # already set run.killed, and the post-open check below acts on it.
+        if stream is not None:
+            stream.close()
+
+    def _expire() -> None:
+        timed_out.set()
+        try:
+            _cancel()
+        except Exception:
+            pass
+
+    # Registered and timed before the request is sent, so kill and the
+    # wall-clock ceiling cover the wait for response headers too.
+    run = register_run(prompt, cancel=_cancel)
+    timer = threading.Timer(timeout, _expire)
+    timer.daemon = True
+    timer.start()
     try:
         with client.messages.stream(
             model=model,
@@ -107,23 +130,18 @@ def ask_claude(
             messages=[{"role": "user", "content": prompt}],
             thinking={"type": "adaptive"},
             output_config=output_config,
-        ) as stream:
-            run = register_run(prompt, cancel=stream.close)
-
-            def _expire() -> None:
-                timed_out.set()
-                try:
-                    stream.close()
-                except Exception:
-                    pass
-
-            timer = threading.Timer(timeout, _expire)
-            timer.daemon = True
-            timer.start()
-            for _ in stream:
+            # read=120: on Linux a cross-thread close() does not wake a thread
+            # blocked in recv, so this is what makes a stalled-then-closed
+            # socket surface.
+            timeout=httpx2.Timeout(timeout, connect=5.0, read=120.0),
+        ) as opened:
+            stream = opened
+            # Kill/timeout may have fired while the request was in flight.
+            _raise_if_interrupted()
+            for _ in opened:
                 note_activity(run, "응답 작성")
             _raise_if_interrupted()
-            message = stream.get_final_message()
+            message = opened.get_final_message()
         _raise_if_interrupted()
     except ClaudeError:
         raise
@@ -131,14 +149,15 @@ def ask_claude(
         _raise_if_interrupted()
         if isinstance(exc, anthropic.APIStatusError):
             raise ClaudeError(f"claude api error {exc.status_code} ({exc.type})") from exc
-        if isinstance(exc, (anthropic.APIError, httpx2.HTTPError)):
-            raise ClaudeError(f"claude api failure: {exc}") from exc
+        # AssertionError: the SDK asserts in get_final_message() when the
+        # stream ended without a single event.
+        if isinstance(exc, (anthropic.APIError, httpx2.HTTPError, httpx2.StreamError,
+                            AssertionError)):
+            raise ClaudeError(f"claude api failure: {exc!r}") from exc
         raise
     finally:
-        if timer is not None:
-            timer.cancel()
-        if run is not None:
-            unregister_run(run)
+        timer.cancel()
+        unregister_run(run)
 
     if message.stop_reason != "end_turn":
         raise ClaudeError(f"claude stopped with stop_reason={message.stop_reason}")

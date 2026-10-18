@@ -23,6 +23,10 @@ class _FakeStream:
     def __enter__(self):
         if self.owner.raise_on_enter is not None:
             raise self.owner.raise_on_enter
+        # Models the request phase: blocked before response headers, and
+        # unreachable by close() because there is no open stream yet.
+        if self.owner.enter_gate is not None:
+            self.owner.enter_gate.wait(5)
         return self
 
     def __exit__(self, *exc):
@@ -33,21 +37,31 @@ class _FakeStream:
 
     def __iter__(self):
         yield SimpleNamespace(type="content_block_delta")
+        if self.owner.iter_error is not None:
+            raise self.owner.iter_error
         if self.owner.block_until_closed:
             self._closed.wait(5)
+            if self.owner.quiet_after_close:
+                return          # a closed stream may just stop yielding
             # a closed httpx stream surfaces as a read error mid-iteration
             raise RuntimeError("stream closed")
         yield SimpleNamespace(type="message_stop")
 
     def get_final_message(self):
+        if self.owner.final_error is not None:
+            raise self.owner.final_error
         return self.owner.final
 
 
 class _FakeClient:
     def __init__(self):
         self.final = None
+        self.final_error = None
         self.block_until_closed = False
+        self.quiet_after_close = False
+        self.iter_error = None
         self.raise_on_enter = None
+        self.enter_gate = None
         self.last_kwargs = None
         self.messages = self
 
@@ -154,3 +168,79 @@ def test_check_credentials_logs_error_when_missing(monkeypatch, caplog):
 def test_check_credentials_true_when_set(monkeypatch):
     monkeypatch.setenv("NEWSBOT_API_KEY", "k")
     assert api.check_credentials() is True
+
+
+def test_ask_claude_passes_per_request_timeout(fake_client):
+    fake_client.final = _msg("end_turn", "x")
+    api.ask_claude("u", "s", timeout=10)
+    t = fake_client.last_kwargs["timeout"]
+    assert t.connect == 5.0 and t.read == 120.0
+
+
+def test_ask_claude_kill_before_stream_opens(fake_client):
+    fake_client.enter_gate = threading.Event()   # stream(...) entry blocks
+    token = runner.CURRENT_JOB.set(11)
+
+    def _kill_then_release():
+        assert runner.kill_job(11) == 1          # registered before the open
+        fake_client.enter_gate.set()
+
+    try:
+        threading.Timer(0.2, _kill_then_release).start()
+        with pytest.raises(ClaudeKilled):
+            api.ask_claude("u", "s", timeout=10)
+    finally:
+        runner.CURRENT_JOB.reset(token)
+    assert not [r for r in runner.active_runs() if r["job_id"] == 11]
+
+
+def test_ask_claude_timeout_before_stream_opens(fake_client):
+    fake_client.enter_gate = threading.Event()
+    fake_client.final = _msg("end_turn", "late")
+    threading.Timer(0.6, fake_client.enter_gate.set).start()
+    token = runner.CURRENT_JOB.set(12)
+    try:
+        with pytest.raises(ClaudeError, match="timed out after 0.3s"):
+            api.ask_claude("u", "s", timeout=0.3)
+    finally:
+        runner.CURRENT_JOB.reset(token)
+    assert not [r for r in runner.active_runs() if r["job_id"] == 12]
+
+
+def test_ask_claude_zero_event_stream_is_claude_error(fake_client):
+    fake_client.final_error = AssertionError()   # SDK asserts on an empty stream
+    with pytest.raises(ClaudeError):
+        api.ask_claude("u", "s", timeout=10)
+
+
+def test_ask_claude_wraps_stream_error(fake_client):
+    fake_client.iter_error = httpx.StreamClosed()
+    with pytest.raises(ClaudeError):
+        api.ask_claude("u", "s", timeout=10)
+
+
+def test_ask_claude_wraps_mid_stream_read_error(fake_client):
+    fake_client.iter_error = httpx.ReadError("boom")
+    with pytest.raises(ClaudeError):
+        api.ask_claude("u", "s", timeout=10)
+
+
+def test_ask_claude_kill_when_stream_ends_quietly(fake_client):
+    fake_client.block_until_closed = True
+    fake_client.quiet_after_close = True
+    fake_client.final = _msg("end_turn", "partial")   # must not be returned
+    token = runner.CURRENT_JOB.set(13)
+    try:
+        threading.Timer(0.2, lambda: runner.kill_job(13)).start()
+        with pytest.raises(ClaudeKilled):
+            api.ask_claude("u", "s", timeout=10)
+    finally:
+        runner.CURRENT_JOB.reset(token)
+
+
+def test_ask_claude_timeout_when_stream_ends_quietly(fake_client):
+    fake_client.block_until_closed = True
+    fake_client.quiet_after_close = True
+    fake_client.final = _msg("end_turn", "partial")
+    with pytest.raises(ClaudeError, match="timed out after 0.3s"):
+        api.ask_claude("u", "s", timeout=0.3)
