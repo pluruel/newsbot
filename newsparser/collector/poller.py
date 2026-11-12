@@ -5,6 +5,7 @@ from urllib.parse import urlparse
 import feedparser
 import requests
 
+from newsparser.collector.html_index import parse_index
 from newsparser.collector.scraper import fetch_body
 from newsparser.collector.sources import Source
 from newsparser.store.sqlite import (
@@ -50,24 +51,40 @@ def _fetch_feed(url: str) -> bytes:
     return resp.content
 
 
+def _entries(source: Source) -> list:
+    """Entries for a source, whichever shape it publishes in.
+
+    An html-index source is a publisher with no feed: its listing page is parsed
+    into the same entry shape, so everything below this call is identical for
+    both kinds.
+    """
+    raw = _fetch_feed(source.rss_url)
+    if source.kind == "html-index":
+        # Listing pages are utf-8; a replacement char in one title beats losing
+        # the whole page to a decode error.
+        return parse_index(raw.decode("utf-8", "replace"), source.rss_url)
+    return feedparser.parse(raw).entries
+
+
 def poll_source(source: Source) -> list[dict]:
-    """Fetch RSS feed and store new articles. Returns list of new article dicts."""
+    """Fetch a source and store new articles. Returns list of new article dicts."""
     try:
-        feed = feedparser.parse(_fetch_feed(source.rss_url))
+        entries = _entries(source)
     except Exception as exc:
-        logger.error("RSS fetch failed for %s: %s", source.name, exc)
+        logger.error("Fetch failed for %s: %s", source.name, exc)
         record_feed_failure(source.name, str(exc))
         return []
 
-    if not feed.entries:
-        # A 200 that isn't a feed anymore (rss.joins.com) is as dead as a 404.
+    if not entries:
+        # A 200 that isn't a feed anymore (rss.joins.com) is as dead as a 404 —
+        # as is a listing page whose markup stopped yielding tiles.
         logger.warning("Feed %s returned no entries", source.name)
         record_feed_failure(source.name, "feed has no entries")
         return []
     record_feed_ok(source.name)
 
     new_articles = []
-    for entry in feed.entries:
+    for entry in entries:
         guid = getattr(entry, "id", None) or getattr(entry, "link", None)
         if not guid or is_seen(guid):
             continue
