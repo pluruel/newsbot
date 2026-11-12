@@ -217,3 +217,67 @@ def test_repo_sources_yahoo_endpoint_is_not_the_dead_index_feed():
     yahoo = [s for s in load_sources("sources.md") if s.name == "Yahoo Finance"]
     assert len(yahoo) == 1
     assert "news/rssindex" not in yahoo[0].rss_url
+
+
+def test_load_sources_reads_kind_column(tmp_path):
+    md = textwrap.dedent("""\
+        | Name | RSS URL | Tier | Category | Paywall | Kind |
+        |------|---------|------|----------|---------|------|
+        | OpenAI Blog | https://openai.com/news/rss.xml | international | tech | no |  |
+        | Anthropic News | https://www.anthropic.com/news | international | tech | no | html-index |
+        | Typo'd | https://example.com/news | international | tech | no | html index |
+    """)
+    p = tmp_path / "sources.md"
+    p.write_text(md)
+    sources = load_sources(str(p))
+    # blank Kind is plain RSS; an unknown kind is dropped rather than polled as a feed
+    assert [(s.name, s.kind) for s in sources] == [
+        ("OpenAI Blog", "rss"),
+        ("Anthropic News", "html-index"),
+    ]
+
+
+def test_load_sources_defaults_kind_without_the_column(tmp_path):
+    md = textwrap.dedent("""\
+        | Name | RSS URL | Tier | Category | Paywall |
+        |------|---------|------|----------|---------|
+        | OpenAI Blog | https://openai.com/news/rss.xml | international | tech | no |
+    """)
+    p = tmp_path / "sources.md"
+    p.write_text(md)
+    assert load_sources(str(p))[0].kind == "rss"
+
+
+def test_poll_source_scrapes_html_index_instead_of_parsing_a_feed():
+    from datetime import datetime, timedelta, timezone
+    from unittest.mock import patch
+    from newsparser.collector.poller import poll_source
+
+    # dated relative to now, or the tile would age past MAX_AGE_DAYS and the
+    # insert this asserts on would stop happening
+    listed = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%b %d, %Y")
+    html = (
+        '<article data-listing-row="1">'
+        f'<time>{listed}</time>'
+        '<h3><a href="/news/roadshow-launch">Roadshow</a></h3><p>Summary.</p>'
+        '</article>'
+    )
+    src = Source(name="Anthropic News", rss_url="https://www.anthropic.com/news",
+                 tier="international", paywall=False, category="tech",
+                 kind="html-index")
+
+    with patch("newsparser.collector.poller._fetch_feed",
+               return_value=html.encode()), \
+         patch("newsparser.collector.poller.feedparser.parse") as mock_feedparser, \
+         patch("newsparser.collector.poller.fetch_body", return_value="body"), \
+         patch("newsparser.collector.poller.is_seen", return_value=False), \
+         patch("newsparser.collector.poller.mark_seen"), \
+         patch("newsparser.collector.poller.insert_article") as mock_insert:
+        new = poll_source(src)
+
+    mock_feedparser.assert_not_called()
+    assert [a["guid"] for a in new] == ["https://www.anthropic.com/news/roadshow-launch"]
+    args = mock_insert.call_args[0]
+    assert args[0] == "https://www.anthropic.com/news/roadshow-launch"  # guid = post URL
+    assert args[3] == "https://www.anthropic.com/news/roadshow-launch"  # url
+    assert mock_insert.call_args.kwargs["category"] == "tech"
